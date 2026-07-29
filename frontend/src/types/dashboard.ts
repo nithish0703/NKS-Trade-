@@ -1,0 +1,174 @@
+export type Direction = "BUY" | "SELL";
+
+export type SignalTypeTier = "PREMIUM" | "STRONG";
+
+export type ScanningCoinStatus = "READY" | "SCANNING" | "REJECTED" | "ERROR" | "DUPLICATE";
+
+export type ChartTrend = "UP" | "DOWN";
+
+export interface ComparisonPercentages {
+  total_signals_percentage: number | null;
+  wins_percentage: number | null;
+  losses_percentage: number | null;
+  win_rate_percentage: number | null;
+  average_rr_percentage: number | null;
+}
+
+export interface DashboardSummary {
+  total_signals: number;
+  wins: number;
+  losses: number;
+  open_signals: number;
+  win_rate: number | null;
+  average_rr: number | null;
+  premium_count: number;
+  strong_count: number;
+  scanner_running: boolean;
+  last_scan_time_utc: string | null;
+  server_time_utc: string;
+  comparison: ComparisonPercentages;
+}
+
+export interface ScanningCoin {
+  coin: string;
+  direction: Direction | null;
+  score: number | null;
+  status: ScanningCoinStatus;
+  failed_layer: string | null;
+  reason: string | null;
+  updated_at_utc: string | null;
+  // Dashboard-only scan-progress visibility (never the final confidence
+  // score, never used to publish/store/notify a signal).
+  validation_progress_raw_score: number | null;
+  validation_progress_max_score: number | null;
+  validation_progress_percentage: number | null;
+  last_executed_layer: string | null;
+  // Dashboard-only, non-trading scan PREVIEW: independently
+  // re-evaluated past the point the real fail-fast pipeline stopped.
+  // Never a signal, never persisted, never notified, never final
+  // trade confidence.
+  preview_direction: Direction | null;
+  preview_progress_raw_score: number | null;
+  preview_progress_max_score: number | null;
+  preview_progress_percentage: number | null;
+  preview_completed_layers: string[] | null;
+  preview_failed_layers: string[] | null;
+  preview_data_availability: Record<string, string> | null;
+  // Dashboard-only visual cue: raw price direction of the most recent
+  // completed entry-timeframe candle vs. the one before it. Never
+  // HTF-bias-derived and never a substitute for direction/preview_direction.
+  chart_trend: ChartTrend | null;
+}
+
+export interface ActiveSignal {
+  trade_id: string;
+  coin: string;
+  direction: Direction;
+  current_price: number | null;
+  entry_price: number;
+  take_profit: number;
+  stop_loss: number;
+  distance_to_take_profit_percentage: number | null;
+  confidence_score: number;
+  signal_type: SignalTypeTier;
+  detection_time_utc: string;
+}
+
+export interface PremiumSignal {
+  trade_id: string;
+  coin: string;
+  direction: Direction;
+  signal_type: SignalTypeTier;
+  entry_price: number;
+  take_profit: number;
+  stop_loss: number;
+  confidence_score: number;
+  detection_time_utc: string;
+}
+
+export interface StrongSignal {
+  trade_id: string;
+  coin: string;
+  direction: Direction;
+  confidence_score: number;
+  higher_timeframe_bias: string;
+  normalized_score: number;
+  detection_time_utc: string;
+}
+
+export interface RejectionItem {
+  coin: string;
+  failed_layer: string;
+  reason: string;
+  detection_time_utc: string;
+}
+
+export interface ScannerStatusItem {
+  pair: string;
+  stage: string | null;
+  status: ScanningCoinStatus;
+  last_scan_time_utc: string | null;
+}
+
+export interface ScannerStatusResponse {
+  running: boolean;
+  shutdown_requested: boolean;
+  cycles_completed: number;
+  last_cycle_started_at: string | null;
+  last_cycle_completed_at: string | null;
+  last_cycle_id: string | null;
+  last_error: string | null;
+}
+
+export interface DashboardHealth {
+  scanner_running: boolean;
+  database_reachable: boolean;
+  telegram_enabled: boolean;
+  websocket_enabled: boolean;
+  server_time_utc: string;
+}
+
+export interface SignalDetails {
+  trade_id: string;
+  coin: string;
+  direction: Direction;
+  signal_type: SignalTypeTier;
+  entry_price: number;
+  stop_loss: number;
+  take_profit: number;
+  risk_reward_ratio: number;
+  confidence_score: number;
+  market_regime: string;
+  higher_timeframe_bias: string;
+  liquidity_type: string;
+  entry_zone_type: string;
+  structure_confirmation: string;
+  volume_confirmation: boolean;
+  atr_status: string;
+  trading_session: string;
+  btc_market_alignment: boolean;
+  detection_time_utc: string;
+  institutional_reason: string;
+}
+
+export type DashboardWebSocketEventType =
+  | "SCAN_CYCLE_STARTED"
+  | "PAIR_SCAN_UPDATED"
+  | "SCAN_CYCLE_COMPLETED"
+  | "SIGNAL_STORED"
+  | "SIGNAL_DUPLICATE"
+  | "TELEGRAM_SENT"
+  | "TELEGRAM_FAILED"
+  | "SCANNER_STATUS_CHANGED"
+  | "HEARTBEAT"
+  | "PING";
+
+export interface DashboardWebSocketEvent {
+  event: DashboardWebSocketEventType;
+  timestamp_utc: string;
+  data: Record<string, unknown>;
+}
+
+export interface ApiError {
+  detail: string;
+}

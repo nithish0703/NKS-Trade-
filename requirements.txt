@@ -1,0 +1,15 @@
+pandas
+numpy
+httpx
+websockets
+pydantic
+pydantic-settings
+python-dotenv
+sqlalchemy
+aiosqlite
+apscheduler
+loguru
+pytest
+pytest-asyncio
+fastapi
+uvicorn[standard]
