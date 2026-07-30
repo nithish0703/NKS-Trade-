@@ -39,7 +39,7 @@ describe("ScanningCoinsTable", () => {
     expect(screen.getByText("Waiting for scanner")).toBeInTheDocument();
   });
 
-  it("shows a dash for a missing preview score", () => {
+  it("shows a muted double-dash inside the circle for a missing preview score", () => {
     render(
       <ScanningCoinsTable
         coins={[
@@ -52,7 +52,8 @@ describe("ScanningCoinsTable", () => {
         ]}
       />,
     );
-    expect(screen.getByText("—")).toBeInTheDocument();
+    const dash = screen.getByText("--");
+    expect(dash.className).toContain("text-slate-400");
   });
 
   it("does not render a Status column heading", () => {
@@ -148,7 +149,7 @@ describe("ScanningCoinsTable", () => {
 
   it("shows the dashboard-preview-only tooltip notice on the score cell", () => {
     render(<ScanningCoinsTable coins={[coin()]} />);
-    const scoreCell = screen.getByText("100%").closest("div");
+    const scoreCell = screen.getByText("100%").closest("[title]");
     expect(scoreCell?.getAttribute("title")).toContain(
       "Dashboard preview only. This is not final trade confidence.",
     );

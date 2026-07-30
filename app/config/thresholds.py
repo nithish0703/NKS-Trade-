@@ -36,6 +36,16 @@ PAIR_DISCOVERY_INTERVAL_SECONDS: Final[int] = 900
 PAIR_DISCOVERY_MINIMUM_OPEN_INTEREST_USDT: Final[float] = 5_000_000.0
 PAIR_DISCOVERY_MINIMUM_TURNOVER_24H_USDT: Final[float] = 10_000_000.0
 
+# Warm-up fetch for newly discovered pairs (see app.scanner.pair_discovery).
+# A brand-new symbol's first full candle-history fetch has no cached
+# fallback and no safety margin, so it gets a more patient retry
+# schedule than the routine per-cycle fetch used once a symbol is
+# already in rotation -- this only delays a new symbol's first
+# appearance on a transient failure; it never changes retry behaviour
+# for symbols already being scanned.
+PAIR_WARMUP_MAX_REQUEST_ATTEMPTS: Final[int] = 5
+PAIR_WARMUP_RETRY_BACKOFF_SCHEDULE_SECONDS: Final[tuple[float, ...]] = (2.0, 4.0, 8.0, 15.0)
+
 # Signal scoring
 MIN_PUBLISHABLE_CONFIDENCE_SCORE: Final[float] = 80.0
 PREMIUM_SIGNAL_MIN_SCORE: Final[float] = 90.0

@@ -52,16 +52,12 @@ export function ScanningCoinsTable({ coins }: ScanningCoinsTableProps) {
                   <DirectionBadge direction={coin.preview_direction} />
                 </td>
                 <td className="py-2.5">
-                  <div
-                    className="flex items-center gap-2 text-slate-600"
-                    title={scoreTooltip(coin)}
-                  >
-                    <span className="w-9 tabular-nums">
-                      {coin.preview_progress_percentage === null ? "—" : `${percentage}%`}
-                    </span>
+                  <div className="flex items-center" title={scoreTooltip(coin)}>
                     <CircularProgress
-                      percentage={percentage}
+                      percentage={coin.preview_progress_percentage === null ? null : percentage}
                       colorClassName={progressColorClassName(percentage)}
+                      size={46}
+                      showLabel
                     />
                   </div>
                 </td>

@@ -374,6 +374,7 @@ class BybitMarketDataProvider(MarketDataProvider):
         max_concurrent_requests: int = MAX_CONCURRENT_REQUESTS,
         min_request_interval_seconds: float = MIN_REQUEST_INTERVAL_SECONDS,
         inter_timeframe_delay_seconds: float = INTER_TIMEFRAME_DELAY_SECONDS,
+        validate_symbol_against_allow_list: bool = True,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._request_timeout_seconds = request_timeout_seconds
@@ -381,6 +382,17 @@ class BybitMarketDataProvider(MarketDataProvider):
         self._max_request_attempts = max_request_attempts
         self._retry_backoff_schedule_seconds = retry_backoff_schedule_seconds
         self._inter_timeframe_delay_seconds = inter_timeframe_delay_seconds
+        # Symbol validation for outbound requests. Format-only validation
+        # (no allow-list check) is used by the dynamic-pair-discovery
+        # warm-up provider (app.scanner.pair_discovery.PairWarmUpTracker):
+        # a warm-up fetch's whole purpose is to test a symbol *before* it
+        # is added to the configured pair list, so checking it against
+        # that same list here would be circular and would always reject
+        # it. The live-scan provider (used for symbols already in
+        # rotation) keeps the full allow-list check.
+        self._validate_symbol = (
+            validate_pair_symbol if validate_symbol_against_allow_list else validate_pair_symbol_format
+        )
         self._rate_limiter = _AsyncRequestRateLimiter(
             max_concurrent_requests=max_concurrent_requests,
             min_interval_seconds=min_request_interval_seconds,
@@ -531,7 +543,7 @@ class BybitMarketDataProvider(MarketDataProvider):
             MarketDataValidationError: If the response or resulting candle
                 sequence fails structural validation.
         """
-        validated_symbol = validate_pair_symbol(symbol)
+        validated_symbol = self._validate_symbol(symbol)
         bybit_symbol = _to_bybit_symbol(validated_symbol)
         interval = get_exchange_timeframe(timeframe)
         interval_seconds = get_timeframe_duration_seconds(timeframe)
@@ -668,7 +680,7 @@ class BybitMarketDataProvider(MarketDataProvider):
         fabricating a price.
         """
         try:
-            validated_symbol = validate_pair_symbol(symbol)
+            validated_symbol = self._validate_symbol(symbol)
         except ValueError:
             return None
 

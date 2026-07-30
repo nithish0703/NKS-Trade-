@@ -251,6 +251,47 @@ async def test_unsupported_symbol():
 
 
 @pytest.mark.asyncio
+async def test_well_formed_symbol_not_in_allow_list_rejected_by_default():
+    # PEPE-USDT is well-formed (SYMBOL-QUOTE) but not in the static
+    # configured pair list, so the default allow-list validation must
+    # still reject it.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_bybit_body([]))
+
+    async with _make_provider(handler) as provider:
+        with pytest.raises(ValueError):
+            await provider.fetch_candles("PEPE-USDT", "15m", 10)
+
+
+@pytest.mark.asyncio
+async def test_allow_list_check_can_be_bypassed_for_warm_up_fetches():
+    # With validate_symbol_against_allow_list=False, a well-formed
+    # symbol not yet in the configured pair list is still accepted --
+    # this is what lets a newly-discovered pair's warm-up fetch
+    # succeed *before* that pair is added to get_configured_pairs().
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["symbol"] = request.url.params.get("symbol")
+        return httpx.Response(200, json=_bybit_body([]))
+
+    async with _make_provider(handler, validate_symbol_against_allow_list=False) as provider:
+        await provider.fetch_candles("PEPE-USDT", "15m", 10)
+
+    assert captured["symbol"] == "PEPEUSDT"
+
+
+@pytest.mark.asyncio
+async def test_bypassed_allow_list_still_enforces_symbol_format():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_bybit_body([]))
+
+    async with _make_provider(handler, validate_symbol_against_allow_list=False) as provider:
+        with pytest.raises(ValueError):
+            await provider.fetch_candles("not-a-valid-format!!", "15m", 10)
+
+
+@pytest.mark.asyncio
 async def test_unsupported_timeframe():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json=_bybit_body([]))
