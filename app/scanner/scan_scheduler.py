@@ -18,15 +18,43 @@ from app.scanner.scan_results import (
 )
 
 ClockProvider = Callable[[], float]
+WallClockProvider = Callable[[], datetime]
 
 
 def _default_clock() -> float:
     return asyncio.get_event_loop().time()
 
 
+def _default_wall_clock() -> datetime:
+    return datetime.now(timezone.utc)
+
+
 def _build_cycle_id(sequence_number: int, started_at_utc: datetime) -> str:
     digest_input = f"{sequence_number}|{started_at_utc.isoformat()}"
     return hashlib.sha256(digest_input.encode("utf-8")).hexdigest()[:16]
+
+
+def _seconds_until_next_interval_boundary(now: datetime, interval_seconds: float) -> float:
+    """
+    Seconds remaining until the next wall-clock UTC boundary that is a
+    multiple of `interval_seconds` since the epoch (e.g. for the default
+    300-second/5-minute interval: :00, :05, :10, ... past every hour).
+
+    This is what lets the scanner trigger immediately when a new
+    5-minute candle closes, rather than drifting from real candle-close
+    timestamps based on process start time or cycle-duration variance.
+    Returns `interval_seconds` itself (a full interval) if `now` lands
+    exactly on a boundary, and `interval_seconds` unchanged for any
+    non-positive interval (never divides by zero or returns a negative
+    wait).
+    """
+    if interval_seconds <= 0:
+        return interval_seconds
+    elapsed_in_interval = now.timestamp() % interval_seconds
+    remaining = interval_seconds - elapsed_in_interval
+    if remaining <= 0:
+        return interval_seconds
+    return remaining
 
 
 class MultiPairScanScheduler:
@@ -44,6 +72,7 @@ class MultiPairScanScheduler:
         scanner_interval_seconds: float,
         maximum_concurrent_scans: int,
         clock: ClockProvider = _default_clock,
+        wall_clock: WallClockProvider = _default_wall_clock,
         logger: Optional[logging.Logger] = None,
     ) -> None:
         self._pair_scanner = pair_scanner
@@ -51,6 +80,7 @@ class MultiPairScanScheduler:
         self._scanner_interval_seconds = scanner_interval_seconds
         self._maximum_concurrent_scans = maximum_concurrent_scans
         self._clock = clock
+        self._wall_clock = wall_clock
         self._logger = logger or logging.getLogger(__name__)
 
         self._shutdown_event = asyncio.Event()
@@ -107,6 +137,7 @@ class MultiPairScanScheduler:
         duration_ms = max(0.0, (self._clock() - start_clock) * 1000)
 
         valid_results = [r for r in pair_results if r.status == PairScanStatus.VALID]
+        valid_results = self._rank_valid_results(valid_results)
         rejected_results = [r for r in pair_results if r.status == PairScanStatus.REJECTED]
         duplicate_results = [r for r in pair_results if r.status == PairScanStatus.DUPLICATE]
         error_results = [r for r in pair_results if r.status == PairScanStatus.ERROR]
@@ -131,6 +162,21 @@ class MultiPairScanScheduler:
             duplicate_count=len(duplicate_results),
             error_count=len(error_results),
             skipped_count=len(skipped_results),
+        )
+
+    @staticmethod
+    def _rank_valid_results(valid_results: list[PairScanResult]) -> list[PairScanResult]:
+        """
+        Rank every VALID result by its final confidence score, highest
+        first, so the cycle's output always carries an explicit final
+        ranking across all filtered coins -- never just the first match
+        or discovery order. Never recalculates the score; only reorders
+        the already-computed results.
+        """
+        return sorted(
+            valid_results,
+            key=lambda r: r.pipeline_result.confidence_result.normalized_score,
+            reverse=True,
         )
 
     @staticmethod
@@ -171,8 +217,6 @@ class MultiPairScanScheduler:
         self._running = True
         try:
             while not self._shutdown_event.is_set():
-                cycle_start_clock = self._clock()
-
                 active_state = await active_state_provider()
 
                 try:
@@ -194,8 +238,14 @@ class MultiPairScanScheduler:
                 if self._shutdown_event.is_set():
                     break
 
-                elapsed_seconds = self._clock() - cycle_start_clock
-                remaining_seconds = max(0.0, self._scanner_interval_seconds - elapsed_seconds)
+                # Sleep until the next real UTC interval boundary (e.g.
+                # the next 5-minute candle close) rather than a fixed
+                # offset from cycle-start clock time, so the scanner
+                # cadence stays aligned with candle closes indefinitely
+                # instead of drifting after restarts or slow cycles.
+                remaining_seconds = _seconds_until_next_interval_boundary(
+                    self._wall_clock(), self._scanner_interval_seconds
+                )
 
                 try:
                     await asyncio.wait_for(

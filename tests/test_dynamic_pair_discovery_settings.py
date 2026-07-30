@@ -2,9 +2,31 @@
 Tests for the dynamic pair discovery fields on app.config.settings.Settings.
 """
 
+import os
+
 import pytest
 
 from app.config.settings import Settings
+
+_ENV_VARS_UNDER_TEST = (
+    "DYNAMIC_PAIR_DISCOVERY_ENABLED",
+    "PAIR_DISCOVERY_INTERVAL_SECONDS",
+    "PAIR_DISCOVERY_MINIMUM_OPEN_INTEREST_USDT",
+    "PAIR_DISCOVERY_MINIMUM_TURNOVER_24H_USDT",
+    "PAIR_DISCOVERY_MAXIMUM_PAIRS",
+)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_from_real_env(monkeypatch):
+    # Settings.__init__ reads from the real process environment even
+    # when _env_file=None is passed (app.config.settings calls
+    # load_dotenv() at import time, which already populated os.environ
+    # from the developer's real .env file) -- clear these specific vars
+    # so "default" assertions below reflect the field defaults, not
+    # whatever the local .env happens to contain.
+    for var in _ENV_VARS_UNDER_TEST:
+        monkeypatch.delenv(var, raising=False)
 
 
 class TestDynamicPairDiscoverySettings:

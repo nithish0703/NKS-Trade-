@@ -3,7 +3,7 @@ Tests for app.scanner.strategy_engine.InstitutionalSMCStrategyEngine
 success paths, using fully mocked passing dependencies.
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
 import pytest
@@ -53,6 +53,61 @@ class TestStrategyEngineSuccess:
         # fetch_symbol_market_data should be called exactly once for BTC-USDT
         # (reused for both "symbol" and "BTC" data) rather than twice.
         assert engine._market_data_provider.fetch_symbol_market_data.call_count == 1
+
+    async def test_btc_candles_cached_across_symbols_in_the_same_cycle(self):
+        # ETH-USDT and SOL-USDT are scanned within the same cycle
+        # (same detection_time_utc). BTC candles must be fetched once
+        # and reused, not refetched per non-BTC symbol.
+        engine = _build_engine()
+        await _analyze(engine, symbol="ETH-USDT")
+        await _analyze(engine, symbol="SOL-USDT")
+
+        fetched_symbols = [
+            call.args[0] if call.args else call.kwargs.get("s")
+            for call in engine._market_data_provider.fetch_symbol_market_data.await_args_list
+        ]
+        assert fetched_symbols.count("BTC-USDT") == 1
+        assert fetched_symbols.count("ETH-USDT") == 1
+        assert fetched_symbols.count("SOL-USDT") == 1
+
+    async def test_btc_candles_refetched_for_a_new_cycle(self):
+        # A different detection_time_utc means a new cycle: the BTC
+        # candle cache must not be reused across cycles.
+        engine = _build_engine()
+        await _analyze(engine, symbol="ETH-USDT")
+
+        new_detection_time = UTC_NOW + timedelta(minutes=5)
+        await engine.analyze_symbol(
+            symbol="SOL-USDT",
+            account_balance=10000.0,
+            active_trade_count=0,
+            active_positions=[],
+            active_position_candles={},
+            detection_time_utc=new_detection_time,
+        )
+
+        fetched_symbols = [
+            call.args[0] if call.args else call.kwargs.get("s")
+            for call in engine._market_data_provider.fetch_symbol_market_data.await_args_list
+        ]
+        assert fetched_symbols.count("BTC-USDT") == 2
+
+    async def test_concurrent_symbols_in_the_same_cycle_single_flight_btc_fetch(self):
+        # Simulates MultiPairScanScheduler's asyncio.gather fan-out:
+        # multiple symbols analyzed concurrently within one cycle must
+        # still only trigger a single BTC candle fetch, not one race per
+        # concurrent task.
+        import asyncio
+
+        engine = _build_engine()
+        symbols = ["ETH-USDT", "SOL-USDT", "XRP-USDT", "AVAX-USDT"]
+        await asyncio.gather(*(_analyze(engine, symbol=symbol) for symbol in symbols))
+
+        fetched_symbols = [
+            call.args[0] if call.args else call.kwargs.get("s")
+            for call in engine._market_data_provider.fetch_symbol_market_data.await_args_list
+        ]
+        assert fetched_symbols.count("BTC-USDT") == 1
 
     async def test_all_mandatory_stages_pass(self):
         engine = _build_engine()

@@ -2,6 +2,7 @@
 Core strategy engine orchestrating structure, liquidity, zones, and validators.
 """
 
+import asyncio
 import time
 from datetime import datetime, timezone
 from typing import Mapping, Optional, Sequence
@@ -163,6 +164,18 @@ class InstitutionalSMCStrategyEngine:
         self._risk_management_validator = risk_management_validator
         self._confidence_calculator = confidence_calculator
 
+        # Every symbol scanned within the same scan cycle shares the same
+        # `detection_time_utc` (set once by MultiPairScanScheduler.run_cycle),
+        # so it doubles as a per-cycle cache key: this avoids refetching
+        # identical BTC candles from the exchange once per non-BTC symbol
+        # every cycle. The lock makes concurrent analyze_symbol() calls
+        # (fanned out via asyncio.gather) share a single in-flight BTC
+        # fetch instead of racing duplicate requests. Bounded to the most
+        # recent cycle only -- never accumulates across cycles.
+        self._btc_candle_cache_key: Optional[str] = None
+        self._btc_candle_cache: Optional[dict[str, list[Candle]]] = None
+        self._btc_candle_cache_lock = asyncio.Lock()
+
     async def analyze_symbol(
         self,
         *,
@@ -227,6 +240,29 @@ class InstitutionalSMCStrategyEngine:
             stages=stages,
         )
 
+    async def _fetch_btc_candles_for_cycle(
+        self, detection_time_utc: datetime
+    ) -> dict[str, list[Candle]]:
+        """
+        Fetch BTC candles once per scan cycle and reuse the result for
+        every non-BTC symbol analyzed within that same cycle, instead of
+        refetching identical BTC market data from the exchange once per
+        symbol. `detection_time_utc` is the same value for every symbol
+        scanned within one MultiPairScanScheduler cycle, so it serves as
+        the cache key; a new cycle (a new `detection_time_utc`) always
+        fetches fresh data and replaces the cache -- never reuses a
+        previous cycle's BTC candles.
+        """
+        cache_key = detection_time_utc.isoformat()
+        async with self._btc_candle_cache_lock:
+            if self._btc_candle_cache_key == cache_key and self._btc_candle_cache is not None:
+                return self._btc_candle_cache
+
+            btc_candles = await self._market_data_provider.fetch_symbol_market_data(BTC_SYMBOL)
+            self._btc_candle_cache_key = cache_key
+            self._btc_candle_cache = btc_candles
+            return btc_candles
+
     async def _prepare_market_context(self, symbol: str, detection_time_utc: datetime) -> MarketContext:
         """Fetch candles, persist them, and calculate indicators/structures/HTF bias."""
         symbol_candles = await self._market_data_provider.fetch_symbol_market_data(symbol)
@@ -244,7 +280,7 @@ class InstitutionalSMCStrategyEngine:
         if symbol == BTC_SYMBOL:
             btc_candles = symbol_candles
         else:
-            btc_candles = await self._market_data_provider.fetch_symbol_market_data(BTC_SYMBOL)
+            btc_candles = await self._fetch_btc_candles_for_cycle(detection_time_utc)
             for timeframe in _REQUIRED_TIMEFRAMES:
                 btc_tf_candles = btc_candles.get(timeframe)
                 if not btc_tf_candles:

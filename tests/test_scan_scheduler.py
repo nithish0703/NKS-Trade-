@@ -11,7 +11,7 @@ import pytest
 from app.risk.results import RiskPlan, RiskPlanStatus
 from app.scanner.pipeline_results import PipelineStatus, StrategyPipelineResult
 from app.scanner.scan_results import PairScanResult, PairScanStatus
-from app.scanner.scan_scheduler import MultiPairScanScheduler
+from app.scanner.scan_scheduler import MultiPairScanScheduler, _seconds_until_next_interval_boundary
 from app.scoring.results import ConfidenceClassification, ConfidenceScoreResult
 
 pytestmark = pytest.mark.asyncio
@@ -19,13 +19,14 @@ pytestmark = pytest.mark.asyncio
 UTC_NOW = datetime(2026, 1, 1, 10, 0, tzinfo=timezone.utc)
 
 
-def _valid_pipeline_result(symbol: str) -> StrategyPipelineResult:
+def _valid_pipeline_result(symbol: str, normalized_score: float = 95.8) -> StrategyPipelineResult:
     risk_plan = MagicMock(spec=RiskPlan)
     risk_plan.status = RiskPlanStatus.VALID
+    raw_score = round((normalized_score / 100) * 115, 2)
     confidence = ConfidenceScoreResult(
-        raw_score=115.0,
+        raw_score=raw_score,
         maximum_raw_score=115,
-        normalized_score=95.8,
+        normalized_score=normalized_score,
         classification=ConfidenceClassification.PREMIUM,
         publishable=True,
         mandatory_layers_passed=True,
@@ -45,7 +46,9 @@ def _valid_pipeline_result(symbol: str) -> StrategyPipelineResult:
     )
 
 
-def _pair_result(symbol: str, status: PairScanStatus = PairScanStatus.REJECTED) -> PairScanResult:
+def _pair_result(
+    symbol: str, status: PairScanStatus = PairScanStatus.REJECTED, normalized_score: float = 95.8
+) -> PairScanResult:
     kwargs = dict(
         symbol=symbol,
         status=status,
@@ -59,7 +62,7 @@ def _pair_result(symbol: str, status: PairScanStatus = PairScanStatus.REJECTED) 
         error_type=None,
     )
     if status == PairScanStatus.VALID:
-        kwargs["pipeline_result"] = _valid_pipeline_result(symbol)
+        kwargs["pipeline_result"] = _valid_pipeline_result(symbol, normalized_score)
     elif status == PairScanStatus.REJECTED:
         kwargs["reason"] = "not trending"
     elif status == PairScanStatus.DUPLICATE:
@@ -109,14 +112,18 @@ def _build_scheduler(
     pairs=("BTC-USDT", "ETH-USDT", "SOL-USDT"),
     interval_seconds=15,
     clock=None,
+    wall_clock=None,
 ):
-    return MultiPairScanScheduler(
+    kwargs = dict(
         pair_scanner=pair_scanner or _build_pair_scanner(),
         configured_pair_provider=lambda: list(pairs),
         scanner_interval_seconds=interval_seconds,
         maximum_concurrent_scans=5,
         clock=clock or _FakeClock(),
     )
+    if wall_clock is not None:
+        kwargs["wall_clock"] = wall_clock
+    return MultiPairScanScheduler(**kwargs)
 
 
 async def _run_cycle(scheduler: MultiPairScanScheduler):
@@ -126,6 +133,29 @@ async def _run_cycle(scheduler: MultiPairScanScheduler):
         active_positions=[],
         active_position_candles={},
     )
+
+
+class TestSecondsUntilNextIntervalBoundary:
+    def test_seven_seconds_into_a_fifteen_second_window(self):
+        now = datetime(2026, 1, 1, 10, 0, 7, tzinfo=timezone.utc)
+        assert _seconds_until_next_interval_boundary(now, 15) == pytest.approx(8.0)
+
+    def test_exactly_on_a_boundary_returns_a_full_interval(self):
+        now = datetime(2026, 1, 1, 10, 0, 0, tzinfo=timezone.utc)
+        assert _seconds_until_next_interval_boundary(now, 15) == pytest.approx(15.0)
+
+    def test_five_minute_candle_boundary(self):
+        # 10:02:30 UTC -> next 5-minute boundary is 10:05:00 (150s away).
+        now = datetime(2026, 1, 1, 10, 2, 30, tzinfo=timezone.utc)
+        assert _seconds_until_next_interval_boundary(now, 300) == pytest.approx(150.0)
+
+    def test_never_negative(self):
+        now = datetime(2026, 1, 1, 10, 0, 0, 999999, tzinfo=timezone.utc)
+        assert _seconds_until_next_interval_boundary(now, 300) > 0
+
+    def test_non_positive_interval_returned_unchanged(self):
+        now = datetime(2026, 1, 1, 10, 0, 7, tzinfo=timezone.utc)
+        assert _seconds_until_next_interval_boundary(now, 0) == 0
 
 
 class TestRunCycle:
@@ -197,6 +227,52 @@ class TestRunCycle:
         }
         assert len(detection_times) == 1
 
+    async def test_valid_results_ranked_by_confidence_score_descending(self):
+        pair_scanner = _build_pair_scanner(
+            results_by_symbol={
+                "BTC-USDT": _pair_result("BTC-USDT", status=PairScanStatus.VALID, normalized_score=80.0),
+                "ETH-USDT": _pair_result("ETH-USDT", status=PairScanStatus.VALID, normalized_score=99.0),
+                "SOL-USDT": _pair_result("SOL-USDT", status=PairScanStatus.VALID, normalized_score=90.0),
+            }
+        )
+        scheduler = _build_scheduler(
+            pair_scanner=pair_scanner, pairs=("BTC-USDT", "ETH-USDT", "SOL-USDT")
+        )
+        cycle_result = await _run_cycle(scheduler)
+        ranked_symbols = [r.symbol for r in cycle_result.valid_results]
+        assert ranked_symbols == ["ETH-USDT", "SOL-USDT", "BTC-USDT"]
+
+    async def test_ranking_never_drops_a_qualifying_coin(self):
+        # Every coin that passed (VALID) must still be present in the
+        # ranked output, however many there are -- ranking only reorders,
+        # never truncates.
+        symbols = [f"COIN{i}-USDT" for i in range(37)]
+        pair_scanner = _build_pair_scanner(
+            results_by_symbol={
+                symbol: _pair_result(symbol, status=PairScanStatus.VALID, normalized_score=float(i))
+                for i, symbol in enumerate(symbols)
+            }
+        )
+        scheduler = _build_scheduler(pair_scanner=pair_scanner, pairs=tuple(symbols))
+        cycle_result = await _run_cycle(scheduler)
+        assert len(cycle_result.valid_results) == 37
+        assert {r.symbol for r in cycle_result.valid_results} == set(symbols)
+
+    async def test_ranking_does_not_recalculate_scores(self):
+        pair_scanner = _build_pair_scanner(
+            results_by_symbol={
+                "BTC-USDT": _pair_result("BTC-USDT", status=PairScanStatus.VALID, normalized_score=80.0),
+                "ETH-USDT": _pair_result("ETH-USDT", status=PairScanStatus.VALID, normalized_score=99.0),
+            }
+        )
+        scheduler = _build_scheduler(pair_scanner=pair_scanner, pairs=("BTC-USDT", "ETH-USDT"))
+        cycle_result = await _run_cycle(scheduler)
+        scores = {
+            r.symbol: r.pipeline_result.confidence_result.normalized_score
+            for r in cycle_result.valid_results
+        }
+        assert scores == {"BTC-USDT": 80.0, "ETH-USDT": 99.0}
+
     async def test_inputs_not_mutated(self):
         scheduler = _build_scheduler()
         active_positions = []
@@ -212,17 +288,21 @@ class TestRunCycle:
 
 
 class TestRunForever:
-    async def test_remaining_interval_sleep_calculated_correctly(self):
+    async def test_sleep_aligns_to_next_wall_clock_interval_boundary(self):
+        # Interval is 15s; wall clock reads 10:00:07 UTC (7s into the
+        # current 15-second boundary window starting at 10:00:00), so the
+        # scheduler must sleep exactly 8s to reach the next boundary
+        # (10:00:15) -- not a fixed offset from cycle-start clock time.
         clock = _FakeClock()
+        wall_clock = lambda: datetime(2026, 1, 1, 10, 0, 7, tzinfo=timezone.utc)
 
-        async def _fast_scan_pair(**kwargs):
-            clock.advance(2.0)  # cycle takes 2 seconds of "wall clock"
-            return _pair_result(kwargs["symbol"], status=PairScanStatus.VALID)
-
-        pair_scanner = MagicMock()
-        pair_scanner.scan_pair = AsyncMock(side_effect=_fast_scan_pair)
+        pair_scanner = _build_pair_scanner()
         scheduler = _build_scheduler(
-            pair_scanner=pair_scanner, pairs=("BTC-USDT",), interval_seconds=15, clock=clock
+            pair_scanner=pair_scanner,
+            pairs=("BTC-USDT",),
+            interval_seconds=15,
+            clock=clock,
+            wall_clock=wall_clock,
         )
 
         wait_for_calls = []
@@ -249,19 +329,21 @@ class TestRunForever:
         finally:
             scheduler_module.asyncio.wait_for = original
 
-        assert wait_for_calls[0] == pytest.approx(13.0)
+        assert wait_for_calls[0] == pytest.approx(8.0)
 
-    async def test_long_running_cycle_does_not_use_negative_sleep(self):
+    async def test_exact_boundary_sleeps_a_full_interval_not_zero(self):
+        # Wall clock lands exactly on a boundary (10:00:00): the next
+        # candle-close boundary is a full interval away, not 0.
         clock = _FakeClock()
+        wall_clock = lambda: datetime(2026, 1, 1, 10, 0, 0, tzinfo=timezone.utc)
 
-        async def _slow_scan_pair(**kwargs):
-            clock.advance(20.0)  # longer than the 15-second interval
-            return _pair_result(kwargs["symbol"], status=PairScanStatus.VALID)
-
-        pair_scanner = MagicMock()
-        pair_scanner.scan_pair = AsyncMock(side_effect=_slow_scan_pair)
+        pair_scanner = _build_pair_scanner()
         scheduler = _build_scheduler(
-            pair_scanner=pair_scanner, pairs=("BTC-USDT",), interval_seconds=15, clock=clock
+            pair_scanner=pair_scanner,
+            pairs=("BTC-USDT",),
+            interval_seconds=15,
+            clock=clock,
+            wall_clock=wall_clock,
         )
 
         wait_for_calls = []
@@ -288,7 +370,54 @@ class TestRunForever:
         finally:
             scheduler_module.asyncio.wait_for = original
 
-        assert wait_for_calls[0] == 0.0
+        assert wait_for_calls[0] == pytest.approx(15.0)
+
+    async def test_sleep_never_negative_even_after_a_long_cycle(self):
+        # Regardless of how long the cycle itself took, the computed
+        # sleep is always derived from the current wall-clock reading at
+        # the moment sleep is computed, so it can never go negative.
+        clock = _FakeClock()
+        wall_clock = lambda: datetime(2026, 1, 1, 10, 0, 13, tzinfo=timezone.utc)
+
+        async def _slow_scan_pair(**kwargs):
+            clock.advance(20.0)  # longer than the 15-second interval
+            return _pair_result(kwargs["symbol"], status=PairScanStatus.VALID)
+
+        pair_scanner = MagicMock()
+        pair_scanner.scan_pair = AsyncMock(side_effect=_slow_scan_pair)
+        scheduler = _build_scheduler(
+            pair_scanner=pair_scanner,
+            pairs=("BTC-USDT",),
+            interval_seconds=15,
+            clock=clock,
+            wall_clock=wall_clock,
+        )
+
+        wait_for_calls = []
+
+        async def _get_state():
+            state = MagicMock()
+            state.active_trade_count = 0
+            state.active_positions = []
+            state.active_position_candles = {}
+            return state
+
+        import app.scanner.scan_scheduler as scheduler_module
+
+        original = scheduler_module.asyncio.wait_for
+
+        async def _tracking_wait_for(coro, timeout):
+            wait_for_calls.append(timeout)
+            scheduler.request_shutdown()
+            return await original(coro, timeout=0.001)
+
+        scheduler_module.asyncio.wait_for = _tracking_wait_for
+        try:
+            await scheduler.run_forever(account_balance=10000.0, active_state_provider=_get_state)
+        finally:
+            scheduler_module.asyncio.wait_for = original
+
+        assert wait_for_calls[0] >= 0.0
 
     async def test_no_overlapping_cycles(self):
         clock = _FakeClock()
