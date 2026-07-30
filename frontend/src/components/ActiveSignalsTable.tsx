@@ -1,6 +1,7 @@
 import type { ActiveSignal } from "../types/dashboard";
 import { DirectionBadge } from "./DirectionBadge";
-import { ProgressBar } from "./ProgressBar";
+import { CircularProgress } from "./CircularProgress";
+import { SignalField } from "./SignalField";
 import { EmptyState } from "./EmptyState";
 import { formatPercentageOrDash, formatPriceOrDash } from "../utils/format";
 
@@ -14,51 +15,48 @@ export function ActiveSignalsTable({ signals }: ActiveSignalsTableProps) {
   }
 
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-left text-sm">
-        <thead>
-          <tr className="text-xs uppercase tracking-wide text-slate-400">
-            <th className="pb-2 font-medium">Coin</th>
-            <th className="pb-2 font-medium">Status</th>
-            <th className="pb-2 font-medium">Price</th>
-            <th className="pb-2 font-medium">Entry</th>
-            <th className="pb-2 font-medium">TP</th>
-            <th className="pb-2 font-medium">SL</th>
-            <th className="pb-2 font-medium">Dist to TP</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-slate-100">
-          {signals.map((signal) => (
-            <tr key={signal.trade_id}>
-              <td className="py-2.5">
-                <div className="flex items-center gap-2 font-medium text-slate-900">
-                  {signal.coin}
-                  <DirectionBadge direction={signal.direction} />
-                </div>
-              </td>
-              <td className="py-2.5">
-                <span className="inline-flex items-center rounded-md bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700">
-                  ACTIVE
-                </span>
-              </td>
-              <td className="py-2.5 text-slate-700">{formatPriceOrDash(signal.current_price)}</td>
-              <td className="py-2.5 text-slate-600">{formatPriceOrDash(signal.entry_price)}</td>
-              <td className="py-2.5 font-medium text-emerald-600">
-                {formatPriceOrDash(signal.take_profit)}
-              </td>
-              <td className="py-2.5 font-medium text-red-600">{formatPriceOrDash(signal.stop_loss)}</td>
-              <td className="py-2.5">
-                <div className="flex items-center gap-2">
-                  <ProgressBar percentage={signal.distance_to_take_profit_percentage} />
-                  <span className="text-emerald-600">
-                    {formatPercentageOrDash(signal.distance_to_take_profit_percentage)}
+    <div className="space-y-3">
+      {signals.map((signal) => {
+        const distance = signal.distance_to_take_profit_percentage;
+        return (
+          <div
+            key={signal.trade_id}
+            className="rounded-lg border border-slate-100 p-3"
+          >
+            <div className="mb-2 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="font-semibold text-slate-900">{signal.coin}</span>
+                <DirectionBadge direction={signal.direction} />
+              </div>
+              <span className="inline-flex items-center rounded-md bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700">
+                ACTIVE
+              </span>
+            </div>
+
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex flex-wrap gap-4">
+                <SignalField label="Price" value={formatPriceOrDash(signal.current_price)} />
+                <SignalField label="Entry" value={formatPriceOrDash(signal.entry_price)} />
+                <SignalField label="TP" value={formatPriceOrDash(signal.take_profit)} valueClassName="text-emerald-600" />
+                <SignalField label="SL" value={formatPriceOrDash(signal.stop_loss)} valueClassName="text-red-600" />
+              </div>
+
+              <div className="flex items-center gap-2">
+                <CircularProgress
+                  percentage={distance}
+                  colorClassName={distance !== null && distance > 0 ? "text-emerald-500" : "text-slate-300"}
+                />
+                <div className="flex flex-col">
+                  <span className="text-[11px] uppercase tracking-wide text-slate-400">Dist to TP</span>
+                  <span className="text-sm font-semibold text-emerald-600">
+                    {formatPercentageOrDash(distance)}
                   </span>
                 </div>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+              </div>
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }

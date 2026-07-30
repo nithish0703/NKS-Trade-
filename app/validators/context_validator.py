@@ -1,7 +1,6 @@
 """
-Orchestrates market regime, momentum, volatility, session, BTC
-alignment, fake-breakout, and candle-quality validation into a single
-pre-risk validation pipeline.
+Orchestrates market regime, session, BTC alignment, fake-breakout, and
+candle-quality validation into a single pre-risk validation pipeline.
 """
 
 from typing import Any, Optional, Sequence
@@ -20,16 +19,13 @@ from app.validators.btc_alignment import BTCAlignmentValidator
 from app.validators.candle_quality import CandleQualityValidator
 from app.validators.fake_breakout_filter import FakeBreakoutFilter
 from app.validators.market_regime import MarketRegimeValidator
-from app.validators.momentum_filter import MomentumFilter
 from app.validators.session_filter import SessionFilter
-from app.validators.volatility_filter import VolatilityFilter
 
 
 class PreRiskValidationResult(BaseModel):
     """
     Aggregated result of the pre-risk validation pipeline: market
-    regime, momentum, volatility, session, BTC alignment, fake breakout,
-    and candle quality.
+    regime, session, BTC alignment, fake breakout, and candle quality.
 
     This model does not calculate risk, stop loss, take profit,
     confidence score, or signal fields.
@@ -38,8 +34,6 @@ class PreRiskValidationResult(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     market_regime: Optional[ValidationResult] = None
-    momentum: Optional[ValidationResult] = None
-    volatility: Optional[ValidationResult] = None
     session: Optional[ValidationResult] = None
     btc_alignment: Optional[ValidationResult] = None
     fake_breakout: Optional[ValidationResult] = None
@@ -53,27 +47,22 @@ class PreRiskValidationResult(BaseModel):
 
 class PreRiskValidator:
     """
-    Runs the ordered pre-risk validation pipeline: Market Regime,
-    Momentum, Volatility, Session, BTC Alignment, Fake Breakout, and
-    Candle Quality.
+    Runs the ordered pre-risk validation pipeline: Market Regime
+    (including its folded candle-range/compression check), Session,
+    BTC Alignment, Fake Breakout, and Candle Quality.
 
-    Every layer except Momentum can stop the pipeline on failure.
-    Momentum always records its result but never halts execution.
+    Every layer can stop the pipeline on failure.
     """
 
     def __init__(
         self,
         market_regime_validator: MarketRegimeValidator,
-        momentum_filter: MomentumFilter,
-        volatility_filter: VolatilityFilter,
         session_filter: SessionFilter,
         btc_alignment_validator: BTCAlignmentValidator,
         fake_breakout_filter: FakeBreakoutFilter,
         candle_quality_validator: CandleQualityValidator,
     ) -> None:
         self._market_regime_validator = market_regime_validator
-        self._momentum_filter = momentum_filter
-        self._volatility_filter = volatility_filter
         self._session_filter = session_filter
         self._btc_alignment_validator = btc_alignment_validator
         self._fake_breakout_filter = fake_breakout_filter
@@ -94,36 +83,22 @@ class PreRiskValidator:
         """
         Run the ordered pre-risk validation pipeline.
 
-        Market Regime, Volatility, Session, BTC Alignment, Fake
-        Breakout, and Candle Quality each stop the pipeline immediately
-        on failure; later mandatory validators are never executed after
-        an earlier mandatory failure. Momentum always runs (when
-        reached) and is always recorded, but never stops the pipeline.
+        Market Regime, Session, BTC Alignment, Fake Breakout, and
+        Candle Quality each stop the pipeline immediately on failure;
+        later validators are never executed after an earlier failure.
         Does not calculate risk, score, or generate signals.
         """
         validation_results: list[ValidationResult] = []
 
-        market_regime_result = self._market_regime_validator.validate(entry_snapshot)
+        market_regime_result = self._market_regime_validator.validate(
+            entry_snapshot, entry_timeframe_candles
+        )
         validation_results.append(market_regime_result)
         if not market_regime_result.passed:
             return self._build_result(
                 market_regime=market_regime_result,
                 validation_results=validation_results,
                 failed_layer=market_regime_result.layer_name,
-            )
-
-        momentum_result = self._momentum_filter.validate(entry_snapshot, expected_direction)
-        validation_results.append(momentum_result)
-
-        volatility_result = self._volatility_filter.validate(entry_timeframe_candles, entry_snapshot)
-        validation_results.append(volatility_result)
-        if not volatility_result.passed:
-            return self._build_result(
-                market_regime=market_regime_result,
-                momentum=momentum_result,
-                volatility=volatility_result,
-                validation_results=validation_results,
-                failed_layer=volatility_result.layer_name,
             )
 
         btc_trend_strong = btc_structure.trend_direction.value in ("BULLISH", "BEARISH")
@@ -138,8 +113,6 @@ class PreRiskValidator:
         if not session_result.passed:
             return self._build_result(
                 market_regime=market_regime_result,
-                momentum=momentum_result,
-                volatility=volatility_result,
                 session=session_result,
                 validation_results=validation_results,
                 failed_layer=session_result.layer_name,
@@ -152,8 +125,6 @@ class PreRiskValidator:
         if not btc_alignment_result.passed:
             return self._build_result(
                 market_regime=market_regime_result,
-                momentum=momentum_result,
-                volatility=volatility_result,
                 session=session_result,
                 btc_alignment=btc_alignment_result,
                 validation_results=validation_results,
@@ -167,8 +138,6 @@ class PreRiskValidator:
         if not fake_breakout_result.passed:
             return self._build_result(
                 market_regime=market_regime_result,
-                momentum=momentum_result,
-                volatility=volatility_result,
                 session=session_result,
                 btc_alignment=btc_alignment_result,
                 fake_breakout=fake_breakout_result,
@@ -183,8 +152,6 @@ class PreRiskValidator:
         if not candle_quality_result.passed:
             return self._build_result(
                 market_regime=market_regime_result,
-                momentum=momentum_result,
-                volatility=volatility_result,
                 session=session_result,
                 btc_alignment=btc_alignment_result,
                 fake_breakout=fake_breakout_result,
@@ -195,8 +162,6 @@ class PreRiskValidator:
 
         return self._build_result(
             market_regime=market_regime_result,
-            momentum=momentum_result,
-            volatility=volatility_result,
             session=session_result,
             btc_alignment=btc_alignment_result,
             fake_breakout=fake_breakout_result,
@@ -210,8 +175,6 @@ class PreRiskValidator:
         validation_results: list[ValidationResult],
         failed_layer: Optional[str],
         market_regime: Optional[ValidationResult] = None,
-        momentum: Optional[ValidationResult] = None,
-        volatility: Optional[ValidationResult] = None,
         session: Optional[ValidationResult] = None,
         btc_alignment: Optional[ValidationResult] = None,
         fake_breakout: Optional[ValidationResult] = None,
@@ -225,8 +188,6 @@ class PreRiskValidator:
         )
         return PreRiskValidationResult(
             market_regime=market_regime,
-            momentum=momentum,
-            volatility=volatility,
             session=session,
             btc_alignment=btc_alignment,
             fake_breakout=fake_breakout,

@@ -39,9 +39,7 @@ export function SummaryCard({
           </span>
           <span className="text-slate-400">{changeLabel}</span>
         </div>
-      ) : (
-        <div className="mt-0.5 text-xs text-slate-300">No data</div>
-      )}
+      ) : null}
     </div>
   );
 }

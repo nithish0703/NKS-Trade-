@@ -138,16 +138,6 @@ def _build_engine(**overrides) -> InstitutionalSMCStrategyEngine:
         return_value=ValidationResult.success(layer_name="entry_zone")
     )
 
-    momentum_filter = MagicMock()
-    momentum_filter.validate = MagicMock(
-        return_value=ValidationResult.success(layer_name="MOMENTUM_FILTER")
-    )
-
-    volatility_filter = MagicMock()
-    volatility_filter.validate = MagicMock(
-        return_value=ValidationResult.success(layer_name="VOLATILITY_FILTER")
-    )
-
     session_filter = MagicMock()
     session_filter.validate = MagicMock(
         return_value=ValidationResult.success(layer_name="SESSION_FILTER")
@@ -168,9 +158,6 @@ def _build_engine(**overrides) -> InstitutionalSMCStrategyEngine:
         return_value=ValidationResult.success(layer_name="CANDLE_QUALITY")
     )
 
-    atr_validator = MagicMock()
-    atr_validator.validate = MagicMock(return_value=ValidationResult.success(layer_name="ATR"))
-
     risk_management_calculator = MagicMock()
     risk_plan = MagicMock(spec=RiskPlan)
     risk_plan.status = RiskPlanStatus.VALID
@@ -185,8 +172,8 @@ def _build_engine(**overrides) -> InstitutionalSMCStrategyEngine:
     confidence_calculator = MagicMock()
     confidence_calculator.calculate = MagicMock(
         return_value=ConfidenceScoreResult(
-            raw_score=120.0,
-            maximum_raw_score=120,
+            raw_score=115.0,
+            maximum_raw_score=115,
             normalized_score=100.0,
             classification=ConfidenceClassification.PREMIUM,
             publishable=True,
@@ -212,13 +199,10 @@ def _build_engine(**overrides) -> InstitutionalSMCStrategyEngine:
         structure_shift_validator=structure_shift_validator,
         volume_confirmation_validator=volume_confirmation_validator,
         entry_zone_validator=entry_zone_validator,
-        momentum_filter=momentum_filter,
-        volatility_filter=volatility_filter,
         session_filter=session_filter,
         btc_alignment_validator=btc_alignment_validator,
         fake_breakout_filter=fake_breakout_filter,
         candle_quality_validator=candle_quality_validator,
-        atr_validator=atr_validator,
         risk_management_calculator=risk_management_calculator,
         risk_management_validator=risk_management_validator,
         confidence_calculator=confidence_calculator,
@@ -311,7 +295,7 @@ class TestStrategyEngineRejections:
         assert result.failed_layer == "ENTRY_ZONE"
 
     @pytest.mark.asyncio
-    async def test_premium_discount_failure_stops(self):
+    async def test_premium_discount_failure_does_not_stop(self):
         zone_setup_confirmation_calculator = MagicMock()
         setup_result = MagicMock()
         setup_result.dealing_range = MagicMock()
@@ -323,11 +307,18 @@ class TestStrategyEngineRejections:
         zone_setup_confirmation_calculator.calculate = MagicMock(return_value=setup_result)
         engine = _build_engine(zone_setup_confirmation_calculator=zone_setup_confirmation_calculator)
         result = await _analyze(engine)
-        assert result.status == PipelineStatus.REJECTED
-        assert result.failed_layer == "PREMIUM_DISCOUNT"
+        # PREMIUM_DISCOUNT is a soft-scoring layer: failure never stops the
+        # pipeline. It continues on to RETEST_CONFIRMATION, VOLUME_CONFIRMATION
+        # phase B, and onward -- reaching VALID here since every other
+        # dependency in _build_engine is a default pass.
+        premium_discount_stage = next(s for s in result.stages if s.layer_name == "PREMIUM_DISCOUNT")
+        assert premium_discount_stage.executed is True
+        assert premium_discount_stage.passed is False
+        assert premium_discount_stage.mandatory is False
+        assert result.status == PipelineStatus.VALID
 
     @pytest.mark.asyncio
-    async def test_retest_failure_stops(self):
+    async def test_retest_failure_does_not_stop(self):
         zone_setup_confirmation_calculator = MagicMock()
         setup_result = MagicMock()
         setup_result.dealing_range = MagicMock()
@@ -339,65 +330,58 @@ class TestStrategyEngineRejections:
         zone_setup_confirmation_calculator.calculate = MagicMock(return_value=setup_result)
         engine = _build_engine(zone_setup_confirmation_calculator=zone_setup_confirmation_calculator)
         result = await _analyze(engine)
-        assert result.status == PipelineStatus.REJECTED
-        assert result.failed_layer == "RETEST_CONFIRMATION"
-
-    @pytest.mark.asyncio
-    async def test_momentum_conflict_does_not_stop(self):
-        momentum_filter = MagicMock()
-        momentum_filter.validate = MagicMock(
-            return_value=ValidationResult.success(layer_name="MOMENTUM_FILTER", reason="MOMENTUM_CONFLICT")
-        )
-        engine = _build_engine(momentum_filter=momentum_filter)
-        result = await _analyze(engine)
-        # Pipeline should continue past momentum regardless of alignment.
-        momentum_stage = next(s for s in result.stages if s.layer_name == "MOMENTUM_FILTER")
-        assert momentum_stage.executed is True
+        # RETEST_CONFIRMATION is a soft-scoring layer: failure never stops
+        # the pipeline. VOLUME_CONFIRMATION phase B is finalized with
+        # retest_result=None (never fabricated) and the mocked
+        # volume_confirmation_validator still passes by default.
+        retest_stage = next(s for s in result.stages if s.layer_name == "RETEST_CONFIRMATION")
+        assert retest_stage.executed is True
+        assert retest_stage.passed is False
+        assert retest_stage.mandatory is False
+        assert result.retest_result is None
         assert result.status == PipelineStatus.VALID
 
     @pytest.mark.asyncio
-    async def test_volatility_failure_stops(self):
-        volatility_filter = MagicMock()
-        volatility_filter.validate = MagicMock(
-            return_value=ValidationResult.failure(layer_name="VOLATILITY_FILTER", reason="compressed", rejection_code="X")
-        )
-        engine = _build_engine(volatility_filter=volatility_filter)
-        result = await _analyze(engine)
-        assert result.status == PipelineStatus.REJECTED
-        assert result.failed_layer == "VOLATILITY_FILTER"
-
-    @pytest.mark.asyncio
-    async def test_session_failure_stops(self):
+    async def test_session_failure_does_not_stop(self):
         session_filter = MagicMock()
         session_filter.validate = MagicMock(
             return_value=ValidationResult.failure(layer_name="SESSION_FILTER", reason="unsupported session", rejection_code="X")
         )
         engine = _build_engine(session_filter=session_filter)
         result = await _analyze(engine)
-        assert result.status == PipelineStatus.REJECTED
-        assert result.failed_layer == "SESSION_FILTER"
+        session_stage = next(s for s in result.stages if s.layer_name == "SESSION_FILTER")
+        assert session_stage.executed is True
+        assert session_stage.passed is False
+        assert session_stage.mandatory is False
+        assert result.status == PipelineStatus.VALID
 
     @pytest.mark.asyncio
-    async def test_btc_conflict_stops(self):
+    async def test_btc_conflict_does_not_stop(self):
         btc_alignment_validator = MagicMock()
         btc_alignment_validator.validate = MagicMock(
             return_value=ValidationResult.failure(layer_name="BTC_ALIGNMENT", reason="conflict", rejection_code="X")
         )
         engine = _build_engine(btc_alignment_validator=btc_alignment_validator)
         result = await _analyze(engine)
-        assert result.status == PipelineStatus.REJECTED
-        assert result.failed_layer == "BTC_ALIGNMENT"
+        btc_stage = next(s for s in result.stages if s.layer_name == "BTC_ALIGNMENT")
+        assert btc_stage.executed is True
+        assert btc_stage.passed is False
+        assert btc_stage.mandatory is False
+        assert result.status == PipelineStatus.VALID
 
     @pytest.mark.asyncio
-    async def test_fake_breakout_stops(self):
+    async def test_fake_breakout_does_not_stop(self):
         fake_breakout_filter = MagicMock()
         fake_breakout_filter.validate = MagicMock(
             return_value=ValidationResult.failure(layer_name="FAKE_BREAKOUT_FILTER", reason="fake breakout", rejection_code="X")
         )
         engine = _build_engine(fake_breakout_filter=fake_breakout_filter)
         result = await _analyze(engine)
-        assert result.status == PipelineStatus.REJECTED
-        assert result.failed_layer == "FAKE_BREAKOUT_FILTER"
+        fake_breakout_stage = next(s for s in result.stages if s.layer_name == "FAKE_BREAKOUT_FILTER")
+        assert fake_breakout_stage.executed is True
+        assert fake_breakout_stage.passed is False
+        assert fake_breakout_stage.mandatory is False
+        assert result.status == PipelineStatus.VALID
 
     @pytest.mark.asyncio
     async def test_candle_quality_failure_stops(self):
@@ -409,17 +393,6 @@ class TestStrategyEngineRejections:
         result = await _analyze(engine)
         assert result.status == PipelineStatus.REJECTED
         assert result.failed_layer == "CANDLE_QUALITY"
-
-    @pytest.mark.asyncio
-    async def test_atr_failure_stops(self):
-        atr_validator = MagicMock()
-        atr_validator.validate = MagicMock(
-            return_value=ValidationResult.failure(layer_name="ATR", reason="invalid atr", rejection_code="X")
-        )
-        engine = _build_engine(atr_validator=atr_validator)
-        result = await _analyze(engine)
-        assert result.status == PipelineStatus.REJECTED
-        assert result.failed_layer == "ATR"
 
     @pytest.mark.asyncio
     async def test_risk_management_failure_stops(self):
@@ -438,7 +411,7 @@ class TestStrategyEngineRejections:
         confidence_calculator.calculate = MagicMock(
             return_value=ConfidenceScoreResult(
                 raw_score=85.0,
-                maximum_raw_score=120,
+                maximum_raw_score=115,
                 normalized_score=70.83,
                 classification=ConfidenceClassification.MEDIUM,
                 publishable=False,
@@ -476,5 +449,5 @@ class TestStrategyEngineRejections:
         engine = _build_engine(market_regime_validator=market_regime_validator)
         result = await _analyze(engine)
         non_executed = [s for s in result.stages if not s.executed]
-        assert len(non_executed) == 16
+        assert len(non_executed) == 13
         assert all(not s.passed for s in non_executed)

@@ -38,9 +38,20 @@ describe("PremiumSignalsTable", () => {
     expect(screen.getByText("No Premium signals yet")).toBeInTheDocument();
   });
 
-  it("never renders a signal_type other than PREMIUM as the tier label", () => {
+  it("never renders a MEDIUM tier label", () => {
     render(<PremiumSignalsTable signals={[signal()]} onView={vi.fn()} />);
-    expect(screen.getByText("PREMIUM")).toBeInTheDocument();
     expect(screen.queryByText("MEDIUM")).not.toBeInTheDocument();
+    expect(screen.queryByText("PREMIUM")).not.toBeInTheDocument();
+  });
+
+  it("shows the signal detection time in IST", () => {
+    render(
+      <PremiumSignalsTable
+        signals={[signal({ detection_time_utc: "2026-01-01T10:00:00Z" })]}
+        onView={vi.fn()}
+      />,
+    );
+    expect(screen.getByText(/Signal given:/)).toBeInTheDocument();
+    expect(screen.getByText(/IST/)).toBeInTheDocument();
   });
 });

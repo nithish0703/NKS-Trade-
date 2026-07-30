@@ -6,7 +6,7 @@ strictly fail-fast: it stops at the first mandatory layer that fails and
 never computes downstream layers. That is correct and unchanged
 behaviour for actual trading decisions.
 
-This module independently re-evaluates the same 12 confidence-scoring
+This module independently re-evaluates the same 11 confidence-scoring
 layers using the exact same pure validators/calculators the production
 engine uses, but WITHOUT stopping on failure, purely so the dashboard
 can display a "how far would this setup have gotten" preview even when
@@ -39,7 +39,6 @@ from app.market_structure.displacement import StructureShiftCalculationError
 from app.market_structure.results import HigherTimeframeBias
 from app.market_structure.shift_calculator import StructureShiftCalculator
 from app.models.market_context import MarketContext
-from app.validators.atr import ATRValidator
 from app.validators.btc_alignment import BTCAlignmentValidator
 from app.validators.entry_zone import EntryZoneValidator
 from app.validators.fake_breakout_filter import FakeBreakoutFilter
@@ -56,12 +55,23 @@ from app.zones.dealing_range import DealingRangeCalculator
 from app.zones.order_block import ZoneCalculationError
 from app.zones.retest_confirmation import RetestConfirmationDetector
 
-# The 12 confidence-scoring layers, in the same order the production
+# The 11 confidence-scoring layers, in the same order the production
 # engine evaluates them. Identical to _STAGE_DEFINITIONS's scoring
-# subset in strategy_engine.py (MOMENTUM_FILTER, VOLATILITY_FILTER,
-# CANDLE_QUALITY, RISK_MANAGEMENT, CONFIDENCE_SCORING are intentionally
-# excluded: they either never carry scoring weight or require the
-# account/risk context this dashboard-only preview never touches).
+# subset in strategy_engine.py (CANDLE_QUALITY, RISK_MANAGEMENT,
+# CONFIDENCE_SCORING are intentionally excluded: they either never
+# carry scoring weight or require the account/risk context this
+# dashboard-only preview never touches).
+#
+# The first 6 (MARKET_REGIME through ENTRY_ZONE) are hard-mandatory
+# pipeline gates in production: a real signal cannot exist unless every
+# one of them passed. The remaining 5 (PREMIUM_DISCOUNT through
+# FAKE_BREAKOUT_FILTER) are soft-scoring layers: production never stops
+# the pipeline for their failure, it only zeroes their score
+# contribution. This preview mirrors that distinction implicitly by
+# always continuing past a failure at any of these layers, exactly
+# like production does for the soft ones -- for the hard ones, a
+# failure here means production would have rejected already, but this
+# preview still shows how far the setup independently progressed.
 PREVIEW_LAYER_ORDER: tuple[str, ...] = (
     "MARKET_REGIME",
     "HTF_BIAS",
@@ -71,7 +81,6 @@ PREVIEW_LAYER_ORDER: tuple[str, ...] = (
     "ENTRY_ZONE",
     "PREMIUM_DISCOUNT",
     "RETEST_CONFIRMATION",
-    "ATR",
     "SESSION_FILTER",
     "BTC_ALIGNMENT",
     "FAKE_BREAKOUT_FILTER",
@@ -121,7 +130,7 @@ class PreviewAnalysisResult(BaseModel):
 
 class PreviewAnalyzer:
     """
-    Independently re-evaluates the 12 confidence-scoring layers from an
+    Independently re-evaluates the 11 confidence-scoring layers from an
     already-built MarketContext, continuing past failures instead of
     stopping at the first one.
 
@@ -147,7 +156,6 @@ class PreviewAnalyzer:
         entry_zone_validator: EntryZoneValidator,
         premium_discount_validator: PremiumDiscountValidator,
         retest_confirmation_validator: RetestConfirmationValidator,
-        atr_validator: ATRValidator,
         session_filter: SessionFilter,
         btc_alignment_validator: BTCAlignmentValidator,
         fake_breakout_filter: FakeBreakoutFilter,
@@ -167,7 +175,6 @@ class PreviewAnalyzer:
         self._entry_zone_validator = entry_zone_validator
         self._premium_discount_validator = premium_discount_validator
         self._retest_confirmation_validator = retest_confirmation_validator
-        self._atr_validator = atr_validator
         self._session_filter = session_filter
         self._btc_alignment_validator = btc_alignment_validator
         self._fake_breakout_filter = fake_breakout_filter
@@ -176,7 +183,7 @@ class PreviewAnalyzer:
 
     def analyze(self, context: MarketContext) -> PreviewAnalysisResult:
         """
-        Independently re-evaluate as many of the 12 scoring layers as
+        Independently re-evaluate as many of the 11 scoring layers as
         available input data allows, never stopping at the first
         failure. Reuses `context` as-is; performs no network or
         database I/O and mutates nothing.
@@ -207,7 +214,7 @@ class PreviewAnalyzer:
                 "MARKET_REGIME", "Entry-timeframe indicators are unavailable."
             )
         else:
-            result = self._market_regime_validator.validate(entry_snapshot)
+            result = self._market_regime_validator.validate(entry_snapshot, entry_candles)
             layers["MARKET_REGIME"] = self._from_validation(result)
 
         # HTF_BIAS
@@ -363,13 +370,6 @@ class PreviewAnalyzer:
         if displacement is not None:
             result = self._volume_confirmation_validator.validate(displacement, retest_result)
             layers["VOLUME_CONFIRMATION"] = self._from_validation(result)
-
-        # ATR
-        if entry_snapshot is None:
-            layers["ATR"] = self._unavailable("ATR", "Entry-timeframe indicators are unavailable.")
-        else:
-            result = self._atr_validator.validate(entry_snapshot)
-            layers["ATR"] = self._from_validation(result)
 
         # SESSION_FILTER (degrades to the last available entry candle,
         # exactly like the production engine's fallback when no retest

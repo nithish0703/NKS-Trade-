@@ -16,11 +16,12 @@ describe("SummaryCard", () => {
     expect(screen.getByText("324")).toBeInTheDocument();
   });
 
-  it("shows 'No data' when no change percentage is provided", () => {
+  it("renders no change-percentage row when none is provided", () => {
     render(
       <SummaryCard label="Win Rate" value="—" icon={<span />} iconClassName="bg-blue-50 text-blue-600" />,
     );
-    expect(screen.getByText("No data")).toBeInTheDocument();
+    expect(screen.queryByText("No data")).not.toBeInTheDocument();
+    expect(screen.queryByText(/vs last 30d/)).not.toBeInTheDocument();
   });
 
   it("renders a positive change percentage", () => {

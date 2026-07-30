@@ -3,9 +3,10 @@ Validates the current market regime (trending/ranging/volatile).
 """
 
 import math
-from typing import Optional
+from typing import Optional, Sequence
 
 from app.indicators.results import IndicatorSnapshot
+from app.models.candle import Candle
 from app.models.validation_result import ValidationResult
 
 from app.validators.results import MarketRegimeResult, MarketRegimeStatus
@@ -21,6 +22,11 @@ class MarketRegimeValidator:
     """
     Classifies the current market regime from an IndicatorSnapshot and
     validates that it is strictly TRENDING for a valid SMC setup.
+
+    Also validates that the current candle's range is not tiny relative
+    to the average range of the preceding candles (the one check
+    formerly performed by a separate VOLATILITY_FILTER stage that was
+    not already covered by the ATR/ADX/EMA checks below).
     """
 
     def __init__(
@@ -29,11 +35,30 @@ class MarketRegimeValidator:
         adx_rejection_maximum: float,
         ema_flat_threshold: float,
         minimum_atr_expansion_ratio: float,
+        compression_lookback: int = 10,
+        minimum_candle_range_ratio: float = 0.50,
     ) -> None:
         self._adx_trending_minimum = adx_trending_minimum
         self._adx_rejection_maximum = adx_rejection_maximum
         self._ema_flat_threshold = ema_flat_threshold
         self._minimum_atr_expansion_ratio = minimum_atr_expansion_ratio
+        self._compression_lookback = compression_lookback
+        self._minimum_candle_range_ratio = minimum_candle_range_ratio
+
+    @staticmethod
+    def _compression_ratio(
+        candles: Sequence[Candle], lookback: int
+    ) -> Optional[float]:
+        if not candles:
+            return None
+        current_range = candles[-1].candle_range
+        lookback_candles = candles[-1 - lookback : -1]
+        if not lookback_candles:
+            return None
+        average_range = sum(c.candle_range for c in lookback_candles) / len(lookback_candles)
+        if average_range <= 0:
+            return None
+        return current_range / average_range
 
     def evaluate(self, snapshot: IndicatorSnapshot) -> MarketRegimeResult:
         """
@@ -132,9 +157,17 @@ class MarketRegimeValidator:
             reason="ADX is in the unconfirmed zone between rejection and trending thresholds.",
         )
 
-    def validate(self, snapshot: IndicatorSnapshot) -> ValidationResult:
+    def validate(
+        self,
+        snapshot: IndicatorSnapshot,
+        candles: Optional[Sequence[Candle]] = None,
+    ) -> ValidationResult:
         """
         Validate that the market regime is strictly TRENDING.
+
+        When `candles` is supplied, also validates that the current
+        candle's range is not tiny relative to the average range of the
+        preceding `compression_lookback` candles.
 
         Failure codes:
             - MARKET_REGIME_DATA_MISSING
@@ -144,6 +177,7 @@ class MarketRegimeValidator:
             - EMA200_FLAT
             - ADX_BELOW_TRENDING_THRESHOLD
             - MARKET_NOT_TRENDING
+            - TINY_CANDLE
         """
         result = self.evaluate(snapshot)
 
@@ -205,6 +239,19 @@ class MarketRegimeValidator:
                 rejection_code="MARKET_NOT_TRENDING",
                 score=0.0,
             )
+
+        if candles is not None:
+            compression_ratio = self._compression_ratio(candles, self._compression_lookback)
+            if (
+                compression_ratio is not None
+                and compression_ratio < self._minimum_candle_range_ratio
+            ):
+                return ValidationResult.failure(
+                    layer_name=_LAYER_NAME,
+                    reason="Current candle range is tiny relative to recent average.",
+                    rejection_code="TINY_CANDLE",
+                    score=0.0,
+                )
 
         return ValidationResult.success(
             layer_name=_LAYER_NAME,

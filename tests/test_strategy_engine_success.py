@@ -59,16 +59,21 @@ class TestStrategyEngineSuccess:
         result = await _analyze(engine)
         mandatory_executed = [s for s in result.stages if s.mandatory and s.executed]
         assert all(s.passed for s in mandatory_executed)
-        assert len(mandatory_executed) == 16  # all but MOMENTUM_FILTER
+        # 9 hard-mandatory stages: MARKET_REGIME, HTF_BIAS, LIQUIDITY_SWEEP,
+        # STRUCTURE_SHIFT, VOLUME_CONFIRMATION, ENTRY_ZONE, CANDLE_QUALITY,
+        # RISK_MANAGEMENT, CONFIDENCE_SCORING. The other 5 (PREMIUM_DISCOUNT,
+        # RETEST_CONFIRMATION, SESSION_FILTER, BTC_ALIGNMENT,
+        # FAKE_BREAKOUT_FILTER) are soft-scoring, non-mandatory.
+        assert len(mandatory_executed) == 9
 
-    async def test_momentum_neutral_still_allows_success(self):
+    async def test_soft_layer_failure_still_allows_success(self):
         from app.models.validation_result import ValidationResult
 
-        momentum_filter = MagicMock()
-        momentum_filter.validate = MagicMock(
-            return_value=ValidationResult.success(layer_name="MOMENTUM_FILTER", reason="MOMENTUM_NEUTRAL")
+        session_filter = MagicMock()
+        session_filter.validate = MagicMock(
+            return_value=ValidationResult.failure(layer_name="SESSION_FILTER", reason="off-hours")
         )
-        engine = _build_engine(momentum_filter=momentum_filter)
+        engine = _build_engine(session_filter=session_filter)
         result = await _analyze(engine)
         assert result.status == PipelineStatus.VALID
 
@@ -107,7 +112,7 @@ class TestStrategyEngineSuccess:
         confidence_calculator.calculate = MagicMock(
             return_value=ConfidenceScoreResult(
                 raw_score=115.0,
-                maximum_raw_score=120,
+                maximum_raw_score=115,
                 normalized_score=95.83,
                 classification=ConfidenceClassification.PREMIUM,
                 publishable=True,
@@ -127,7 +132,7 @@ class TestStrategyEngineSuccess:
         confidence_calculator.calculate = MagicMock(
             return_value=ConfidenceScoreResult(
                 raw_score=100.0,
-                maximum_raw_score=120,
+                maximum_raw_score=115,
                 normalized_score=83.33,
                 classification=ConfidenceClassification.STRONG,
                 publishable=True,
@@ -145,7 +150,7 @@ class TestStrategyEngineSuccess:
     async def test_final_result_includes_complete_stage_audit(self):
         engine = _build_engine()
         result = await _analyze(engine)
-        assert len(result.stages) == 17
+        assert len(result.stages) == 14
         assert all(s.executed for s in result.stages)
 
     async def test_inputs_not_mutated(self):

@@ -2,7 +2,6 @@
 Validators package: confirmation checks applied before a signal is accepted.
 """
 
-from app.validators.atr import ATRValidator
 from app.validators.btc_alignment import BTCAlignmentValidator
 from app.validators.candle_quality import CandleQualityValidator
 from app.validators.context_validator import PreRiskValidationResult, PreRiskValidator
@@ -10,7 +9,6 @@ from app.validators.fake_breakout_filter import FakeBreakoutFilter
 from app.validators.htf_bias import HigherTimeframeBiasValidator
 from app.validators.liquidity_sweep import LiquiditySweepValidator
 from app.validators.market_regime import MarketRegimeValidator
-from app.validators.momentum_filter import MomentumFilter
 from app.validators.results import (
     BTCAlignmentResult,
     BTCAlignmentStatus,
@@ -20,21 +18,14 @@ from app.validators.results import (
     FakeBreakoutStatus,
     MarketRegimeResult,
     MarketRegimeStatus,
-    MomentumAlignment,
-    MomentumResult,
     SessionValidationResult,
     TradingSession,
-    VolatilityResult,
-    VolatilityStatus,
 )
 from app.validators.session_filter import SessionFilter
-from app.validators.volatility_filter import VolatilityFilter
 from app.validators.volume_confirmation import VolumeConfirmationValidator
 
 __all__ = [
     "MarketRegimeValidator",
-    "MomentumFilter",
-    "VolatilityFilter",
     "SessionFilter",
     "BTCAlignmentValidator",
     "FakeBreakoutFilter",
@@ -44,17 +35,12 @@ __all__ = [
     "HigherTimeframeBiasValidator",
     "LiquiditySweepValidator",
     "VolumeConfirmationValidator",
-    "ATRValidator",
     "MarketRegimeResult",
-    "MomentumResult",
-    "VolatilityResult",
     "SessionValidationResult",
     "BTCAlignmentResult",
     "FakeBreakoutResult",
     "CandleQualityResult",
     "MarketRegimeStatus",
-    "MomentumAlignment",
-    "VolatilityStatus",
     "TradingSession",
     "BTCAlignmentStatus",
     "FakeBreakoutStatus",

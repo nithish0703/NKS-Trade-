@@ -95,8 +95,6 @@ class StrategyPipelineResult(BaseModel):
     selected_entry_zone: Optional[Any] = None
     dealing_range_result: Optional[Any] = None
     retest_result: Optional[Any] = None
-    momentum_result: Optional[ValidationResult] = None
-    volatility_result: Optional[ValidationResult] = None
     session_result: Optional[ValidationResult] = None
     btc_alignment_result: Optional[ValidationResult] = None
     fake_breakout_result: Optional[ValidationResult] = None

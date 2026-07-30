@@ -220,7 +220,7 @@ class TestScanningCoins:
         runtime_store = DashboardRuntimeStore()
         confidence_result = ConfidenceScoreResult(
             raw_score=115.0,
-            maximum_raw_score=120,
+            maximum_raw_score=115,
             normalized_score=96.0,
             classification=ConfidenceClassification.PREMIUM,
             publishable=True,
@@ -432,15 +432,17 @@ class TestScanningCoins:
         assert eth.preview_completed_layers is None
 
 
-# Full 17-stage ordering, mirroring app.scanner.strategy_engine._STAGE_DEFINITIONS.
+# Full 14-stage ordering, mirroring app.scanner.strategy_engine._STAGE_DEFINITIONS.
 _ALL_STAGE_NAMES = (
     "MARKET_REGIME", "HTF_BIAS", "LIQUIDITY_SWEEP", "STRUCTURE_SHIFT",
     "VOLUME_CONFIRMATION", "ENTRY_ZONE", "PREMIUM_DISCOUNT", "RETEST_CONFIRMATION",
-    "MOMENTUM_FILTER", "VOLATILITY_FILTER", "SESSION_FILTER", "BTC_ALIGNMENT",
-    "FAKE_BREAKOUT_FILTER", "CANDLE_QUALITY", "ATR", "RISK_MANAGEMENT",
-    "CONFIDENCE_SCORING",
+    "SESSION_FILTER", "BTC_ALIGNMENT", "FAKE_BREAKOUT_FILTER", "CANDLE_QUALITY",
+    "RISK_MANAGEMENT", "CONFIDENCE_SCORING",
 )
-_NON_MANDATORY_STAGES = {"MOMENTUM_FILTER"}
+_NON_MANDATORY_STAGES = {
+    "PREMIUM_DISCOUNT", "RETEST_CONFIRMATION", "SESSION_FILTER",
+    "BTC_ALIGNMENT", "FAKE_BREAKOUT_FILTER",
+}
 
 
 def _stages(passed_through: str) -> list[PipelineStageResult]:
@@ -546,17 +548,17 @@ class TestValidationProgressCalculation:
             _stages("MARKET_REGIME")
         )
         assert raw == 15
-        assert maximum == 120
+        assert maximum == 115
         assert percentage == 13
         assert last_layer == "MARKET_REGIME"
 
     def test_market_regime_plus_htf_bias_gives_40_raw_points(self):
         # MARKET_REGIME=15 + HTF_BIAS=25 (the real SCORE_HTF_BIAS constant
         # from app.config.thresholds, which ConfidenceScoringEngine also
-        # uses) = 40/120 = 33%.
+        # uses) = 40/115 = 35%.
         raw, maximum, percentage, last_layer = calculate_validation_progress(_stages("HTF_BIAS"))
         assert raw == 40
-        assert percentage == 33
+        assert percentage == 35
         assert last_layer == "HTF_BIAS"
 
     def test_failed_layer_gets_zero_points(self):
@@ -571,19 +573,19 @@ class TestValidationProgressCalculation:
         # layer (HTF_BIAS=25, LIQUIDITY_SWEEP=15, ...) contributes zero.
         assert raw == 15
 
-    def test_all_scoring_layers_pass_gives_120_and_100_percent(self):
+    def test_all_scoring_layers_pass_gives_115_and_100_percent(self):
         raw, maximum, percentage, last_layer = calculate_validation_progress(
             _stages("CONFIDENCE_SCORING")
         )
-        assert raw == 120
-        assert maximum == 120
+        assert raw == 115
+        assert maximum == 115
         assert percentage == 100
         assert last_layer == "CONFIDENCE_SCORING"
 
     def test_empty_stages_returns_zero_and_no_last_layer(self):
         raw, maximum, percentage, last_layer = calculate_validation_progress([])
         assert raw == 0.0
-        assert maximum == 120
+        assert maximum == 115
         assert percentage == 0
         assert last_layer is None
 
@@ -594,13 +596,11 @@ class TestValidationProgressCalculation:
         assert last_layer is None
 
     def test_non_scoring_stages_never_contribute_points(self):
-        # MOMENTUM_FILTER and VOLATILITY_FILTER execute (stages 9-10,
-        # between RETEST_CONFIRMATION and SESSION_FILTER) but are never in
-        # the 120-point weight map, so they must not add any points.
-        # Passing through FAKE_BREAKOUT_FILTER (stage 13) executes 11 of
-        # the 12 real scoring layers (ATR, stage 15, hasn't run yet):
-        # 120 - SCORE_ATR(5) = 115.
-        raw, _, _, _ = calculate_validation_progress(_stages("FAKE_BREAKOUT_FILTER"))
+        # CANDLE_QUALITY (stage 12) executes and passes but is not in the
+        # 115-point weight map (it's a structural/account-safety gate, not
+        # a scoring layer), so it must not add any points beyond the 11
+        # scoring layers that ran before it (which sum to the full 115).
+        raw, _, _, _ = calculate_validation_progress(_stages("CANDLE_QUALITY"))
         assert raw == 115
 
 
@@ -645,13 +645,13 @@ class TestValidationProgressDoesNotAffectStrategy:
         assert eth.score is None
         # ...but a partial validation-progress percentage is still shown.
         assert eth.validation_progress_raw_score == 40  # MARKET_REGIME + HTF_BIAS passed
-        assert eth.validation_progress_percentage == 33
+        assert eth.validation_progress_percentage == 35
         assert eth.last_executed_layer == "LIQUIDITY_SWEEP"
 
     async def test_partial_score_never_changes_final_confidence(self):
         runtime_store = DashboardRuntimeStore()
         confidence_result = ConfidenceScoreResult(
-            raw_score=115.0, maximum_raw_score=120, normalized_score=96.0,
+            raw_score=115.0, maximum_raw_score=115, normalized_score=96.0,
             classification=ConfidenceClassification.PREMIUM, publishable=True,
             mandatory_layers_passed=True, layer_scores=[], failed_mandatory_layers=[],
             reason="PREMIUM",
@@ -725,7 +725,7 @@ class TestDirectionResolution:
 
     async def test_bullish_htf_bias_maps_to_buy(self):
         confidence_result = ConfidenceScoreResult(
-            raw_score=115.0, maximum_raw_score=120, normalized_score=96.0,
+            raw_score=115.0, maximum_raw_score=115, normalized_score=96.0,
             classification=ConfidenceClassification.PREMIUM, publishable=True,
             mandatory_layers_passed=True, layer_scores=[], failed_mandatory_layers=[],
             reason="PREMIUM",
@@ -822,7 +822,7 @@ class TestPairScanUpdatedEvents:
         assert event.data == {
             "coin": "ETH-USDT",
             "direction": None,
-            "validation_progress_percentage": 33,
+            "validation_progress_percentage": 35,
             "last_executed_layer": "LIQUIDITY_SWEEP",
             "failed_layer": "LIQUIDITY_SWEEP",
             "reason": "Institutional liquidity sweep missing",
@@ -834,7 +834,7 @@ class TestPairScanUpdatedEvents:
             status=PipelineStatus.VALID, passed=True, stages=_stages("CONFIDENCE_SCORING"),
             risk_plan=_real_risk_plan(),
             confidence_result=ConfidenceScoreResult(
-                raw_score=120.0, maximum_raw_score=120, normalized_score=100.0,
+                raw_score=115.0, maximum_raw_score=115, normalized_score=100.0,
                 classification=ConfidenceClassification.PREMIUM, publishable=True,
                 mandatory_layers_passed=True, layer_scores=[], failed_mandatory_layers=[],
                 reason="PREMIUM",

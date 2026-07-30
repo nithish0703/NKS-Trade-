@@ -92,19 +92,20 @@ MAXIMUM_ALLOWED_POSITION_CORRELATION: Final[float] = 0.80
 CORRELATION_MINIMUM_OBSERVATIONS: Final[int] = 30
 
 # Confidence scoring layer weights (must sum to SCORE_MAXIMUM_RAW)
+# Hard-mandatory layers (pipeline gates; failure rejects before scoring runs):
 SCORE_MARKET_REGIME: Final[int] = 15
 SCORE_HTF_BIAS: Final[int] = 25
 SCORE_LIQUIDITY_SWEEP: Final[int] = 15
 SCORE_STRUCTURE_SHIFT: Final[int] = 15
 SCORE_VOLUME_CONFIRMATION: Final[int] = 10
 SCORE_ENTRY_ZONE: Final[int] = 10
+# Soft-scoring layers (never reject; failure awards zero points only):
 SCORE_PREMIUM_DISCOUNT: Final[int] = 5
 SCORE_RETEST_CONFIRMATION: Final[int] = 5
-SCORE_ATR: Final[int] = 5
 SCORE_SESSION: Final[int] = 5
 SCORE_BTC_ALIGNMENT: Final[int] = 5
 SCORE_FAKE_BREAKOUT: Final[int] = 5
-SCORE_MAXIMUM_RAW: Final[int] = 120
+SCORE_MAXIMUM_RAW: Final[int] = 115
 
 # Confidence classification thresholds
 PREMIUM_SIGNAL_MINIMUM_SCORE: Final[float] = 90.0

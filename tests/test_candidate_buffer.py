@@ -22,7 +22,7 @@ UTC_NOW = datetime(2026, 1, 1, 10, 0, tzinfo=timezone.utc)
 def _confidence(classification=ConfidenceClassification.PREMIUM, publishable=True):
     return ConfidenceScoreResult(
         raw_score=115.0,
-        maximum_raw_score=120,
+        maximum_raw_score=115,
         normalized_score=95.8,
         classification=classification,
         publishable=publishable,

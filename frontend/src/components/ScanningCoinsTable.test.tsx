@@ -94,11 +94,13 @@ describe("ScanningCoinsTable", () => {
     expect(screen.getByText("72%")).toBeInTheDocument();
   });
 
-  it("renders a progress bar whose width matches the preview percentage", () => {
+  it("renders a circular progress indicator matching the preview percentage", () => {
     render(<ScanningCoinsTable coins={[coin({ preview_progress_percentage: 63 })]} />);
-    const bar = document.querySelector('[style*="width"]') as HTMLElement | null;
-    expect(bar).not.toBeNull();
-    expect(bar?.style.width).toBe("63%");
+    const svg = document.querySelector("svg");
+    expect(svg).not.toBeNull();
+    const progressCircle = svg?.querySelectorAll("circle")[1];
+    expect(progressCircle).toBeDefined();
+    expect(progressCircle?.getAttribute("stroke-dashoffset")).not.toBeNull();
   });
 
   it("shows a partial preview score even when the real pipeline is REJECTED", () => {

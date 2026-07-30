@@ -34,7 +34,6 @@ from app.risk.take_profit import SingleTakeProfitCalculator
 from app.scoring.calculator import ConfidenceCalculator
 from app.scoring.input_adapter import ConfidenceInputAdapter
 from app.scoring.score_engine import ConfidenceScoringEngine
-from app.validators.atr import ATRValidator
 from app.validators.btc_alignment import BTCAlignmentValidator
 from app.validators.candle_quality import CandleQualityValidator
 from app.validators.entry_zone import EntryZoneValidator
@@ -42,13 +41,11 @@ from app.validators.fake_breakout_filter import FakeBreakoutFilter
 from app.validators.htf_bias import HigherTimeframeBiasValidator
 from app.validators.liquidity_sweep import LiquiditySweepValidator
 from app.validators.market_regime import MarketRegimeValidator
-from app.validators.momentum_filter import MomentumFilter
 from app.validators.premium_discount import PremiumDiscountValidator
 from app.validators.retest_confirmation import RetestConfirmationValidator
 from app.validators.risk_management import RiskManagementValidator
 from app.validators.session_filter import SessionFilter
 from app.validators.structure_shift import StructureShiftValidator
-from app.validators.volatility_filter import VolatilityFilter
 from app.validators.volume_confirmation import VolumeConfirmationValidator
 from app.zones.breaker_block import BreakerBlockDetector
 from app.zones.calculator import ZoneCalculator
@@ -221,19 +218,14 @@ def build_strategy_engine() -> InstitutionalSMCStrategyEngine:
             adx_rejection_maximum=thresholds.ADX_REJECTION_MAX,
             ema_flat_threshold=thresholds.EMA_FLAT_THRESHOLD,
             minimum_atr_expansion_ratio=thresholds.MARKET_REGIME_MINIMUM_ATR_EXPANSION_RATIO,
+            compression_lookback=thresholds.VOLATILITY_COMPRESSION_LOOKBACK,
+            minimum_candle_range_ratio=thresholds.VOLATILITY_MINIMUM_CANDLE_RANGE_RATIO,
         ),
         htf_bias_validator=HigherTimeframeBiasValidator(),
         liquidity_sweep_validator=LiquiditySweepValidator(),
         structure_shift_validator=StructureShiftValidator(),
         volume_confirmation_validator=VolumeConfirmationValidator(),
         entry_zone_validator=EntryZoneValidator(),
-        momentum_filter=MomentumFilter(),
-        volatility_filter=VolatilityFilter(
-            minimum_atr_value=thresholds.VOLATILITY_MINIMUM_ATR_VALUE,
-            minimum_atr_expansion_ratio=thresholds.VOLATILITY_MINIMUM_ATR_EXPANSION_RATIO,
-            compression_lookback=thresholds.VOLATILITY_COMPRESSION_LOOKBACK,
-            minimum_candle_range_ratio=thresholds.VOLATILITY_MINIMUM_CANDLE_RANGE_RATIO,
-        ),
         session_filter=SessionFilter(),
         btc_alignment_validator=BTCAlignmentValidator(),
         fake_breakout_filter=FakeBreakoutFilter(
@@ -247,9 +239,6 @@ def build_strategy_engine() -> InstitutionalSMCStrategyEngine:
             maximum_opposite_wick_ratio=thresholds.CANDLE_MAXIMUM_OPPOSITE_WICK_RATIO,
             bullish_close_location_minimum=thresholds.CANDLE_QUALITY_BULLISH_CLOSE_LOCATION_MINIMUM,
             bearish_close_location_maximum=thresholds.CANDLE_QUALITY_BEARISH_CLOSE_LOCATION_MAXIMUM,
-        ),
-        atr_validator=ATRValidator(
-            minimum_atr_expansion_ratio=thresholds.MARKET_REGIME_MINIMUM_ATR_EXPANSION_RATIO
         ),
         risk_management_calculator=risk_management_calculator,
         risk_management_validator=RiskManagementValidator(),
@@ -277,7 +266,6 @@ def build_preview_analyzer() -> PreviewAnalyzer:
         "ENTRY_ZONE": thresholds.SCORE_ENTRY_ZONE,
         "PREMIUM_DISCOUNT": thresholds.SCORE_PREMIUM_DISCOUNT,
         "RETEST_CONFIRMATION": thresholds.SCORE_RETEST_CONFIRMATION,
-        "ATR": thresholds.SCORE_ATR,
         "SESSION_FILTER": thresholds.SCORE_SESSION,
         "BTC_ALIGNMENT": thresholds.SCORE_BTC_ALIGNMENT,
         "FAKE_BREAKOUT_FILTER": thresholds.SCORE_FAKE_BREAKOUT,
@@ -338,6 +326,8 @@ def build_preview_analyzer() -> PreviewAnalyzer:
             adx_rejection_maximum=thresholds.ADX_REJECTION_MAX,
             ema_flat_threshold=thresholds.EMA_FLAT_THRESHOLD,
             minimum_atr_expansion_ratio=thresholds.MARKET_REGIME_MINIMUM_ATR_EXPANSION_RATIO,
+            compression_lookback=thresholds.VOLATILITY_COMPRESSION_LOOKBACK,
+            minimum_candle_range_ratio=thresholds.VOLATILITY_MINIMUM_CANDLE_RANGE_RATIO,
         ),
         htf_bias_validator=HigherTimeframeBiasValidator(),
         liquidity_sweep_validator=LiquiditySweepValidator(),
@@ -346,9 +336,6 @@ def build_preview_analyzer() -> PreviewAnalyzer:
         entry_zone_validator=EntryZoneValidator(),
         premium_discount_validator=PremiumDiscountValidator(),
         retest_confirmation_validator=RetestConfirmationValidator(),
-        atr_validator=ATRValidator(
-            minimum_atr_expansion_ratio=thresholds.MARKET_REGIME_MINIMUM_ATR_EXPANSION_RATIO
-        ),
         session_filter=SessionFilter(),
         btc_alignment_validator=BTCAlignmentValidator(),
         fake_breakout_filter=FakeBreakoutFilter(

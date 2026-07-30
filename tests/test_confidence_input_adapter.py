@@ -6,7 +6,7 @@ import pytest
 
 from app.models.validation_result import ValidationResult
 from app.scoring.input_adapter import ConfidenceInputAdapter
-from app.scoring.score_engine import ConfidenceScoringError, _MANDATORY_LAYERS
+from app.scoring.score_engine import ConfidenceScoringError, _ALL_LAYERS
 
 
 def _results() -> dict:
@@ -19,7 +19,6 @@ def _results() -> dict:
         "entry_zone": ValidationResult.success(layer_name="ENTRY_ZONE"),
         "premium_discount": ValidationResult.success(layer_name="PREMIUM_DISCOUNT"),
         "retest_confirmation": ValidationResult.success(layer_name="RETEST_CONFIRMATION"),
-        "atr": ValidationResult.success(layer_name="ATR"),
         "session_filter": ValidationResult.success(layer_name="SESSION_FILTER"),
         "btc_alignment": ValidationResult.success(layer_name="BTC_ALIGNMENT"),
         "fake_breakout_filter": ValidationResult.success(layer_name="FAKE_BREAKOUT_FILTER"),
@@ -29,7 +28,7 @@ def _results() -> dict:
 class TestConfidenceInputAdapter:
     def test_all_exact_layers_mapped_correctly(self):
         result = ConfidenceInputAdapter().build_validation_map(**_results())
-        assert set(result.keys()) == set(_MANDATORY_LAYERS)
+        assert set(result.keys()) == set(_ALL_LAYERS)
 
     def test_deterministic_ordering(self):
         adapter = ConfidenceInputAdapter()
@@ -39,13 +38,13 @@ class TestConfidenceInputAdapter:
 
     def test_missing_required_result_rejected(self):
         kwargs = _results()
-        del kwargs["atr"]
+        del kwargs["session_filter"]
         with pytest.raises(TypeError):
             ConfidenceInputAdapter().build_validation_map(**kwargs)
 
     def test_layer_name_mismatch_rejected(self):
         kwargs = _results()
-        kwargs["atr"] = ValidationResult.success(layer_name="WRONG_NAME")
+        kwargs["session_filter"] = ValidationResult.success(layer_name="WRONG_NAME")
         with pytest.raises(ConfidenceScoringError):
             ConfidenceInputAdapter().build_validation_map(**kwargs)
 

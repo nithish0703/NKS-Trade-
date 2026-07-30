@@ -25,7 +25,6 @@ from app.config.pairs import get_configured_pairs
 from app.config.timeframes import ENTRY_TIMEFRAME
 from app.config.thresholds import (
     PREMIUM_SIGNAL_MIN_SCORE,
-    SCORE_ATR,
     SCORE_BTC_ALIGNMENT,
     SCORE_ENTRY_ZONE,
     SCORE_FAKE_BREAKOUT,
@@ -67,7 +66,6 @@ _VALIDATION_PROGRESS_LAYER_WEIGHTS: dict[str, float] = {
     "ENTRY_ZONE": SCORE_ENTRY_ZONE,
     "PREMIUM_DISCOUNT": SCORE_PREMIUM_DISCOUNT,
     "RETEST_CONFIRMATION": SCORE_RETEST_CONFIRMATION,
-    "ATR": SCORE_ATR,
     "SESSION_FILTER": SCORE_SESSION,
     "BTC_ALIGNMENT": SCORE_BTC_ALIGNMENT,
     "FAKE_BREAKOUT_FILTER": SCORE_FAKE_BREAKOUT,
@@ -90,8 +88,8 @@ def calculate_validation_progress(
 
     Returns (raw_score, max_score, percentage, last_executed_layer).
     percentage is rounded to the nearest whole number. Non-scoring
-    stages (MOMENTUM_FILTER, VOLATILITY_FILTER, CANDLE_QUALITY,
-    RISK_MANAGEMENT, CONFIDENCE_SCORING) are ignored entirely.
+    stages (CANDLE_QUALITY, RISK_MANAGEMENT, CONFIDENCE_SCORING) are
+    ignored entirely.
     """
     if not stages:
         return 0.0, _VALIDATION_PROGRESS_MAX_SCORE, 0, None

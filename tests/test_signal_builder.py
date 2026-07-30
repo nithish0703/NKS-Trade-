@@ -85,7 +85,7 @@ def _real_risk_plan(direction="BUY", entry_price=100.0, stop_loss=95.0, take_pro
 def _confidence(classification=ConfidenceClassification.PREMIUM, publishable=True):
     return ConfidenceScoreResult(
         raw_score=115.0,
-        maximum_raw_score=120,
+        maximum_raw_score=115,
         normalized_score=95.8,
         classification=classification,
         publishable=publishable,

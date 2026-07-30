@@ -34,12 +34,11 @@ _LAYER_WEIGHTS = {
     "ENTRY_ZONE": 10,
     "PREMIUM_DISCOUNT": 5,
     "RETEST_CONFIRMATION": 5,
-    "ATR": 5,
     "SESSION_FILTER": 5,
     "BTC_ALIGNMENT": 5,
     "FAKE_BREAKOUT_FILTER": 5,
 }
-_MAX_SCORE = 120.0
+_MAX_SCORE = 115.0
 
 
 def _candle(index: int, symbol="BTC-USDT", timeframe="15m") -> Candle:
@@ -169,7 +168,6 @@ def _build_analyzer(**overrides) -> PreviewAnalyzer:
         or _validator("premium_discount"),
         retest_confirmation_validator=overrides.get("retest_confirmation_validator")
         or _validator("retest_confirmation"),
-        atr_validator=overrides.get("atr_validator") or _validator("ATR"),
         session_filter=overrides.get("session_filter") or _validator("SESSION_FILTER"),
         btc_alignment_validator=overrides.get("btc_alignment_validator") or _validator("BTC_ALIGNMENT"),
         fake_breakout_filter=overrides.get("fake_breakout_filter") or _validator("FAKE_BREAKOUT_FILTER"),
@@ -246,20 +244,20 @@ class TestPreviewProgressWhenPipelineFailsFast:
         result = analyzer.analyze(_full_context())
 
         assert "MARKET_REGIME" in result.preview_failed_layers
-        # HTF_BIAS, ATR, and other independently-evaluable layers still ran.
+        # HTF_BIAS and other independently-evaluable layers still ran.
         assert "HTF_BIAS" in result.preview_completed_layers
         assert result.preview_progress_raw_score == _MAX_SCORE - _LAYER_WEIGHTS["MARKET_REGIME"]
 
     def test_failed_layer_gets_zero_points_not_partial_credit(self):
-        failing_atr = MagicMock()
-        failing_atr.validate = MagicMock(return_value=_failing_result("ATR"))
-        analyzer = _build_analyzer(atr_validator=failing_atr)
+        failing_session_filter = MagicMock()
+        failing_session_filter.validate = MagicMock(return_value=_failing_result("SESSION_FILTER"))
+        analyzer = _build_analyzer(session_filter=failing_session_filter)
 
         result = analyzer.analyze(_full_context())
 
-        assert "ATR" in result.preview_failed_layers
-        assert "ATR" not in result.preview_completed_layers
-        assert result.preview_progress_raw_score == _MAX_SCORE - _LAYER_WEIGHTS["ATR"]
+        assert "SESSION_FILTER" in result.preview_failed_layers
+        assert "SESSION_FILTER" not in result.preview_completed_layers
+        assert result.preview_progress_raw_score == _MAX_SCORE - _LAYER_WEIGHTS["SESSION_FILTER"]
 
 
 class TestPreviewDataAvailability:

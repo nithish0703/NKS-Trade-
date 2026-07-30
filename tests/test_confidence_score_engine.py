@@ -6,10 +6,16 @@ import pytest
 
 from app.models.validation_result import ValidationResult
 from app.scoring.results import ConfidenceClassification
-from app.scoring.score_engine import ConfidenceScoringEngine, ConfidenceScoringError, _MANDATORY_LAYERS
+from app.scoring.score_engine import (
+    ConfidenceScoringEngine,
+    ConfidenceScoringError,
+    _ALL_LAYERS,
+    _HARD_LAYERS,
+    _SOFT_LAYERS,
+)
 
 ALL_PASSING = {
-    layer: ValidationResult.success(layer_name=layer, reason="ok") for layer in _MANDATORY_LAYERS
+    layer: ValidationResult.success(layer_name=layer, reason="ok") for layer in _ALL_LAYERS
 }
 
 
@@ -20,9 +26,9 @@ def _with_failure(layer_name: str) -> dict:
 
 
 class TestConfidenceScoringEngine:
-    def test_all_layers_pass_gives_raw_score_120(self):
+    def test_all_layers_pass_gives_raw_score_115(self):
         result = ConfidenceScoringEngine().calculate(ALL_PASSING)
-        assert result.raw_score == 120.0
+        assert result.raw_score == 115.0
 
     def test_all_layers_pass_gives_normalized_score_100(self):
         result = ConfidenceScoringEngine().calculate(ALL_PASSING)
@@ -33,31 +39,36 @@ class TestConfidenceScoringEngine:
         assert result.classification == ConfidenceClassification.PREMIUM
         assert result.publishable is True
 
-    def test_five_point_layer_failure_reduces_raw_score_correctly(self):
-        results = _with_failure("ATR")
+    def test_five_point_soft_layer_failure_reduces_raw_score_correctly(self):
+        results = _with_failure("SESSION_FILTER")
         result = ConfidenceScoringEngine().calculate(results)
-        assert result.raw_score == 115.0
+        assert result.raw_score == 110.0
 
     def test_htf_bias_failure_removes_25_points(self):
         results = _with_failure("HTF_BIAS")
         result = ConfidenceScoringEngine().calculate(results)
-        assert result.raw_score == 95.0
+        assert result.raw_score == 90.0
 
     def test_missing_layer_raises_error(self):
         results = dict(ALL_PASSING)
-        del results["ATR"]
+        del results["SESSION_FILTER"]
         with pytest.raises(ConfidenceScoringError):
             ConfidenceScoringEngine().calculate(results)
 
-    def test_failed_mandatory_layer_forces_ignore(self):
-        results = _with_failure("SESSION_FILTER")  # only 5 points lost; would still be STRONG numerically
+    def test_soft_layer_failure_does_not_force_ignore(self):
+        # Only 5 points lost (110/115 = 95.65) -- still PREMIUM, not IGNORE.
+        results = _with_failure("SESSION_FILTER")
+        result = ConfidenceScoringEngine().calculate(results)
+        assert result.classification == ConfidenceClassification.PREMIUM
+        assert result.mandatory_layers_passed is True
+
+    def test_hard_layer_failure_forces_ignore_even_if_score_above_80(self):
+        # HTF_BIAS failing leaves raw 90/115 = 78.3, but a hard-layer
+        # failure forces IGNORE regardless of the numeric score.
+        results = _with_failure("HTF_BIAS")
         result = ConfidenceScoringEngine().calculate(results)
         assert result.classification == ConfidenceClassification.IGNORE
-
-    def test_failed_mandatory_layer_not_publishable_even_if_score_above_80(self):
-        results = _with_failure("ATR")  # raw 115/120 = 95.83, well above 80
-        result = ConfidenceScoringEngine().calculate(results)
-        assert result.normalized_score > 80
+        assert result.mandatory_layers_passed is False
         assert result.publishable is False
 
     def test_no_partial_points_awarded(self):
@@ -72,14 +83,14 @@ class TestConfidenceScoringEngine:
         names_two = [ls.layer_name for ls in result_two.layer_scores]
         assert names_one == names_two
 
-    def test_maximum_raw_score_is_exactly_120(self):
+    def test_maximum_raw_score_is_exactly_115(self):
         result = ConfidenceScoringEngine().calculate(ALL_PASSING)
-        assert result.maximum_raw_score == 120
+        assert result.maximum_raw_score == 115
 
     def test_normalized_calculation_correct(self):
-        results = _with_failure("MARKET_REGIME")  # raw = 105
+        results = _with_failure("MARKET_REGIME")  # raw = 100
         result = ConfidenceScoringEngine().calculate(results)
-        assert result.normalized_score == pytest.approx(round((105 / 120) * 100, 2))
+        assert result.normalized_score == pytest.approx(round((100 / 115) * 100, 2))
 
     def test_result_does_not_contain_trade_fields(self):
         result = ConfidenceScoringEngine().calculate(ALL_PASSING)
@@ -94,6 +105,22 @@ class TestConfidenceScoringEngine:
 
     def test_mismatched_layer_name_raises_error(self):
         results = dict(ALL_PASSING)
-        results["ATR"] = ValidationResult.success(layer_name="WRONG_NAME", reason="ok")
+        results["SESSION_FILTER"] = ValidationResult.success(layer_name="WRONG_NAME", reason="ok")
         with pytest.raises(ConfidenceScoringError):
             ConfidenceScoringEngine().calculate(results)
+
+    def test_hard_layers_marked_mandatory_in_layer_scores(self):
+        result = ConfidenceScoringEngine().calculate(ALL_PASSING)
+        for layer_score in result.layer_scores:
+            expected_mandatory = layer_score.layer_name in _HARD_LAYERS
+            assert layer_score.mandatory == expected_mandatory
+
+    def test_soft_layers_never_appear_in_failed_mandatory_layers(self):
+        results = dict(ALL_PASSING)
+        for layer in _SOFT_LAYERS:
+            results = _with_failure(layer) if layer not in results else results
+        for layer in _SOFT_LAYERS:
+            results[layer] = ValidationResult.failure(layer_name=layer, reason="fail")
+        result = ConfidenceScoringEngine().calculate(results)
+        assert result.failed_mandatory_layers == []
+        assert result.mandatory_layers_passed is True

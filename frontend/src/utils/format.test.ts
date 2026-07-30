@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  formatIstTime,
   formatNumberOrDash,
   formatPercentageOrDash,
   formatPriceOrDash,
@@ -55,5 +56,20 @@ describe("formatUtcTime", () => {
 
   it("returns a dash for undefined", () => {
     expect(formatUtcTime(undefined)).toBe("—");
+  });
+});
+
+describe("formatIstTime", () => {
+  it("formats an ISO UTC timestamp converted to IST (UTC+5:30)", () => {
+    // 2026-01-01T10:00:00Z -> 15:30:00 IST
+    expect(formatIstTime("2026-01-01T10:00:00Z")).toBe("01/01/2026, 03:30:00 pm IST");
+  });
+
+  it("returns a dash for null", () => {
+    expect(formatIstTime(null)).toBe("—");
+  });
+
+  it("returns a dash for undefined", () => {
+    expect(formatIstTime(undefined)).toBe("—");
   });
 });

@@ -24,7 +24,7 @@ def _valid_pipeline_result(symbol: str) -> StrategyPipelineResult:
     risk_plan.status = RiskPlanStatus.VALID
     confidence = ConfidenceScoreResult(
         raw_score=115.0,
-        maximum_raw_score=120,
+        maximum_raw_score=115,
         normalized_score=95.8,
         classification=ConfidenceClassification.PREMIUM,
         publishable=True,

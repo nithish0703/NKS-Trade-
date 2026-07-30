@@ -24,26 +24,6 @@ class MarketRegimeStatus(str, Enum):
     UNKNOWN = "UNKNOWN"
 
 
-class MomentumAlignment(str, Enum):
-    """Alignment of short-term momentum with the expected trade direction."""
-
-    BUY_ALIGNED = "BUY_ALIGNED"
-    SELL_ALIGNED = "SELL_ALIGNED"
-    NEUTRAL = "NEUTRAL"
-    CONFLICT = "CONFLICT"
-
-
-class VolatilityStatus(str, Enum):
-    """Classification of current market volatility."""
-
-    EXPANDING = "EXPANDING"
-    NORMAL = "NORMAL"
-    COMPRESSED = "COMPRESSED"
-    LOW = "LOW"
-    DEAD = "DEAD"
-    UNKNOWN = "UNKNOWN"
-
-
 class TradingSession(str, Enum):
     """Named UTC trading session window."""
 
@@ -94,36 +74,6 @@ class MarketRegimeResult(BaseModel):
     atr: Optional[float] = None
     atr_expansion_ratio: Optional[float] = None
     trending: bool
-    reason: str
-    metadata: Optional[dict[str, Any]] = None
-
-
-class MomentumResult(BaseModel):
-    """Result of short-term momentum alignment evaluation. Confidence helper only."""
-
-    model_config = ConfigDict(frozen=True)
-
-    alignment: MomentumAlignment
-    ema20: Optional[float] = None
-    ema50: Optional[float] = None
-    expected_direction: str
-    confidence_boost_eligible: bool
-    reason: str
-    metadata: Optional[dict[str, Any]] = None
-
-
-class VolatilityResult(BaseModel):
-    """Result of volatility classification from candles and an IndicatorSnapshot."""
-
-    model_config = ConfigDict(frozen=True)
-
-    status: VolatilityStatus
-    atr: Optional[float] = None
-    atr_expansion_ratio: Optional[float] = None
-    current_candle_range: Optional[float] = None
-    average_candle_range: Optional[float] = None
-    compression_ratio: Optional[float] = None
-    acceptable: bool
     reason: str
     metadata: Optional[dict[str, Any]] = None
 
