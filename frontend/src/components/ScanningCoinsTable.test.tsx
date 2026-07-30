@@ -23,7 +23,6 @@ function coin(overrides: Partial<ScanningCoin> = {}): ScanningCoin {
     preview_completed_layers: ["MARKET_REGIME", "HTF_BIAS"],
     preview_failed_layers: [],
     preview_data_availability: { MARKET_REGIME: "PASSED", HTF_BIAS: "PASSED" },
-    chart_trend: "UP",
     ...overrides,
   };
 }
@@ -61,12 +60,12 @@ describe("ScanningCoinsTable", () => {
     expect(screen.queryByText("Status")).not.toBeInTheDocument();
   });
 
-  it("renders the Coin, Direction, Chart, and Score (%) headings only", () => {
+  it("renders the Coin, Direction, and Score (%) headings only", () => {
     render(<ScanningCoinsTable coins={[coin()]} />);
     expect(screen.getByText("Coin")).toBeInTheDocument();
     expect(screen.getByText("Direction")).toBeInTheDocument();
-    expect(screen.getByText("Chart")).toBeInTheDocument();
     expect(screen.getByText("Score (%)")).toBeInTheDocument();
+    expect(screen.queryByText("Chart")).not.toBeInTheDocument();
   });
 
   it("renders BUY preview direction in a green, semibold style", () => {
@@ -153,29 +152,5 @@ describe("ScanningCoinsTable", () => {
     expect(scoreCell?.getAttribute("title")).toContain(
       "Dashboard preview only. This is not final trade confidence.",
     );
-  });
-
-  it("renders an up arrow in green for an UP chart trend", () => {
-    render(<ScanningCoinsTable coins={[coin({ chart_trend: "UP" })]} />);
-    const arrow = screen.getByText("↑");
-    expect(arrow.className).toContain("text-emerald-600");
-  });
-
-  it("renders a down arrow in red for a DOWN chart trend", () => {
-    render(<ScanningCoinsTable coins={[coin({ chart_trend: "DOWN" })]} />);
-    const arrow = screen.getByText("↓");
-    expect(arrow.className).toContain("text-red-600");
-  });
-
-  it("renders a dash when chart trend is unavailable", () => {
-    render(<ScanningCoinsTable coins={[coin({ chart_trend: null })]} />);
-    expect(screen.getAllByText("—").length).toBeGreaterThan(0);
-  });
-
-  it("chart trend is independent of preview_direction", () => {
-    // Even when preview_direction is null (e.g. HTF bias MIXED), the raw
-    // chart trend can still be shown since it's a different signal.
-    render(<ScanningCoinsTable coins={[coin({ preview_direction: null, chart_trend: "UP" })]} />);
-    expect(screen.getByText("↑")).toBeInTheDocument();
   });
 });

@@ -93,8 +93,8 @@ export function DashboardPage() {
     <div className="min-h-screen bg-gray-50 pb-10">
       <DashboardHeader isConnected={isConnected} />
 
-      <main className="mx-auto max-w-[1400px] space-y-6 px-6">
-        <div className="flex flex-wrap gap-4">
+      <main className="mx-auto max-w-[1400px] space-y-6 px-4 sm:px-6">
+        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
           <SummaryCard
             label="Total Signals"
             value={formatNumberOrDash(summary.data?.total_signals ?? null)}

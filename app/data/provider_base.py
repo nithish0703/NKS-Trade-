@@ -12,6 +12,7 @@ that implements this interface and updating a single factory call site
 from abc import ABC, abstractmethod
 from typing import Optional
 
+from app.data.ticker_snapshot import TickerSnapshot
 from app.models.candle import Candle
 
 
@@ -65,6 +66,20 @@ class MarketDataProvider(ABC):
         validation failure, so callers displaying a "current price" can
         safely fall back to an unavailable/placeholder state instead of
         fabricating a price.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def fetch_all_linear_tickers(self) -> list[TickerSnapshot]:
+        """
+        Fetch Open Interest and 24h turnover for every available USDT
+        perpetual futures pair in a single call, for dynamic
+        liquidity/OI-based coin discovery.
+
+        Returns an empty list (rather than raising) on any request,
+        response, or validation failure, so callers can safely fall
+        back to a previously known-good pair list instead of ending up
+        with an empty scan universe due to a transient API hiccup.
         """
         raise NotImplementedError
 

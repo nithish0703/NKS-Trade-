@@ -22,7 +22,7 @@ export function SummaryCard({
   const isPositive = hasChange && changePercentage! >= 0;
 
   return (
-    <div className="flex-1 rounded-card border border-slate-200 bg-white p-2 shadow-card">
+    <div className="w-full rounded-card border border-slate-200 bg-white p-2 shadow-card">
       <div className="mb-1 flex items-center gap-1.5">
         <span
           className={`flex h-6 w-6 items-center justify-center rounded-lg ${iconClassName}`}

@@ -9,7 +9,12 @@ from dotenv import load_dotenv
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from app.config.thresholds import SCANNER_INTERVAL_SECONDS
+from app.config.thresholds import (
+    PAIR_DISCOVERY_INTERVAL_SECONDS,
+    PAIR_DISCOVERY_MINIMUM_OPEN_INTEREST_USDT,
+    PAIR_DISCOVERY_MINIMUM_TURNOVER_24H_USDT,
+    SCANNER_INTERVAL_SECONDS,
+)
 
 load_dotenv()
 
@@ -85,6 +90,27 @@ class Settings(BaseSettings):
         default=False, alias="STORAGE_FAILURE_IS_FATAL"
     )
 
+    dynamic_pair_discovery_enabled: bool = Field(
+        default=False, alias="DYNAMIC_PAIR_DISCOVERY_ENABLED"
+    )
+    pair_discovery_interval_seconds: int = Field(
+        default=PAIR_DISCOVERY_INTERVAL_SECONDS, alias="PAIR_DISCOVERY_INTERVAL_SECONDS"
+    )
+    pair_discovery_minimum_open_interest_usdt: float = Field(
+        default=PAIR_DISCOVERY_MINIMUM_OPEN_INTEREST_USDT,
+        alias="PAIR_DISCOVERY_MINIMUM_OPEN_INTEREST_USDT",
+    )
+    pair_discovery_minimum_turnover_24h_usdt: float = Field(
+        default=PAIR_DISCOVERY_MINIMUM_TURNOVER_24H_USDT,
+        alias="PAIR_DISCOVERY_MINIMUM_TURNOVER_24H_USDT",
+    )
+    # `None` (the default) means no cap: every coin passing both filters
+    # is included. Set to a positive integer to re-enable a "top N"
+    # limit (ranked by turnover, highest first).
+    pair_discovery_maximum_pairs: Optional[int] = Field(
+        default=None, alias="PAIR_DISCOVERY_MAXIMUM_PAIRS"
+    )
+
     telegram_enabled: bool = Field(default=False, alias="TELEGRAM_ENABLED")
     telegram_bot_token: Optional[str] = Field(default=None, alias="TELEGRAM_BOT_TOKEN")
     telegram_chat_ids_raw: str = Field(default="", alias="TELEGRAM_CHAT_IDS")
@@ -154,6 +180,22 @@ class Settings(BaseSettings):
         # fast, matching the previous field_validator's behaviour.
         _parse_chat_ids(self.telegram_chat_ids_raw)
         return self
+
+    @field_validator("pair_discovery_maximum_pairs", mode="before")
+    @classmethod
+    def _blank_pair_discovery_maximum_pairs_means_no_limit(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @field_validator("pair_discovery_maximum_pairs")
+    @classmethod
+    def _pair_discovery_maximum_pairs_must_be_positive(
+        cls, value: Optional[int]
+    ) -> Optional[int]:
+        if value is not None and value <= 0:
+            raise ValueError("pair_discovery_maximum_pairs must be a positive integer, or unset for no limit.")
+        return value
 
     @model_validator(mode="after")
     def _telegram_credentials_required_when_enabled(self) -> "Settings":

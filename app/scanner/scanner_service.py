@@ -4,6 +4,7 @@ valid-signal candidate buffer, and optional local signal persistence.
 Does not publish, broadcast, or trade.
 """
 
+import asyncio
 import logging
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Optional
@@ -31,6 +32,7 @@ class ScannerService:
         storage_failure_is_fatal: bool = False,
         notification_service: Optional[Any] = None,
         notification_failure_is_fatal: bool = False,
+        pair_discovery_service: Optional[Any] = None,
         on_event: Optional[EventCallback] = None,
         on_cycle_result: Optional[CycleResultCallback] = None,
         logger: Optional[logging.Logger] = None,
@@ -42,6 +44,7 @@ class ScannerService:
         self._storage_failure_is_fatal = storage_failure_is_fatal
         self._notification_service = notification_service
         self._notification_failure_is_fatal = notification_failure_is_fatal
+        self._pair_discovery_service = pair_discovery_service
         self._on_event = on_event
         self._on_cycle_result = on_cycle_result
         self._logger = logger or logging.getLogger(__name__)
@@ -53,6 +56,10 @@ class ScannerService:
     @property
     def notification_service(self) -> Optional[Any]:
         return self._notification_service
+
+    @property
+    def pair_discovery_service(self) -> Optional[Any]:
+        return self._pair_discovery_service
 
     async def run_single_cycle(self, account_balance: float) -> ScanCycleResult:
         active_state = await self._active_state_provider.get_state()
@@ -77,11 +84,20 @@ class ScannerService:
         async def _on_cycle_complete_with_start_event(cycle_result: ScanCycleResult) -> None:
             await self._on_cycle_complete(cycle_result)
 
-        await self._scheduler.run_forever(
-            account_balance=account_balance,
-            active_state_provider=_get_state,
-            on_cycle_complete=_on_cycle_complete_with_start_event,
-        )
+        discovery_task = None
+        if self._pair_discovery_service is not None:
+            discovery_task = asyncio.create_task(self._pair_discovery_service.run_forever())
+
+        try:
+            await self._scheduler.run_forever(
+                account_balance=account_balance,
+                active_state_provider=_get_state,
+                on_cycle_complete=_on_cycle_complete_with_start_event,
+            )
+        finally:
+            if discovery_task is not None:
+                self._pair_discovery_service.request_shutdown()
+                await discovery_task
 
     async def _on_cycle_complete(self, cycle_result: ScanCycleResult) -> None:
         await self._store_valid_candidates(cycle_result)
@@ -204,9 +220,11 @@ class ScannerService:
 
     def request_shutdown(self) -> None:
         self._scheduler.request_shutdown()
+        if self._pair_discovery_service is not None:
+            self._pair_discovery_service.request_shutdown()
 
     async def request_shutdown_and_notify(self) -> None:
-        self._scheduler.request_shutdown()
+        self.request_shutdown()
         await self._emit(ScannerEventType.SCANNER_STATUS_CHANGED, {"shutdown_requested": True})
 
     def get_runtime_status(self) -> ScannerRuntimeStatus:

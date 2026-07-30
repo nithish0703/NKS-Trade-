@@ -10,9 +10,9 @@ export function DashboardHeader({ isConnected }: DashboardHeaderProps) {
   const now = useUtcClock();
 
   return (
-    <header className="flex items-center justify-between px-6 py-5">
+    <header className="flex flex-wrap items-center justify-between gap-3 px-4 py-5 sm:px-6">
       <h1 className="text-2xl font-bold text-slate-900">Dashboard</h1>
-      <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center gap-2 sm:gap-3">
         <ConnectionStatus isConnected={isConnected} />
         <div className="rounded-md border border-slate-200 bg-white px-3 py-1.5 text-sm font-medium text-slate-600">
           {formatUtcClock(now)}

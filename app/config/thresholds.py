@@ -26,6 +26,16 @@ ATR_STOP_LOSS_MULTIPLIER: Final[float] = 1.5
 # Scanner
 SCANNER_INTERVAL_SECONDS: Final[int] = 300
 
+# Dynamic Liquidity + Open Interest coin-discovery configuration.
+# The refresh interval defaults to 15 minutes: Bybit's public tickers
+# endpoint returns Open Interest and 24h turnover for every USDT
+# perpetual in a single call, so there is no meaningful rate-limit cost
+# to refreshing this often -- unlike per-symbol candle fetching, it
+# does not scale with the number of coins being tracked.
+PAIR_DISCOVERY_INTERVAL_SECONDS: Final[int] = 900
+PAIR_DISCOVERY_MINIMUM_OPEN_INTEREST_USDT: Final[float] = 5_000_000.0
+PAIR_DISCOVERY_MINIMUM_TURNOVER_24H_USDT: Final[float] = 10_000_000.0
+
 # Signal scoring
 MIN_PUBLISHABLE_CONFIDENCE_SCORE: Final[float] = 80.0
 PREMIUM_SIGNAL_MIN_SCORE: Final[float] = 90.0

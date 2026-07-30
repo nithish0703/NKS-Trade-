@@ -8,8 +8,6 @@ interface ScanningCoinsTableProps {
 }
 
 const PREVIEW_TOOLTIP_NOTICE = "Dashboard preview only. This is not final trade confidence.";
-const CHART_TREND_TOOLTIP =
-  "Chart trend: raw price direction of the last completed candle vs. the previous one. Not a trade signal.";
 
 function progressColorClassName(percentage: number): string {
   return percentage > 0 ? "text-emerald-500" : "text-slate-300";
@@ -29,21 +27,6 @@ function scoreTooltip(coin: ScanningCoin): string {
   return lines.join("\n");
 }
 
-function ChartTrendIndicator({ trend }: { trend: ScanningCoin["chart_trend"] }) {
-  if (trend !== "UP" && trend !== "DOWN") {
-    return <span className="text-sm text-slate-400">—</span>;
-  }
-  const isUp = trend === "UP";
-  return (
-    <span
-      title={CHART_TREND_TOOLTIP}
-      className={`text-sm font-semibold ${isUp ? "text-emerald-600" : "text-red-600"}`}
-    >
-      {isUp ? "↑" : "↓"}
-    </span>
-  );
-}
-
 export function ScanningCoinsTable({ coins }: ScanningCoinsTableProps) {
   if (coins.length === 0) {
     return <EmptyState message="Waiting for scanner" />;
@@ -54,9 +37,8 @@ export function ScanningCoinsTable({ coins }: ScanningCoinsTableProps) {
       <table className="w-full table-auto border-collapse text-left text-sm">
         <thead>
           <tr className="text-xs uppercase tracking-wide text-slate-400">
-            <th className="w-auto pb-2 pr-2 font-medium">Coin</th>
-            <th className="pb-2 pr-4 font-medium">Direction</th>
-            <th className="pb-2 pr-4 font-medium">Chart</th>
+            <th className="w-auto pb-2 pr-4 font-medium">Coin</th>
+            <th className="pb-2 pr-6 font-medium">Direction</th>
             <th className="pb-2 font-medium">Score (%)</th>
           </tr>
         </thead>
@@ -65,12 +47,9 @@ export function ScanningCoinsTable({ coins }: ScanningCoinsTableProps) {
             const percentage = coin.preview_progress_percentage ?? 0;
             return (
               <tr key={coin.coin}>
-                <td className="py-2.5 pr-2 font-medium text-slate-900">{coin.coin}</td>
-                <td className="py-2.5 pr-4">
+                <td className="py-2.5 pr-4 font-medium text-slate-900">{coin.coin}</td>
+                <td className="py-2.5 pr-6">
                   <DirectionBadge direction={coin.preview_direction} />
-                </td>
-                <td className="py-2.5 pr-4">
-                  <ChartTrendIndicator trend={coin.chart_trend} />
                 </td>
                 <td className="py-2.5">
                   <div

@@ -63,10 +63,11 @@ from app.scanner.strategy_engine import InstitutionalSMCStrategyEngine
 
 import asyncio
 
-from app.config.pairs import get_configured_pairs
+from app.config.pairs import get_configured_pairs, set_pair_source
 from app.scanner.active_state import EmptyActiveTradingStateProvider
 from app.scanner.candidate_buffer import ValidSignalCandidateBuffer
 from app.scanner.duplicate_guard import DuplicateSignalGuard
+from app.scanner.pair_discovery import DynamicPairDiscoveryService
 from app.scanner.pair_scanner import PairScanner
 from app.scanner.scan_scheduler import MultiPairScanScheduler
 from app.scanner.scanner_service import ScannerService
@@ -376,9 +377,46 @@ def build_scanner_service(*, on_event=None, on_cycle_result=None) -> ScannerServ
         semaphore=semaphore,
         preview_analyzer=preview_analyzer,
     )
+
+    pair_discovery_service = None
+    configured_pair_provider = get_configured_pairs
+    if settings.dynamic_pair_discovery_enabled:
+        discovery_market_data_provider = BybitMarketDataProvider(
+            base_url=settings.exchange_base_url,
+            request_timeout_seconds=settings.request_timeout_seconds,
+        )
+
+        async def _on_pair_list_refreshed(updated: bool, current_pairs: list) -> None:
+            if on_event is None:
+                return
+            from datetime import datetime, timezone
+
+            from app.scanner.scanner_events import ScannerEvent, ScannerEventType
+
+            await on_event(
+                ScannerEvent(
+                    event=ScannerEventType.PAIR_LIST_REFRESHED,
+                    timestamp_utc=datetime.now(timezone.utc),
+                    data={"updated": updated, "pair_count": len(current_pairs)},
+                )
+            )
+
+        pair_discovery_service = DynamicPairDiscoveryService(
+            market_data_provider=discovery_market_data_provider,
+            minimum_open_interest_usdt=settings.pair_discovery_minimum_open_interest_usdt,
+            minimum_turnover_24h_usdt=settings.pair_discovery_minimum_turnover_24h_usdt,
+            refresh_interval_seconds=settings.pair_discovery_interval_seconds,
+            maximum_pairs=settings.pair_discovery_maximum_pairs,
+            on_refresh=_on_pair_list_refreshed,
+        )
+        set_pair_source(pair_discovery_service.get_current_pairs)
+        configured_pair_provider = pair_discovery_service.get_current_pairs
+    else:
+        set_pair_source(None)
+
     scheduler = MultiPairScanScheduler(
         pair_scanner=pair_scanner,
-        configured_pair_provider=get_configured_pairs,
+        configured_pair_provider=configured_pair_provider,
         scanner_interval_seconds=settings.scanner_interval_seconds,
         maximum_concurrent_scans=settings.max_concurrent_scans,
     )
@@ -434,6 +472,7 @@ def build_scanner_service(*, on_event=None, on_cycle_result=None) -> ScannerServ
         signal_storage_service=signal_storage_service,
         storage_failure_is_fatal=settings.storage_failure_is_fatal,
         notification_service=notification_service,
+        pair_discovery_service=pair_discovery_service,
         on_event=on_event,
         on_cycle_result=on_cycle_result,
     )

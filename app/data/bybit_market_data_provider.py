@@ -16,7 +16,7 @@ from typing import Optional
 
 import httpx
 
-from app.config.pairs import validate_pair_symbol
+from app.config.pairs import validate_pair_symbol, validate_pair_symbol_format
 from app.config.timeframes import (
     REQUIRED_CANDLE_LIMITS,
     get_exchange_timeframe,
@@ -35,6 +35,7 @@ from app.data.market_data_errors import (
     MarketDataValidationError,
 )
 from app.data.provider_base import MarketDataProvider
+from app.data.ticker_snapshot import TickerSnapshot
 from app.models.candle import Candle
 
 KLINE_ENDPOINT = "/v5/market/kline"
@@ -293,6 +294,64 @@ def _to_bybit_symbol(validated_symbol: str) -> str:
     requests use the no-hyphen form.
     """
     return validated_symbol.replace("-", "")
+
+
+def _from_bybit_symbol(bybit_symbol: str) -> Optional[str]:
+    """
+    Convert a Bybit USDT-perpetual instrument name ("BTCUSDT") back into
+    the application's internal hyphenated form ("BTC-USDT").
+
+    Returns None for any symbol that isn't a USDT-quoted linear
+    perpetual (e.g. USDC- or other quote-currency instruments Bybit's
+    bulk tickers endpoint may also return), since this application only
+    trades USDT perpetuals.
+    """
+    if not bybit_symbol.endswith("USDT") or bybit_symbol == "USDT":
+        return None
+    base = bybit_symbol[: -len("USDT")]
+    if not base:
+        return None
+    return f"{base}-USDT"
+
+
+def _to_optional_float(value: object) -> Optional[float]:
+    """Best-effort numeric coercion: returns None for missing/malformed values, never raises."""
+    if value is None:
+        return None
+    try:
+        return float(Decimal(str(value)))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+
+
+def _parse_ticker_row(row: object) -> Optional[TickerSnapshot]:
+    """
+    Parse a single row from Bybit's bulk tickers response into a
+    TickerSnapshot, or None if the row isn't a USDT-perpetual pair this
+    application tracks. Never raises; individually malformed rows are
+    skipped rather than failing the whole batch.
+    """
+    if not isinstance(row, dict):
+        return None
+
+    bybit_symbol = row.get("symbol")
+    if not isinstance(bybit_symbol, str):
+        return None
+
+    symbol = _from_bybit_symbol(bybit_symbol)
+    if symbol is None:
+        return None
+
+    try:
+        validated_symbol = validate_pair_symbol_format(symbol)
+    except ValueError:
+        return None
+
+    return TickerSnapshot(
+        symbol=validated_symbol,
+        open_interest_usdt=_to_optional_float(row.get("openInterestValue")),
+        turnover_24h_usdt=_to_optional_float(row.get("turnover24h")),
+    )
 
 
 class BybitMarketDataProvider(MarketDataProvider):
@@ -650,3 +709,51 @@ class BybitMarketDataProvider(MarketDataProvider):
             return float(Decimal(str(last_price)))
         except (InvalidOperation, TypeError, ValueError):
             return None
+
+    async def fetch_all_linear_tickers(self) -> list[TickerSnapshot]:
+        """
+        Fetch Open Interest and 24h turnover for every USDT perpetual
+        futures pair from Bybit's public bulk tickers endpoint
+        (category=linear, no symbol filter -- one call returns every
+        instrument at once).
+
+        Uses only public market data (no API keys). Never raises: on
+        any request, response, or validation failure this returns an
+        empty list so callers can safely fall back to a previously
+        known-good pair list. Rows for symbols that aren't USDT-quoted
+        linear perpetuals, or that are missing/malformed OI or turnover
+        fields, are skipped individually rather than failing the whole
+        batch.
+        """
+        try:
+            response = await self._client.get(
+                TICKER_ENDPOINT, params={"category": LINEAR_CATEGORY}
+            )
+        except httpx.HTTPError:
+            return []
+
+        if response.status_code != 200:
+            return []
+
+        try:
+            payload = response.json()
+        except ValueError:
+            return []
+
+        if not isinstance(payload, dict) or payload.get("retCode") != _SUCCESS_RET_CODE:
+            return []
+
+        result = payload.get("result")
+        if not isinstance(result, dict):
+            return []
+
+        ticker_list = result.get("list")
+        if not isinstance(ticker_list, list):
+            return []
+
+        snapshots: list[TickerSnapshot] = []
+        for row in ticker_list:
+            snapshot = _parse_ticker_row(row)
+            if snapshot is not None:
+                snapshots.append(snapshot)
+        return snapshots

@@ -296,7 +296,6 @@ describe("DashboardPage", () => {
           preview_completed_layers: null,
           preview_failed_layers: null,
           preview_data_availability: null,
-          chart_trend: null,
         },
       ],
     });
@@ -330,7 +329,6 @@ describe("DashboardPage", () => {
         preview_completed_layers: ["MARKET_REGIME", "HTF_BIAS"],
         preview_failed_layers: ["LIQUIDITY_SWEEP"],
         preview_data_availability: { LIQUIDITY_SWEEP: "FAILED" },
-        chart_trend: "UP",
       },
     ]);
 

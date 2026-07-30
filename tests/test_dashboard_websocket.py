@@ -133,6 +133,7 @@ class TestScannerEventModel:
             "TELEGRAM_SENT",
             "TELEGRAM_FAILED",
             "SCANNER_STATUS_CHANGED",
+            "PAIR_LIST_REFRESHED",
         }
         actual = {member.value for member in ScannerEventType}
         assert expected == actual
