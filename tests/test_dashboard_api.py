@@ -1,6 +1,6 @@
 """
 Tests for the dashboard FastAPI routes, using dependency overrides so no
-real database, scanner, or OKX network calls occur.
+real database, scanner, or Bybit network calls occur.
 """
 
 from datetime import datetime, timezone
@@ -17,9 +17,9 @@ from app.config.settings import get_settings
 @pytest.fixture(autouse=True)
 def _disable_dashboard_scanner(monkeypatch):
     # The dashboard API's lifespan starts a real background scanner (with
-    # real OKX network calls) whenever DASHBOARD_API_ENABLED is true. Unit
-    # tests must never make real network calls, so force it off here,
-    # regardless of the developer's local .env.
+    # real Bybit network calls) whenever DASHBOARD_API_ENABLED is true.
+    # Unit tests must never make real network calls, so force it off
+    # here, regardless of the developer's local .env.
     monkeypatch.setenv("DASHBOARD_API_ENABLED", "false")
     get_settings.cache_clear()
     yield
@@ -79,6 +79,7 @@ def app_with_mocks():
         )
     )
     dashboard_service.get_signal_details = AsyncMock(return_value=None)
+    dashboard_service.activate_signal = AsyncMock(return_value=None)
 
     signal_repository = MagicMock()
     signal_repository.list_recent = AsyncMock(return_value=[])
@@ -160,6 +161,46 @@ class TestActiveSignalsEndpoint:
             response = client.get("/api/dashboard/active-signals")
         assert response.status_code == 200
         assert response.json()[0]["trade_id"] == "SMC-1"
+
+
+class TestActivateSignalEndpoint:
+    def test_activate_signal_returns_active_signal(self, app_with_mocks):
+        app, dashboard_service, _ = app_with_mocks
+        dashboard_service.activate_signal = AsyncMock(
+            return_value=ActiveSignal(
+                trade_id="SMC-1",
+                coin="BTC-USDT",
+                direction="BUY",
+                current_price=None,
+                entry_price=100.0,
+                take_profit=110.0,
+                stop_loss=95.0,
+                distance_to_take_profit_percentage=None,
+                confidence_score=95.0,
+                signal_type="PREMIUM",
+                detection_time_utc=UTC_NOW,
+                dashboard_status="ACTIVE",
+            )
+        )
+        with TestClient(app) as client:
+            response = client.post("/api/dashboard/signals/SMC-1/activate")
+        assert response.status_code == 200
+        assert response.json()["trade_id"] == "SMC-1"
+        assert response.json()["dashboard_status"] == "ACTIVE"
+        dashboard_service.activate_signal.assert_awaited_once_with("SMC-1")
+
+    def test_activate_signal_not_found_returns_404(self, app_with_mocks):
+        app, dashboard_service, _ = app_with_mocks
+        dashboard_service.activate_signal = AsyncMock(return_value=None)
+        with TestClient(app) as client:
+            response = client.post("/api/dashboard/signals/does-not-exist/activate")
+        assert response.status_code == 404
+
+    def test_activate_signal_route_is_post_only(self, app_with_mocks):
+        app, _, _ = app_with_mocks
+        with TestClient(app) as client:
+            response = client.get("/api/dashboard/signals/SMC-1/activate")
+        assert response.status_code == 405
 
 
 class TestPremiumStrongEndpoints:

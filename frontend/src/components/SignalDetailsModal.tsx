@@ -8,7 +8,12 @@ interface SignalDetailsModalProps {
   loading: boolean;
   error: string | null;
   onClose: () => void;
+  onTrade: (tradeId: string) => void;
+  trading: boolean;
+  tradeError: string | null;
 }
+
+const TRADABLE_SIGNAL_TYPES = new Set(["PREMIUM", "STRONG"]);
 
 function Row({ label, value }: { label: string; value: React.ReactNode }) {
   return (
@@ -19,7 +24,18 @@ function Row({ label, value }: { label: string; value: React.ReactNode }) {
   );
 }
 
-export function SignalDetailsModal({ details, loading, error, onClose }: SignalDetailsModalProps) {
+export function SignalDetailsModal({
+  details,
+  loading,
+  error,
+  onClose,
+  onTrade,
+  trading,
+  tradeError,
+}: SignalDetailsModalProps) {
+  const isAlreadyActive = details?.dashboard_status === "ACTIVE";
+  const canTrade = details !== null && TRADABLE_SIGNAL_TYPES.has(details.signal_type);
+
   return (
     <div
       role="dialog"
@@ -34,15 +50,31 @@ export function SignalDetailsModal({ details, loading, error, onClose }: SignalD
       >
         <div className="mb-4 flex items-center justify-between">
           <h2 className="text-lg font-bold text-slate-900">Signal Details</h2>
-          <button
-            type="button"
-            aria-label="Close"
-            onClick={onClose}
-            className="flex h-8 w-8 items-center justify-center rounded-full text-slate-400 hover:bg-slate-100"
-          >
-            <X size={16} />
-          </button>
+          <div className="flex items-center gap-2">
+            {canTrade ? (
+              <button
+                type="button"
+                disabled={isAlreadyActive || trading}
+                onClick={() => onTrade(details!.trade_id)}
+                className="rounded-md bg-emerald-600 px-4 py-1.5 text-sm font-semibold text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-500"
+              >
+                {isAlreadyActive ? "Already Active" : trading ? "Activating…" : "Trade"}
+              </button>
+            ) : null}
+            <button
+              type="button"
+              aria-label="Close"
+              onClick={onClose}
+              className="flex h-8 w-8 items-center justify-center rounded-full text-slate-400 hover:bg-slate-100"
+            >
+              <X size={16} />
+            </button>
+          </div>
         </div>
+
+        {tradeError ? (
+          <div className="mb-4 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{tradeError}</div>
+        ) : null}
 
         {loading ? <div className="py-8 text-center text-sm text-slate-400">Loading…</div> : null}
         {error ? <div className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div> : null}

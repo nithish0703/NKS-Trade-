@@ -90,6 +90,9 @@ class ActiveSignal(BaseModel):
     confidence_score: float
     signal_type: str
     detection_time_utc: datetime
+    # Dashboard-only lifecycle status; always "ACTIVE" for a signal that
+    # appears in this list. Never reflects a real exchange position.
+    dashboard_status: str = "ACTIVE"
 
 
 class PremiumSignal(BaseModel):
@@ -169,6 +172,9 @@ class SignalDetails(BaseModel):
     btc_market_alignment: bool
     detection_time_utc: datetime
     institutional_reason: str
+    # Dashboard-only lifecycle status ("NEW" or "ACTIVE"). Drives whether
+    # the modal's "Trade" button is enabled; never a real trading field.
+    dashboard_status: str = "NEW"
 
 
 class ScannerStatusResponse(BaseModel):

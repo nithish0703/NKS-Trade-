@@ -9,7 +9,8 @@ from typing import Mapping, Optional, Sequence
 from app.config.pairs import BTC_SYMBOL, validate_pair_symbol
 from app.config.timeframes import ENTRY_TIMEFRAME, HTF_PRIMARY, HTF_SECONDARY
 from app.data.candle_repository import CandleRepository
-from app.data.market_data_provider import MarketDataError, OKXMarketDataProvider
+from app.data.market_data_errors import MarketDataError
+from app.data.provider_base import MarketDataProvider
 from app.indicators.calculator import IndicatorCalculator
 from app.indicators.ema import IndicatorCalculationError
 from app.liquidity.calculator import LiquidityCalculator
@@ -97,7 +98,7 @@ class InstitutionalSMCStrategyEngine:
 
     def __init__(
         self,
-        market_data_provider: OKXMarketDataProvider,
+        market_data_provider: MarketDataProvider,
         candle_repository: CandleRepository,
         indicator_calculator: IndicatorCalculator,
         market_structure_calculator: MarketStructureCalculator,

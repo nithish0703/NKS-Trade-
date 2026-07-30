@@ -1,10 +1,10 @@
 """
-Provides market data (candles) from external or internal sources.
+Provides market data (candles) from Bybit's public v5 REST API.
 
-This module implements an OKX public-market-data REST client. It only
-fetches, validates, and normalizes raw candle data into the immutable
-Candle model. It does not perform any indicator calculation or trading
-strategy analysis.
+This module implements a Bybit public-market-data REST client for USDT
+perpetual futures (category=linear). It only fetches, validates, and
+normalizes raw candle data into the immutable Candle model. It does not
+perform any indicator calculation or trading strategy analysis.
 """
 
 import asyncio
@@ -17,22 +17,35 @@ from typing import Optional
 import httpx
 
 from app.config.pairs import validate_pair_symbol
-from app.config.timeframes import REQUIRED_CANDLE_LIMITS, get_exchange_timeframe
-from app.data.data_validator import (
-    DataValidationError,
-    is_completed_candle,
-    validate_candle_sequence,
-    validate_okx_response,
+from app.config.timeframes import (
+    REQUIRED_CANDLE_LIMITS,
+    get_exchange_timeframe,
+    get_timeframe_duration_seconds,
 )
+from app.data.bybit_data_validator import (
+    DataValidationError,
+    is_completed_kline,
+    validate_bybit_response,
+    validate_candle_sequence,
+)
+from app.data.market_data_errors import (
+    MarketDataError,
+    MarketDataRequestError,
+    MarketDataResponseError,
+    MarketDataValidationError,
+)
+from app.data.provider_base import MarketDataProvider
 from app.models.candle import Candle
 
-CANDLES_ENDPOINT = "/api/v5/market/candles"
-TICKER_ENDPOINT = "/api/v5/market/ticker"
-MAX_CANDLE_LIMIT = 300
+KLINE_ENDPOINT = "/v5/market/kline"
+TICKER_ENDPOINT = "/v5/market/tickers"
+MAX_CANDLE_LIMIT = 1000
+LINEAR_CATEGORY = "linear"
 
 # Request scheduling / retry tuning. These control only HTTP request
-# timing and retry behaviour against OKX's public market-data API; they
-# never affect any strategy rule, threshold, or indicator calculation.
+# timing and retry behaviour against Bybit's public market-data API;
+# they never affect any strategy rule, threshold, or indicator
+# calculation.
 MAX_REQUEST_ATTEMPTS = 3
 RETRY_BACKOFF_SCHEDULE_SECONDS = (1.0, 2.0, 4.0)
 MAX_CONCURRENT_REQUESTS = 4
@@ -40,6 +53,17 @@ MIN_REQUEST_INTERVAL_SECONDS = 0.1
 INTER_TIMEFRAME_DELAY_SECONDS = 0.2
 
 _RETRYABLE_HTTP_STATUS_CODES = {429, 500, 502, 503, 504}
+
+# Bybit signals rate-limiting and some application errors via a non-zero
+# retCode in an HTTP-200 body, in addition to (sometimes instead of) an
+# HTTP-level status code. These retCodes are treated exactly like the
+# retryable HTTP statuses above.
+_RETRYABLE_RET_CODES = {
+    10002,  # request not received within recvWindow
+    10006,  # too many visits, exceeded the API rate limit
+    10018,  # exceeded the IP rate limit
+}
+_SUCCESS_RET_CODE = 0
 
 # Only network-layer failures that are typically transient (a dropped or
 # reset connection, a timeout) are retried. DNS failures, SSL/certificate
@@ -54,22 +78,6 @@ _TRANSIENT_EXCEPTION_TYPES = (
 )
 
 _logger = logging.getLogger(__name__)
-
-
-class MarketDataError(Exception):
-    """Base exception for all market-data related failures."""
-
-
-class MarketDataRequestError(MarketDataError):
-    """Raised when the HTTP request to the exchange fails."""
-
-
-class MarketDataResponseError(MarketDataError):
-    """Raised when the exchange returns an invalid or non-success response."""
-
-
-class MarketDataValidationError(MarketDataError):
-    """Raised when fetched candle data fails structural validation."""
 
 
 def _classify_transport_failure(exc: httpx.HTTPError) -> str:
@@ -116,16 +124,17 @@ def _classify_transport_failure(exc: httpx.HTTPError) -> str:
 
 def _build_default_ssl_context() -> ssl.SSLContext:
     """
-    Build the default TLS context used for outbound OKX connections.
+    Build the default TLS context used for outbound Bybit connections.
 
     Certificate validation and hostname verification remain fully
     enforced; only the OpenSSL cipher/security level is relaxed from the
     Python default (SECLEVEL=2) to SECLEVEL=1. Some environments' default
     OpenSSL 3.x security level rejects cipher/key-exchange parameters
-    that OKX's TLS endpoint offers, causing every request to fail at the
-    TLS handshake with a generic connection-reset error before any HTTP
-    exchange occurs. SECLEVEL=1 still requires TLS 1.2+ and authenticated
-    encryption; it only widens the accepted cipher/key-size set.
+    that an exchange's TLS endpoint offers, causing every request to
+    fail at the TLS handshake with a generic connection-reset error
+    before any HTTP exchange occurs. SECLEVEL=1 still requires TLS 1.2+
+    and authenticated encryption; it only widens the accepted
+    cipher/key-size set.
     """
     context = ssl.create_default_context()
     try:
@@ -174,11 +183,9 @@ def _describe_transport_failure(exc: httpx.HTTPError, *, endpoint_host: str) -> 
 
 def _resolve_retry_after_seconds(response: httpx.Response) -> Optional[float]:
     """
-    Parse a `Retry-After` value from an OKX HTTP response, Telegram-client
-    style: prefer a numeric header value; otherwise fall back to None so
-    the caller uses bounded exponential backoff instead. OKX's public
-    market-data API returns Retry-After as a plain integer/float number
-    of seconds (not an HTTP-date), so no date parsing is attempted.
+    Parse a `Retry-After` value from a Bybit HTTP response: prefer a
+    numeric header value; otherwise fall back to None so the caller uses
+    bounded exponential backoff instead.
     """
     header_value = response.headers.get("Retry-After")
     if header_value is None:
@@ -189,9 +196,24 @@ def _resolve_retry_after_seconds(response: httpx.Response) -> Optional[float]:
         return None
 
 
+def _extract_ret_code(response: httpx.Response) -> Optional[int]:
+    """
+    Best-effort extraction of Bybit's body-level `retCode`, without
+    raising: returns None if the body isn't JSON or lacks the field.
+    """
+    try:
+        payload = response.json()
+    except ValueError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    ret_code = payload.get("retCode")
+    return ret_code if isinstance(ret_code, int) else None
+
+
 class _AsyncRequestRateLimiter:
     """
-    Shared async gate for all outbound OKX market-data requests.
+    Shared async gate for all outbound Bybit market-data requests.
 
     Combines two independent controls:
       - a concurrency semaphore, bounding how many requests may be
@@ -199,10 +221,10 @@ class _AsyncRequestRateLimiter:
       - a minimum-interval gate, ensuring consecutive requests (even
         sequential ones) are spaced at least `min_interval_seconds`
         apart, to smooth request bursts that would otherwise trigger
-        OKX's rate limiting.
+        Bybit's rate limiting.
 
-    A single instance is shared by one OKXMarketDataProvider across all
-    symbols and timeframes in a scan cycle.
+    A single instance is shared by one BybitMarketDataProvider across
+    all symbols and timeframes in a scan cycle.
     """
 
     def __init__(self, *, max_concurrent_requests: int, min_interval_seconds: float) -> None:
@@ -240,7 +262,7 @@ def _to_decimal(value: str, field_name: str) -> float:
 
 
 def _raw_row_to_candle(row: list[str], symbol: str, timeframe: str) -> Candle:
-    """Convert a single validated, completed OKX candle row into a Candle."""
+    """Convert a single validated, completed Bybit kline row into a Candle."""
     try:
         timestamp_ms = int(row[0])
     except (TypeError, ValueError) as exc:
@@ -262,9 +284,21 @@ def _raw_row_to_candle(row: list[str], symbol: str, timeframe: str) -> Candle:
     )
 
 
-class OKXMarketDataProvider:
+def _to_bybit_symbol(validated_symbol: str) -> str:
     """
-    Async client for fetching public candle market data from OKX.
+    Convert an internal hyphenated pair symbol ("BTC-USDT") into Bybit's
+    USDT-perpetual instrument naming convention ("BTCUSDT"). Internal
+    pair strings stay hyphenated everywhere else in the application
+    (config, signals, dashboard API, frontend); only outbound Bybit HTTP
+    requests use the no-hyphen form.
+    """
+    return validated_symbol.replace("-", "")
+
+
+class BybitMarketDataProvider(MarketDataProvider):
+    """
+    Async client for fetching public candle market data from Bybit's v5
+    API, for USDT perpetual futures (category=linear).
 
     Supports dependency injection of an `httpx.AsyncClient` for testing.
     When no client is injected, an internal client is created and owned
@@ -303,6 +337,20 @@ class OKXMarketDataProvider:
         index = min(attempt - 1, len(self._retry_backoff_schedule_seconds) - 1)
         return self._retry_backoff_schedule_seconds[index]
 
+    def _is_retryable_response(self, response: httpx.Response) -> bool:
+        """
+        Bybit signals rate-limiting and some application errors via
+        either an HTTP status code (429/5xx) or, with an HTTP-200
+        response, a non-zero body-level `retCode`. Both layers must be
+        checked; HTTP status alone is not sufficient.
+        """
+        if response.status_code in _RETRYABLE_HTTP_STATUS_CODES:
+            return True
+        if response.status_code == 200:
+            ret_code = _extract_ret_code(response)
+            return ret_code is not None and ret_code in _RETRYABLE_RET_CODES
+        return False
+
     async def _request_with_retry(
         self,
         endpoint: str,
@@ -319,11 +367,13 @@ class OKXMarketDataProvider:
             connect/read timeouts);
           - HTTP 429 (using Retry-After when present, else bounded
             exponential backoff);
-          - HTTP 500/502/503/504.
+          - HTTP 500/502/503/504;
+          - HTTP 200 responses carrying a retryable body-level retCode
+            (Bybit rate-limit signaling).
 
         Non-transient failures (DNS, SSL, malformed request) and
         permanent HTTP errors (400/401/403 and any other non-retryable
-        status) are surfaced immediately, without retry.
+        status/retCode) are surfaced immediately, without retry.
         """
         last_exc: Optional[httpx.HTTPError] = None
 
@@ -338,7 +388,7 @@ class OKXMarketDataProvider:
                 if is_last_attempt or not _is_transient_transport_failure(exc):
                     diagnostics = _describe_transport_failure(exc, endpoint_host=endpoint_host)
                     _logger.warning(
-                        "OKX request failed symbol=%s timeframe=%s attempt=%d "
+                        "Bybit request failed symbol=%s timeframe=%s attempt=%d "
                         "exception=%s wait_seconds=0",
                         symbol,
                         timeframe,
@@ -346,13 +396,13 @@ class OKXMarketDataProvider:
                         type(exc).__name__,
                     )
                     raise MarketDataRequestError(
-                        f"HTTP request to OKX failed for {symbol} {timeframe} "
+                        f"HTTP request to Bybit failed for {symbol} {timeframe} "
                         f"(endpoint={endpoint}, attempts={attempt}): {diagnostics}"
                     ) from exc
 
                 wait_seconds = self._backoff_seconds_for_attempt(attempt)
                 _logger.warning(
-                    "OKX request failed symbol=%s timeframe=%s attempt=%d "
+                    "Bybit request failed symbol=%s timeframe=%s attempt=%d "
                     "exception=%s wait_seconds=%.1f",
                     symbol,
                     timeframe,
@@ -363,12 +413,12 @@ class OKXMarketDataProvider:
                 await asyncio.sleep(wait_seconds)
                 continue
 
-            if response.status_code not in _RETRYABLE_HTTP_STATUS_CODES:
+            if not self._is_retryable_response(response):
                 return response, attempt
 
             if is_last_attempt:
                 _logger.warning(
-                    "OKX request failed symbol=%s timeframe=%s attempt=%d "
+                    "Bybit request failed symbol=%s timeframe=%s attempt=%d "
                     "status=%d wait_seconds=0",
                     symbol,
                     timeframe,
@@ -385,7 +435,7 @@ class OKXMarketDataProvider:
                 wait_seconds = self._backoff_seconds_for_attempt(attempt)
 
             _logger.warning(
-                "OKX request failed symbol=%s timeframe=%s attempt=%d "
+                "Bybit request failed symbol=%s timeframe=%s attempt=%d "
                 "status=%d wait_seconds=%.1f",
                 symbol,
                 timeframe,
@@ -397,24 +447,23 @@ class OKXMarketDataProvider:
 
         # Unreachable: the loop above always returns or raises.
         raise MarketDataRequestError(
-            f"HTTP request to OKX failed for {symbol} {timeframe} (endpoint={endpoint})."
+            f"HTTP request to Bybit failed for {symbol} {timeframe} (endpoint={endpoint})."
         ) from last_exc
 
-    async def __aenter__(self) -> "OKXMarketDataProvider":
+    async def __aenter__(self) -> "BybitMarketDataProvider":
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
         if self._owns_client:
             await self._client.aclose()
 
-    async def fetch_candles(
-        self, symbol: str, timeframe: str, limit: int
-    ) -> list[Candle]:
+    async def fetch_candles(self, symbol: str, timeframe: str, limit: int) -> list[Candle]:
         """
         Fetch completed OHLCV candles for a symbol and internal timeframe.
 
         Returns candles in ascending chronological order, containing only
-        completed candles (OKX confirm == "1").
+        fully closed candles (Bybit carries no explicit "closed" flag;
+        completeness is inferred from `startTime + interval duration`).
 
         Raises:
             ValueError: If the symbol, timeframe, or limit are invalid.
@@ -424,20 +473,25 @@ class OKXMarketDataProvider:
                 sequence fails structural validation.
         """
         validated_symbol = validate_pair_symbol(symbol)
-        exchange_bar = get_exchange_timeframe(timeframe)
+        bybit_symbol = _to_bybit_symbol(validated_symbol)
+        interval = get_exchange_timeframe(timeframe)
+        interval_seconds = get_timeframe_duration_seconds(timeframe)
 
         if limit <= 0:
             raise ValueError(f"limit must be greater than zero, got {limit}.")
         if limit > MAX_CANDLE_LIMIT:
-            raise ValueError(
-                f"limit must not exceed {MAX_CANDLE_LIMIT}, got {limit}."
-            )
+            raise ValueError(f"limit must not exceed {MAX_CANDLE_LIMIT}, got {limit}.")
 
-        params = {"instId": validated_symbol, "bar": exchange_bar, "limit": str(limit)}
+        params = {
+            "category": LINEAR_CATEGORY,
+            "symbol": bybit_symbol,
+            "interval": interval,
+            "limit": str(limit),
+        }
 
         endpoint_host = httpx.URL(self._base_url).host
         response, attempts = await self._request_with_retry(
-            CANDLES_ENDPOINT,
+            KLINE_ENDPOINT,
             params=params,
             symbol=validated_symbol,
             timeframe=timeframe,
@@ -446,8 +500,8 @@ class OKXMarketDataProvider:
 
         if response.status_code != 200:
             raise MarketDataResponseError(
-                f"OKX returned HTTP status {response.status_code} for "
-                f"{validated_symbol} {timeframe} (endpoint={CANDLES_ENDPOINT}, "
+                f"Bybit returned HTTP status {response.status_code} for "
+                f"{validated_symbol} {timeframe} (endpoint={KLINE_ENDPOINT}, "
                 f"host={endpoint_host}, attempts={attempts})."
             )
 
@@ -455,27 +509,34 @@ class OKXMarketDataProvider:
             payload = response.json()
         except ValueError as exc:
             raise MarketDataResponseError(
-                f"OKX response for {validated_symbol} {timeframe} is not valid JSON."
+                f"Bybit response for {validated_symbol} {timeframe} is not valid JSON."
             ) from exc
 
+        if isinstance(payload, dict) and payload.get("retCode") != _SUCCESS_RET_CODE:
+            raise MarketDataResponseError(
+                f"Bybit returned retCode {payload.get('retCode')} for "
+                f"{validated_symbol} {timeframe} (endpoint={KLINE_ENDPOINT}, "
+                f"host={endpoint_host}, attempts={attempts})."
+            )
+
         try:
-            raw_rows = validate_okx_response(payload)
+            raw_rows = validate_bybit_response(payload)
         except DataValidationError as exc:
             raise MarketDataValidationError(str(exc)) from exc
 
+        now_utc = datetime.now(timezone.utc)
         completed_candles: list[Candle] = []
         for row in raw_rows:
             try:
-                if not is_completed_candle(row):
+                if not is_completed_kline(row, interval_seconds=interval_seconds, now_utc=now_utc):
                     continue
             except DataValidationError as exc:
                 raise MarketDataValidationError(str(exc)) from exc
 
-            completed_candles.append(
-                _raw_row_to_candle(row, validated_symbol, timeframe)
-            )
+            completed_candles.append(_raw_row_to_candle(row, validated_symbol, timeframe))
 
-        # OKX returns newest-first; the project requires oldest-to-newest.
+        # Bybit returns klines newest-first (descending by startTime);
+        # the project requires oldest-to-newest.
         completed_candles.sort(key=lambda candle: candle.timestamp)
 
         if completed_candles:
@@ -539,7 +600,7 @@ class OKXMarketDataProvider:
 
     async def fetch_ticker_price(self, symbol: str) -> Optional[float]:
         """
-        Fetch the latest traded price for a symbol from OKX's public
+        Fetch the latest traded price for a symbol from Bybit's public
         ticker endpoint. Uses only public market data (no API keys).
 
         Returns None (rather than raising) on any request, response, or
@@ -552,9 +613,11 @@ class OKXMarketDataProvider:
         except ValueError:
             return None
 
+        bybit_symbol = _to_bybit_symbol(validated_symbol)
+
         try:
             response = await self._client.get(
-                TICKER_ENDPOINT, params={"instId": validated_symbol}
+                TICKER_ENDPOINT, params={"category": LINEAR_CATEGORY, "symbol": bybit_symbol}
             )
         except httpx.HTTPError:
             return None
@@ -567,14 +630,19 @@ class OKXMarketDataProvider:
         except ValueError:
             return None
 
-        if not isinstance(payload, dict) or payload.get("code") != "0":
+        if not isinstance(payload, dict) or payload.get("retCode") != _SUCCESS_RET_CODE:
             return None
 
-        data = payload.get("data")
-        if not isinstance(data, list) or not data:
+        result = payload.get("result")
+        if not isinstance(result, dict):
             return None
 
-        last_price = data[0].get("last") if isinstance(data[0], dict) else None
+        ticker_list = result.get("list")
+        if not isinstance(ticker_list, list) or not ticker_list:
+            return None
+
+        first = ticker_list[0]
+        last_price = first.get("lastPrice") if isinstance(first, dict) else None
         if last_price is None:
             return None
 

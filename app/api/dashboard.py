@@ -2,7 +2,7 @@
 Dashboard summary and card-data REST endpoints.
 """
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 
 from app.api.dashboard_service import DashboardService
 from app.api.dependencies import get_dashboard_service
@@ -52,6 +52,23 @@ async def get_strong_signals(
     service: DashboardService = Depends(get_dashboard_service),
 ) -> list[StrongSignal]:
     return await service.get_strong_signals()
+
+
+@router.post("/signals/{trade_id}/activate", response_model=ActiveSignal)
+async def activate_signal(
+    trade_id: str,
+    service: DashboardService = Depends(get_dashboard_service),
+) -> ActiveSignal:
+    """
+    Mark a stored PREMIUM/STRONG signal as ACTIVE (dashboard-only state
+    transition, moving it from Premium/Strong into Active Signals).
+    Never places an order, calls an exchange, or affects strategy,
+    scoring, risk, or Telegram behaviour.
+    """
+    result = await service.activate_signal(trade_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Signal not found.")
+    return result
 
 
 @router.get("/recent-rejections", response_model=list[RejectionItem])

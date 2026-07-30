@@ -1,4 +1,4 @@
-import { apiGet } from "../api/client";
+import { apiGet, apiPost } from "../api/client";
 import type {
   ActiveSignal,
   DashboardHealth,
@@ -18,6 +18,9 @@ export const dashboardApi = {
 
   getActiveSignals: (): Promise<ActiveSignal[]> =>
     apiGet<ActiveSignal[]>("/api/dashboard/active-signals"),
+
+  activateSignal: (tradeId: string): Promise<ActiveSignal> =>
+    apiPost<ActiveSignal>(`/api/dashboard/signals/${encodeURIComponent(tradeId)}/activate`),
 
   getPremiumSignals: (): Promise<PremiumSignal[]> =>
     apiGet<PremiumSignal[]>("/api/dashboard/premium-signals"),

@@ -5,9 +5,51 @@ Database connection and session management.
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
+from sqlalchemy import inspect, text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 
 from app.storage.models import Base
+
+
+def _add_missing_columns(sync_connection) -> None:
+    """
+    Additive-only lightweight migration: for each declared ORM table that
+    already exists in the database, add any column present on the model
+    but missing from the on-disk table (e.g. a new nullable/defaulted
+    column added after the table was first created). Never drops,
+    renames, or alters an existing column, and never touches a table
+    that doesn't exist yet (create_all handles brand-new tables).
+
+    This project has no Alembic/migration framework; this keeps
+    `create_all`'s "safe to call repeatedly" guarantee while still
+    letting additive schema changes reach databases created by an
+    older version of the code.
+    """
+    inspector = inspect(sync_connection)
+    existing_tables = set(inspector.get_table_names())
+
+    for table in Base.metadata.sorted_tables:
+        if table.name not in existing_tables:
+            continue
+        existing_columns = {col["name"] for col in inspector.get_columns(table.name)}
+        for column in table.columns:
+            if column.name in existing_columns:
+                continue
+            ddl_type = column.type.compile(dialect=sync_connection.dialect)
+            default_clause = ""
+            if column.server_default is not None:
+                default_arg = column.server_default.arg
+                raw_sql_text = getattr(default_arg, "text", None)
+                if raw_sql_text is not None:
+                    # Already a raw SQL literal/expression (e.g. text("0")).
+                    default_clause = f" DEFAULT {raw_sql_text}"
+                else:
+                    # A plain Python value (e.g. server_default="NEW"); quote
+                    # it as a SQL string literal.
+                    default_clause = f" DEFAULT '{default_arg}'"
+            sync_connection.execute(
+                text(f'ALTER TABLE "{table.name}" ADD COLUMN "{column.name}" {ddl_type}{default_clause}')
+            )
 
 
 class StorageError(Exception):
@@ -39,12 +81,16 @@ class DatabaseManager:
 
     async def initialize(self) -> None:
         """
-        Create all tables if they do not already exist. Idempotent and
-        never drops or recreates existing tables.
+        Create all tables if they do not already exist, then add any
+        columns declared on the ORM models but missing from existing
+        tables (additive-only lightweight migration; see
+        _add_missing_columns). Idempotent and never drops or recreates
+        existing tables or columns.
         """
         try:
             async with self._engine.begin() as connection:
                 await connection.run_sync(Base.metadata.create_all)
+                await connection.run_sync(_add_missing_columns)
             self._initialized = True
         except Exception as exc:
             raise DatabaseInitializationError(

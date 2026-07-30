@@ -6,7 +6,7 @@ application settings and thresholds.
 from app.config import thresholds
 from app.config.settings import get_settings
 from app.data.candle_repository import CandleRepository
-from app.data.market_data_provider import OKXMarketDataProvider
+from app.data.bybit_market_data_provider import BybitMarketDataProvider
 from app.indicators.calculator import IndicatorCalculator
 from app.liquidity.calculator import LiquidityCalculator
 from app.liquidity.equal_high_low import EqualHighLowDetector
@@ -93,7 +93,7 @@ def build_strategy_engine() -> InstitutionalSMCStrategyEngine:
     """
     settings = get_settings()
 
-    market_data_provider = OKXMarketDataProvider(
+    market_data_provider = BybitMarketDataProvider(
         base_url=settings.exchange_base_url,
         request_timeout_seconds=settings.request_timeout_seconds,
     )

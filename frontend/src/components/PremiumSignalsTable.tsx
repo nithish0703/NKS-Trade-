@@ -53,7 +53,7 @@ export function PremiumSignalsTable({ signals, onView }: PremiumSignalsTableProp
                   onClick={() => onView(signal.trade_id)}
                   className="rounded-md bg-purple-600 px-3 py-1 text-xs font-semibold text-white hover:bg-purple-700"
                 >
-                  View
+                  Go
                 </button>
               </td>
             </tr>

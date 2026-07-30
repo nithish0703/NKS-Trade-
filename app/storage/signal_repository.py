@@ -5,12 +5,16 @@ Repository for persisting and retrieving signals.
 from datetime import datetime, timezone
 from typing import Optional
 
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy import desc, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from app.models.signal import Direction, MarketRegime, Signal, SignalType
 from app.storage.database import DatabaseManager, DatabaseOperationError
 from app.storage.models import SignalRecord
+
+DASHBOARD_STATUS_NEW = "NEW"
+DASHBOARD_STATUS_ACTIVE = "ACTIVE"
 
 
 def _as_utc(value: datetime) -> datetime:
@@ -24,8 +28,29 @@ def _as_utc(value: datetime) -> datetime:
     return value
 
 
+class SignalWithStatus(BaseModel):
+    """
+    A stored Signal paired with its dashboard-only lifecycle status.
+
+    `signal` is the exact, unmodified Signal as persisted -- this
+    wrapper never mutates or recalculates any of its trading fields.
+    `dashboard_status` ("NEW" or "ACTIVE") is a pure UI state transition
+    set by the dashboard "Trade" action; it carries no meaning to
+    strategy, scoring, risk, or notification code.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    signal: Signal
+    dashboard_status: str
+
+
 class DuplicateSignalStorageError(Exception):
     """Raised when a Signal's trade_id or setup_key already exists in storage."""
+
+
+class SignalNotFoundError(Exception):
+    """Raised when an operation targets a trade_id that does not exist in storage."""
 
 
 class SignalRepository:
@@ -88,6 +113,19 @@ class SignalRepository:
             record = result.scalars().first()
             return self._to_signal(record) if record is not None else None
 
+    async def get_by_trade_id_with_status(self, trade_id: str) -> Optional[SignalWithStatus]:
+        async with self._database_manager.session_scope() as session:
+            try:
+                result = await session.execute(
+                    select(SignalRecord).where(SignalRecord.trade_id == trade_id)
+                )
+            except SQLAlchemyError as exc:
+                raise DatabaseOperationError(f"Failed to query signal by trade_id: {exc}") from exc
+            record = result.scalars().first()
+            if record is None:
+                return None
+            return SignalWithStatus(signal=self._to_signal(record), dashboard_status=record.dashboard_status)
+
     async def get_by_setup_key(self, setup_key: str) -> Optional[Signal]:
         async with self._database_manager.session_scope() as session:
             try:
@@ -121,6 +159,71 @@ class SignalRepository:
                 raise DatabaseOperationError(f"Failed to list recent signals: {exc}") from exc
             records = result.scalars().all()
             return [self._to_signal(record) for record in records]
+
+    async def list_recent_with_status(
+        self,
+        limit: int = 100,
+        symbol: Optional[str] = None,
+        signal_type: Optional[str] = None,
+        dashboard_status: Optional[str] = None,
+    ) -> list[SignalWithStatus]:
+        """
+        Same as list_recent, but also returns each signal's dashboard-only
+        lifecycle status, and optionally filters by it. Never recalculates
+        or modifies any Signal field.
+        """
+        if limit <= 0:
+            raise ValueError("limit must be positive.")
+
+        query = select(SignalRecord).order_by(desc(SignalRecord.created_at_utc)).limit(limit)
+        if symbol is not None:
+            query = query.where(SignalRecord.coin == symbol)
+        if signal_type is not None:
+            query = query.where(SignalRecord.signal_type == signal_type)
+        if dashboard_status is not None:
+            query = query.where(SignalRecord.dashboard_status == dashboard_status)
+
+        async with self._database_manager.session_scope() as session:
+            try:
+                result = await session.execute(query)
+            except SQLAlchemyError as exc:
+                raise DatabaseOperationError(f"Failed to list recent signals: {exc}") from exc
+            records = result.scalars().all()
+            return [
+                SignalWithStatus(signal=self._to_signal(record), dashboard_status=record.dashboard_status)
+                for record in records
+            ]
+
+    async def mark_active(self, trade_id: str) -> SignalWithStatus:
+        """
+        Set a stored signal's dashboard_status to ACTIVE. Purely a
+        dashboard state transition: never modifies any trading field on
+        the signal, never touches strategy, scoring, risk, or
+        notification logic.
+
+        Raises:
+            SignalNotFoundError: If no signal with `trade_id` exists.
+        """
+        async with self._database_manager.session_scope() as session:
+            try:
+                result = await session.execute(
+                    select(SignalRecord).where(SignalRecord.trade_id == trade_id)
+                )
+            except SQLAlchemyError as exc:
+                raise DatabaseOperationError(f"Failed to look up signal for activation: {exc}") from exc
+
+            record = result.scalars().first()
+            if record is None:
+                raise SignalNotFoundError(f"No signal found with trade_id='{trade_id}'.")
+
+            record.dashboard_status = DASHBOARD_STATUS_ACTIVE
+            try:
+                await session.commit()
+            except SQLAlchemyError as exc:
+                await session.rollback()
+                raise DatabaseOperationError(f"Failed to mark signal active: {exc}") from exc
+
+            return SignalWithStatus(signal=self._to_signal(record), dashboard_status=record.dashboard_status)
 
     async def count(self) -> int:
         async with self._database_manager.session_scope() as session:

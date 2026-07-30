@@ -14,12 +14,24 @@ export class ApiRequestError extends Error {
 }
 
 export async function apiGet<T>(path: string, timeoutMs: number = DEFAULT_TIMEOUT_MS): Promise<T> {
+  return apiRequest<T>(path, "GET", timeoutMs);
+}
+
+export async function apiPost<T>(path: string, timeoutMs: number = DEFAULT_TIMEOUT_MS): Promise<T> {
+  return apiRequest<T>(path, "POST", timeoutMs);
+}
+
+async function apiRequest<T>(
+  path: string,
+  method: "GET" | "POST",
+  timeoutMs: number,
+): Promise<T> {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
     const response = await fetch(`${getApiBaseUrl()}${path}`, {
-      method: "GET",
+      method,
       headers: { Accept: "application/json" },
       signal: controller.signal,
     });

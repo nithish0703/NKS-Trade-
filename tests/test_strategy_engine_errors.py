@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.data.market_data_provider import MarketDataRequestError
+from app.data.market_data_errors import MarketDataRequestError
 from app.indicators.ema import IndicatorCalculationError
 from app.scanner.pipeline_exceptions import (
     PipelineDataUnavailableError,

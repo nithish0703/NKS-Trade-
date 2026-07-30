@@ -45,6 +45,14 @@ class SignalRecord(Base):
     retest_id: Mapped[str] = mapped_column(String(128), nullable=False)
     created_at_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
+    # Dashboard-only lifecycle status ("NEW" or "ACTIVE"). This is a pure
+    # UI state transition set by the dashboard "Trade" action; it is
+    # never read or written by strategy, scoring, risk, or notification
+    # code, and never affects the persisted signal's trading fields.
+    dashboard_status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="NEW", server_default="NEW"
+    )
+
 
 class RejectedAnalyticsRecord(Base):
     """

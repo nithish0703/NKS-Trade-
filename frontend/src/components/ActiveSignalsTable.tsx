@@ -19,6 +19,7 @@ export function ActiveSignalsTable({ signals }: ActiveSignalsTableProps) {
         <thead>
           <tr className="text-xs uppercase tracking-wide text-slate-400">
             <th className="pb-2 font-medium">Coin</th>
+            <th className="pb-2 font-medium">Status</th>
             <th className="pb-2 font-medium">Price</th>
             <th className="pb-2 font-medium">Entry</th>
             <th className="pb-2 font-medium">TP</th>
@@ -34,6 +35,11 @@ export function ActiveSignalsTable({ signals }: ActiveSignalsTableProps) {
                   {signal.coin}
                   <DirectionBadge direction={signal.direction} />
                 </div>
+              </td>
+              <td className="py-2.5">
+                <span className="inline-flex items-center rounded-md bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700">
+                  ACTIVE
+                </span>
               </td>
               <td className="py-2.5 text-slate-700">{formatPriceOrDash(signal.current_price)}</td>
               <td className="py-2.5 text-slate-600">{formatPriceOrDash(signal.entry_price)}</td>

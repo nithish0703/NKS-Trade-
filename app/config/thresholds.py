@@ -24,7 +24,7 @@ MAX_ACTIVE_TRADES: Final[int] = 5
 ATR_STOP_LOSS_MULTIPLIER: Final[float] = 1.5
 
 # Scanner
-SCANNER_INTERVAL_SECONDS: Final[int] = 15
+SCANNER_INTERVAL_SECONDS: Final[int] = 300
 
 # Signal scoring
 MIN_PUBLISHABLE_CONFIDENCE_SCORE: Final[float] = 80.0

@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 import main
-from app.data.market_data_provider import MarketDataRequestError
+from app.data.market_data_errors import MarketDataRequestError
 from app.scanner.pipeline_exceptions import PipelineInputError
 from app.scanner.pipeline_results import PipelineStatus, StrategyPipelineResult
 from app.scoring.results import ConfidenceClassification

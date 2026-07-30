@@ -53,7 +53,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     exchange_base_url: str = Field(
-        default="https://www.okx.com", alias="EXCHANGE_BASE_URL"
+        default="https://api.bybit.com", alias="EXCHANGE_BASE_URL"
     )
     database_url: str = Field(
         default="sqlite+aiosqlite:///./data/smc_engine.db",

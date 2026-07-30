@@ -9,7 +9,13 @@ import pytest_asyncio
 
 from app.models.signal import Direction, MarketRegime, Signal, SignalType
 from app.storage.database import DatabaseManager
-from app.storage.signal_repository import DuplicateSignalStorageError, SignalRepository
+from app.storage.signal_repository import (
+    DASHBOARD_STATUS_ACTIVE,
+    DASHBOARD_STATUS_NEW,
+    DuplicateSignalStorageError,
+    SignalNotFoundError,
+    SignalRepository,
+)
 
 pytestmark = pytest.mark.asyncio
 
@@ -203,3 +209,88 @@ class TestSignalRepositoryTransactions:
             await repository.save(signal)
         # Count must remain 1, not 2, confirming the failed insert rolled back.
         assert await repository.count() == 1
+
+
+class TestDashboardStatus:
+    async def test_new_signal_defaults_to_new_status(self, repository):
+        signal = _signal(trade_id="SMC-DEFAULT", setup_key="setup-default")
+        await repository.save(signal)
+        results = await repository.list_recent_with_status(limit=10)
+        assert results[0].dashboard_status == DASHBOARD_STATUS_NEW
+
+    async def test_mark_active_sets_active_status(self, repository):
+        signal = _signal(trade_id="SMC-ACTIVATE", setup_key="setup-activate")
+        await repository.save(signal)
+
+        result = await repository.mark_active("SMC-ACTIVATE")
+
+        assert result.dashboard_status == DASHBOARD_STATUS_ACTIVE
+        assert result.signal.trade_id == "SMC-ACTIVATE"
+
+    async def test_mark_active_preserves_every_signal_value_exactly(self, repository):
+        signal = _signal(trade_id="SMC-PRESERVE", setup_key="setup-preserve")
+        await repository.save(signal)
+
+        result = await repository.mark_active("SMC-PRESERVE")
+
+        assert result.signal.coin == signal.coin
+        assert result.signal.direction == signal.direction
+        assert result.signal.entry_price == signal.entry_price
+        assert result.signal.stop_loss == signal.stop_loss
+        assert result.signal.take_profit == signal.take_profit
+        assert result.signal.risk_reward_ratio == signal.risk_reward_ratio
+        assert result.signal.confidence_score == signal.confidence_score
+        assert result.signal.signal_type == signal.signal_type
+        assert result.signal.institutional_reason == signal.institutional_reason
+        assert result.signal.detection_time_utc == signal.detection_time_utc
+
+    async def test_mark_active_unknown_trade_id_raises(self, repository):
+        with pytest.raises(SignalNotFoundError):
+            await repository.mark_active("does-not-exist")
+
+    async def test_mark_active_persists_across_new_queries(self, repository):
+        # Confirms the status transition is a real, committed DB write --
+        # not held only in the in-memory ORM object -- so it survives a
+        # fresh query (simulating a dashboard refresh).
+        signal = _signal(trade_id="SMC-PERSIST", setup_key="setup-persist")
+        await repository.save(signal)
+        await repository.mark_active("SMC-PERSIST")
+
+        active_results = await repository.list_recent_with_status(
+            limit=10, dashboard_status=DASHBOARD_STATUS_ACTIVE
+        )
+        new_results = await repository.list_recent_with_status(
+            limit=10, dashboard_status=DASHBOARD_STATUS_NEW
+        )
+        assert len(active_results) == 1
+        assert active_results[0].signal.trade_id == "SMC-PERSIST"
+        assert new_results == []
+
+    async def test_list_recent_with_status_filters_correctly(self, repository):
+        active_signal = _signal(trade_id="SMC-A", setup_key="setup-a")
+        new_signal = _signal(trade_id="SMC-B", setup_key="setup-b")
+        await repository.save(active_signal)
+        await repository.save(new_signal)
+        await repository.mark_active("SMC-A")
+
+        active_only = await repository.list_recent_with_status(
+            limit=10, dashboard_status=DASHBOARD_STATUS_ACTIVE
+        )
+        assert len(active_only) == 1
+        assert active_only[0].signal.trade_id == "SMC-A"
+
+    async def test_get_by_trade_id_with_status_returns_current_status(self, repository):
+        signal = _signal(trade_id="SMC-LOOKUP", setup_key="setup-lookup")
+        await repository.save(signal)
+
+        before = await repository.get_by_trade_id_with_status("SMC-LOOKUP")
+        assert before.dashboard_status == DASHBOARD_STATUS_NEW
+
+        await repository.mark_active("SMC-LOOKUP")
+
+        after = await repository.get_by_trade_id_with_status("SMC-LOOKUP")
+        assert after.dashboard_status == DASHBOARD_STATUS_ACTIVE
+
+    async def test_get_by_trade_id_with_status_not_found(self, repository):
+        result = await repository.get_by_trade_id_with_status("does-not-exist")
+        assert result is None

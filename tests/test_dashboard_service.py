@@ -21,6 +21,12 @@ from app.scanner.pipeline_results import PipelineStageResult, PipelineStatus, St
 from app.scanner.scan_results import PairScanResult, PairScanStatus, ScanCycleResult
 from app.scoring.results import ConfidenceClassification, ConfidenceScoreResult
 from app.storage.analytics_repository import RejectionRecord
+from app.storage.signal_repository import (
+    DASHBOARD_STATUS_ACTIVE,
+    DASHBOARD_STATUS_NEW,
+    SignalNotFoundError,
+    SignalWithStatus,
+)
 from app.risk.results import (
     CorrelationResult,
     CorrelationStatus,
@@ -845,11 +851,17 @@ class TestPairScanUpdatedEvents:
         assert "candles" not in payload_text.lower()
 
 
+def _with_status(signal: Signal, dashboard_status: str = DASHBOARD_STATUS_NEW) -> SignalWithStatus:
+    return SignalWithStatus(signal=signal, dashboard_status=dashboard_status)
+
+
 class TestPremiumStrongFiltering:
     async def test_premium_filtering(self):
         repository = MagicMock()
-        repository.list_recent = AsyncMock(
-            return_value=[_signal(trade_id="P1", signal_type=SignalType.PREMIUM, confidence_score=92.0)]
+        repository.list_recent_with_status = AsyncMock(
+            return_value=[
+                _with_status(_signal(trade_id="P1", signal_type=SignalType.PREMIUM, confidence_score=92.0))
+            ]
         )
         service = _build_service(signal_repository=repository)
 
@@ -859,8 +871,10 @@ class TestPremiumStrongFiltering:
 
     async def test_premium_excludes_below_90(self):
         repository = MagicMock()
-        repository.list_recent = AsyncMock(
-            return_value=[_signal(trade_id="P1", signal_type=SignalType.PREMIUM, confidence_score=85.0)]
+        repository.list_recent_with_status = AsyncMock(
+            return_value=[
+                _with_status(_signal(trade_id="P1", signal_type=SignalType.PREMIUM, confidence_score=85.0))
+            ]
         )
         service = _build_service(signal_repository=repository)
 
@@ -869,8 +883,10 @@ class TestPremiumStrongFiltering:
 
     async def test_strong_filtering(self):
         repository = MagicMock()
-        repository.list_recent = AsyncMock(
-            return_value=[_signal(trade_id="S1", signal_type=SignalType.STRONG, confidence_score=85.0)]
+        repository.list_recent_with_status = AsyncMock(
+            return_value=[
+                _with_status(_signal(trade_id="S1", signal_type=SignalType.STRONG, confidence_score=85.0))
+            ]
         )
         service = _build_service(signal_repository=repository)
 
@@ -880,8 +896,10 @@ class TestPremiumStrongFiltering:
 
     async def test_strong_excludes_at_or_above_90(self):
         repository = MagicMock()
-        repository.list_recent = AsyncMock(
-            return_value=[_signal(trade_id="S1", signal_type=SignalType.STRONG, confidence_score=90.0)]
+        repository.list_recent_with_status = AsyncMock(
+            return_value=[
+                _with_status(_signal(trade_id="S1", signal_type=SignalType.STRONG, confidence_score=90.0))
+            ]
         )
         service = _build_service(signal_repository=repository)
 
@@ -890,7 +908,7 @@ class TestPremiumStrongFiltering:
 
     async def test_medium_never_exposed_via_premium_or_strong(self):
         repository = MagicMock()
-        repository.list_recent = AsyncMock(return_value=[])
+        repository.list_recent_with_status = AsyncMock(return_value=[])
         service = _build_service(signal_repository=repository)
 
         premium = await service.get_premium_signals()
@@ -899,19 +917,36 @@ class TestPremiumStrongFiltering:
         assert strong == []
         # Confirm the repository was only ever queried for PREMIUM/STRONG,
         # never for MEDIUM/IGNORE.
-        queried_types = {call.kwargs.get("signal_type") for call in repository.list_recent.call_args_list}
+        queried_types = {
+            call.kwargs.get("signal_type") for call in repository.list_recent_with_status.call_args_list
+        }
         assert queried_types <= {SignalType.PREMIUM.value, SignalType.STRONG.value}
+
+    async def test_active_signal_excluded_from_premium_and_strong(self):
+        # Once a signal is activated via the dashboard "Trade" action, it
+        # must no longer appear in Premium/Strong -- get_premium_signals/
+        # get_strong_signals only ever request dashboard_status=NEW.
+        repository = MagicMock()
+        repository.list_recent_with_status = AsyncMock(return_value=[])
+        service = _build_service(signal_repository=repository)
+
+        await service.get_premium_signals()
+        await service.get_strong_signals()
+
+        for call in repository.list_recent_with_status.call_args_list:
+            assert call.kwargs.get("dashboard_status") == DASHBOARD_STATUS_NEW
 
 
 class TestRejectedErrorNeverValid:
     async def test_rejected_and_error_signals_never_exposed_as_valid(self):
-        # DashboardService only ever calls list_recent with PREMIUM/STRONG
-        # signal_type filters for premium/strong/active signal endpoints;
-        # REJECTED/ERROR pipeline outcomes are never persisted as Signal
-        # rows at all (enforced upstream by SignalStorageService), so
-        # there is no code path by which they could appear here.
+        # DashboardService only ever calls list_recent_with_status with
+        # PREMIUM/STRONG signal_type filters for premium/strong/active
+        # signal endpoints; REJECTED/ERROR pipeline outcomes are never
+        # persisted as Signal rows at all (enforced upstream by
+        # SignalStorageService), so there is no code path by which they
+        # could appear here.
         repository = MagicMock()
-        repository.list_recent = AsyncMock(return_value=[])
+        repository.list_recent_with_status = AsyncMock(return_value=[])
         service = _build_service(signal_repository=repository)
 
         active = await service.get_active_signals()
@@ -925,9 +960,11 @@ class TestRejectedErrorNeverValid:
 class TestActiveSignals:
     async def test_current_price_unavailable_returns_none(self):
         repository = MagicMock()
-        repository.list_recent = AsyncMock(
-            side_effect=lambda limit, signal_type=None, symbol=None: (
-                [_signal(trade_id="P1")] if signal_type == SignalType.PREMIUM.value else []
+        repository.list_recent_with_status = AsyncMock(
+            side_effect=lambda limit, signal_type=None, symbol=None, dashboard_status=None: (
+                [_with_status(_signal(trade_id="P1"), DASHBOARD_STATUS_ACTIVE)]
+                if signal_type == SignalType.PREMIUM.value
+                else []
             )
         )
         market_data_provider = MagicMock()
@@ -940,9 +977,9 @@ class TestActiveSignals:
 
     async def test_distance_to_tp_calculation_buy(self):
         repository = MagicMock()
-        repository.list_recent = AsyncMock(
-            side_effect=lambda limit, signal_type=None, symbol=None: (
-                [_signal(trade_id="P1", direction=Direction.BUY)]
+        repository.list_recent_with_status = AsyncMock(
+            side_effect=lambda limit, signal_type=None, symbol=None, dashboard_status=None: (
+                [_with_status(_signal(trade_id="P1", direction=Direction.BUY), DASHBOARD_STATUS_ACTIVE)]
                 if signal_type == SignalType.PREMIUM.value
                 else []
             )
@@ -957,9 +994,9 @@ class TestActiveSignals:
 
     async def test_distance_to_tp_calculation_sell(self):
         repository = MagicMock()
-        repository.list_recent = AsyncMock(
-            side_effect=lambda limit, signal_type=None, symbol=None: (
-                [_signal(trade_id="S1", direction=Direction.SELL)]
+        repository.list_recent_with_status = AsyncMock(
+            side_effect=lambda limit, signal_type=None, symbol=None, dashboard_status=None: (
+                [_with_status(_signal(trade_id="S1", direction=Direction.SELL), DASHBOARD_STATUS_ACTIVE)]
                 if signal_type == SignalType.PREMIUM.value
                 else []
             )
@@ -972,25 +1009,100 @@ class TestActiveSignals:
         # take_profit=90, current_price=100 -> (100-90)/100*100 = 10%
         assert signals[0].distance_to_take_profit_percentage == pytest.approx(10.0)
 
+    async def test_active_signals_only_query_active_status(self):
+        repository = MagicMock()
+        repository.list_recent_with_status = AsyncMock(return_value=[])
+        service = _build_service(signal_repository=repository)
+
+        await service.get_active_signals()
+
+        for call in repository.list_recent_with_status.call_args_list:
+            assert call.kwargs.get("dashboard_status") == DASHBOARD_STATUS_ACTIVE
+
 
 class TestSignalDetails:
     async def test_signal_details_endpoint(self):
         repository = MagicMock()
-        repository.get_by_trade_id = AsyncMock(return_value=_signal(trade_id="P1"))
+        repository.get_by_trade_id_with_status = AsyncMock(
+            return_value=_with_status(_signal(trade_id="P1"))
+        )
         service = _build_service(signal_repository=repository)
 
         details = await service.get_signal_details("P1")
         assert details is not None
         assert details.trade_id == "P1"
         assert details.institutional_reason == "Confirmed setup facts only."
+        assert details.dashboard_status == DASHBOARD_STATUS_NEW
 
     async def test_signal_details_not_found(self):
         repository = MagicMock()
-        repository.get_by_trade_id = AsyncMock(return_value=None)
+        repository.get_by_trade_id_with_status = AsyncMock(return_value=None)
         service = _build_service(signal_repository=repository)
 
         details = await service.get_signal_details("does-not-exist")
         assert details is None
+
+
+class TestActivateSignal:
+    async def test_activates_and_returns_active_signal(self):
+        signal = _signal(trade_id="P1", signal_type=SignalType.PREMIUM)
+        repository = MagicMock()
+        repository.mark_active = AsyncMock(return_value=_with_status(signal, DASHBOARD_STATUS_ACTIVE))
+        market_data_provider = MagicMock()
+        market_data_provider.fetch_ticker_price = AsyncMock(return_value=None)
+        service = _build_service(signal_repository=repository, market_data_provider=market_data_provider)
+
+        result = await service.activate_signal("P1")
+
+        assert result is not None
+        assert result.trade_id == "P1"
+        assert result.dashboard_status == DASHBOARD_STATUS_ACTIVE
+        repository.mark_active.assert_awaited_once_with("P1")
+
+    async def test_returns_none_when_signal_not_found(self):
+        repository = MagicMock()
+        repository.mark_active = AsyncMock(side_effect=SignalNotFoundError("not found"))
+        service = _build_service(signal_repository=repository)
+
+        result = await service.activate_signal("does-not-exist")
+        assert result is None
+
+    async def test_activation_preserves_every_signal_value_exactly(self):
+        signal = _signal(
+            trade_id="P1",
+            signal_type=SignalType.PREMIUM,
+            confidence_score=93.5,
+            direction=Direction.BUY,
+        )
+        repository = MagicMock()
+        repository.mark_active = AsyncMock(return_value=_with_status(signal, DASHBOARD_STATUS_ACTIVE))
+        market_data_provider = MagicMock()
+        market_data_provider.fetch_ticker_price = AsyncMock(return_value=None)
+        service = _build_service(signal_repository=repository, market_data_provider=market_data_provider)
+
+        result = await service.activate_signal("P1")
+
+        assert result.coin == signal.coin
+        assert result.direction == signal.direction.value
+        assert result.entry_price == signal.entry_price
+        assert result.take_profit == signal.take_profit
+        assert result.stop_loss == signal.stop_loss
+        assert result.confidence_score == signal.confidence_score
+        assert result.signal_type == signal.signal_type.value
+        assert result.detection_time_utc == signal.detection_time_utc
+
+    async def test_activation_never_calls_exchange_order_methods(self):
+        # Purely a UI state transition: the market_data_provider is only
+        # ever used for a read-only ticker-price lookup (for display),
+        # never any order-placing method.
+        signal = _signal(trade_id="P1")
+        repository = MagicMock()
+        repository.mark_active = AsyncMock(return_value=_with_status(signal, DASHBOARD_STATUS_ACTIVE))
+        market_data_provider = MagicMock(spec=["fetch_ticker_price"])
+        market_data_provider.fetch_ticker_price = AsyncMock(return_value=None)
+        service = _build_service(signal_repository=repository, market_data_provider=market_data_provider)
+
+        await service.activate_signal("P1")  # must not raise / must not call anything beyond the spec
 
 
 class TestRecentRejections:

@@ -16,6 +16,7 @@ function signal(overrides: Partial<ActiveSignal> = {}): ActiveSignal {
     confidence_score: 96,
     signal_type: "PREMIUM",
     detection_time_utc: "2026-01-01T10:00:00Z",
+    dashboard_status: "ACTIVE",
     ...overrides,
   };
 }
@@ -25,6 +26,11 @@ describe("ActiveSignalsTable", () => {
     render(<ActiveSignalsTable signals={[signal()]} />);
     expect(screen.getByText("BTC-USDT")).toBeInTheDocument();
     expect(screen.getByText("117,450")).toBeInTheDocument();
+  });
+
+  it("shows ACTIVE status for each signal", () => {
+    render(<ActiveSignalsTable signals={[signal()]} />);
+    expect(screen.getByText("ACTIVE")).toBeInTheDocument();
   });
 
   it("shows an empty state when there are no active signals", () => {

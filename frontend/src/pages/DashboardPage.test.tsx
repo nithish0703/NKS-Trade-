@@ -12,6 +12,7 @@ vi.mock("../services/dashboard.api", () => ({
     getActiveSignals: vi.fn(),
     getPremiumSignals: vi.fn(),
     getStrongSignals: vi.fn(),
+    activateSignal: vi.fn(),
   },
 }));
 
@@ -61,6 +62,22 @@ function mockAllEndpoints(overrides: Partial<Record<string, unknown>> = {}) {
   vi.mocked(dashboardApi.getActiveSignals).mockResolvedValue((overrides.activeSignals as never) ?? []);
   vi.mocked(dashboardApi.getPremiumSignals).mockResolvedValue((overrides.premiumSignals as never) ?? []);
   vi.mocked(dashboardApi.getStrongSignals).mockResolvedValue((overrides.strongSignals as never) ?? []);
+  vi.mocked(dashboardApi.activateSignal).mockResolvedValue(
+    (overrides.activateSignal as never) ?? {
+      trade_id: "SMC-1",
+      coin: "BTC-USDT",
+      direction: "BUY",
+      current_price: null,
+      entry_price: 116980,
+      take_profit: 118200,
+      stop_loss: 116250,
+      distance_to_take_profit_percentage: null,
+      confidence_score: 96,
+      signal_type: "PREMIUM",
+      detection_time_utc: "2026-01-01T10:00:00Z",
+      dashboard_status: "ACTIVE",
+    },
+  );
 }
 
 describe("DashboardPage", () => {
@@ -113,23 +130,8 @@ describe("DashboardPage", () => {
     await waitFor(() => expect(screen.getByText("BTC-USDT")).toBeInTheDocument());
   });
 
-  it("opens the signal details modal when View is clicked", async () => {
-    mockAllEndpoints({
-      premiumSignals: [
-        {
-          trade_id: "SMC-1",
-          coin: "BTC-USDT",
-          direction: "BUY",
-          signal_type: "PREMIUM",
-          entry_price: 116980,
-          take_profit: 118200,
-          stop_loss: 116250,
-          confidence_score: 96,
-          detection_time_utc: "2026-01-01T10:00:00Z",
-        },
-      ],
-    });
-    vi.mocked(signalsApi.getSignalDetails).mockResolvedValue({
+  function _premiumSignalDetails(overrides: Partial<Record<string, unknown>> = {}) {
+    return {
       trade_id: "SMC-1",
       coin: "BTC-USDT",
       direction: "BUY",
@@ -150,19 +152,40 @@ describe("DashboardPage", () => {
       btc_market_alignment: true,
       detection_time_utc: "2026-01-01T10:00:00Z",
       institutional_reason: "Confirmed setup facts only.",
+      dashboard_status: "NEW",
+      ...overrides,
+    };
+  }
+
+  it("opens the signal details modal when Go is clicked", async () => {
+    mockAllEndpoints({
+      premiumSignals: [
+        {
+          trade_id: "SMC-1",
+          coin: "BTC-USDT",
+          direction: "BUY",
+          signal_type: "PREMIUM",
+          entry_price: 116980,
+          take_profit: 118200,
+          stop_loss: 116250,
+          confidence_score: 96,
+          detection_time_utc: "2026-01-01T10:00:00Z",
+        },
+      ],
     });
+    vi.mocked(signalsApi.getSignalDetails).mockResolvedValue(_premiumSignalDetails() as never);
 
     render(<DashboardPage />);
-    await waitFor(() => expect(screen.getByRole("button", { name: "View" })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Go" })).toBeInTheDocument());
 
     const user = userEvent.setup();
-    await user.click(screen.getByRole("button", { name: "View" }));
+    await user.click(screen.getByRole("button", { name: "Go" }));
 
     await waitFor(() => expect(screen.getByRole("dialog")).toBeInTheDocument());
     expect(await screen.findByText("Confirmed setup facts only.")).toBeInTheDocument();
   });
 
-  it("never renders a live-trade action button", async () => {
+  it("never renders a live-trade action button when the modal is closed", async () => {
     mockAllEndpoints();
     render(<DashboardPage />);
 
@@ -170,6 +193,85 @@ describe("DashboardPage", () => {
     expect(screen.queryByRole("button", { name: /trade/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /buy now/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /sell now/i })).not.toBeInTheDocument();
+  });
+
+  it("never renders buy now / sell now execution buttons, even with the modal open", async () => {
+    // The modal's "Trade" button is an explicit, intentional dashboard-only
+    // state transition (never a real order) -- this test confirms no
+    // *execution*-style button (buy now / sell now) exists anywhere,
+    // while still allowing the dashboard-only "Trade" button.
+    mockAllEndpoints({
+      premiumSignals: [
+        {
+          trade_id: "SMC-1",
+          coin: "BTC-USDT",
+          direction: "BUY",
+          signal_type: "PREMIUM",
+          entry_price: 116980,
+          take_profit: 118200,
+          stop_loss: 116250,
+          confidence_score: 96,
+          detection_time_utc: "2026-01-01T10:00:00Z",
+        },
+      ],
+    });
+    vi.mocked(signalsApi.getSignalDetails).mockResolvedValue(_premiumSignalDetails() as never);
+
+    render(<DashboardPage />);
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Go" }));
+    await waitFor(() => expect(screen.getByRole("dialog")).toBeInTheDocument());
+
+    expect(screen.queryByRole("button", { name: /buy now/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /sell now/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Trade" })).toBeInTheDocument();
+  });
+
+  it("moves a signal from Premium to Active when Trade is clicked", async () => {
+    const premiumSignal = {
+      trade_id: "SMC-1",
+      coin: "BTC-USDT",
+      direction: "BUY",
+      signal_type: "PREMIUM",
+      entry_price: 116980,
+      take_profit: 118200,
+      stop_loss: 116250,
+      confidence_score: 96,
+      detection_time_utc: "2026-01-01T10:00:00Z",
+    };
+    mockAllEndpoints({ premiumSignals: [premiumSignal] });
+    vi.mocked(signalsApi.getSignalDetails).mockResolvedValue(_premiumSignalDetails() as never);
+
+    render(<DashboardPage />);
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Go" }));
+    await waitFor(() => expect(screen.getByRole("dialog")).toBeInTheDocument());
+
+    // After activation, simulate the backend now excluding this signal
+    // from Premium and including it in Active.
+    vi.mocked(dashboardApi.getPremiumSignals).mockResolvedValue([]);
+    vi.mocked(dashboardApi.getActiveSignals).mockResolvedValue([
+      {
+        trade_id: "SMC-1",
+        coin: "BTC-USDT",
+        direction: "BUY",
+        current_price: null,
+        entry_price: 116980,
+        take_profit: 118200,
+        stop_loss: 116250,
+        distance_to_take_profit_percentage: null,
+        confidence_score: 96,
+        signal_type: "PREMIUM",
+        detection_time_utc: "2026-01-01T10:00:00Z",
+        dashboard_status: "ACTIVE",
+      },
+    ] as never);
+
+    await user.click(screen.getByRole("button", { name: "Trade" }));
+
+    await waitFor(() => expect(dashboardApi.activateSignal).toHaveBeenCalledWith("SMC-1"));
+    // Modal closes on success.
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
   });
 
   it("replaces the previous scanning-coins row when a PAIR_SCAN_UPDATED event arrives", async () => {

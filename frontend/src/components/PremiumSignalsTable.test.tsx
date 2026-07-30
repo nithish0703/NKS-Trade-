@@ -19,16 +19,17 @@ function signal(overrides: Partial<PremiumSignal> = {}): PremiumSignal {
 }
 
 describe("PremiumSignalsTable", () => {
-  it("renders a View button, not a Trade button", () => {
+  it("renders a Go button, not a View or Trade button", () => {
     render(<PremiumSignalsTable signals={[signal()]} onView={vi.fn()} />);
-    expect(screen.getByRole("button", { name: "View" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Go" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "View" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /trade/i })).not.toBeInTheDocument();
   });
 
-  it("calls onView with the trade_id when clicked", () => {
+  it("calls onView with the trade_id when Go is clicked", () => {
     const onView = vi.fn();
     render(<PremiumSignalsTable signals={[signal({ trade_id: "SMC-42" })]} onView={onView} />);
-    fireEvent.click(screen.getByRole("button", { name: "View" }));
+    fireEvent.click(screen.getByRole("button", { name: "Go" }));
     expect(onView).toHaveBeenCalledWith("SMC-42");
   });
 

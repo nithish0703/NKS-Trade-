@@ -44,12 +44,15 @@ export function DashboardPage() {
   const [selectedDetails, setSelectedDetails] = useState<SignalDetails | null>(null);
   const [detailsLoading, setDetailsLoading] = useState(false);
   const [detailsError, setDetailsError] = useState<string | null>(null);
+  const [trading, setTrading] = useState(false);
+  const [tradeError, setTradeError] = useState<string | null>(null);
 
   const handleView = useCallback((tradeId: string) => {
     setSelectedTradeId(tradeId);
     setSelectedDetails(null);
     setDetailsError(null);
     setDetailsLoading(true);
+    setTradeError(null);
     signalsApi
       .getSignalDetails(tradeId)
       .then((details) => setSelectedDetails(details))
@@ -59,7 +62,32 @@ export function DashboardPage() {
       .finally(() => setDetailsLoading(false));
   }, []);
 
-  const closeModal = useCallback(() => setSelectedTradeId(null), []);
+  const closeModal = useCallback(() => {
+    setSelectedTradeId(null);
+    setTradeError(null);
+  }, []);
+
+  const handleTrade = useCallback((tradeId: string) => {
+    setTrading(true);
+    setTradeError(null);
+    dashboardApi
+      .activateSignal(tradeId)
+      .then(() => {
+        // The signal has moved from Premium/Strong into Active Signals on
+        // the backend; refresh every affected list so the dashboard
+        // reflects the new state immediately, then close the modal.
+        summary.refresh();
+        activeSignals.refresh();
+        premiumSignals.refresh();
+        strongSignals.refresh();
+        setSelectedTradeId(null);
+      })
+      .catch((error: unknown) => {
+        setTradeError(error instanceof Error ? error.message : "Failed to activate signal.");
+      })
+      .finally(() => setTrading(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
     <div className="min-h-screen bg-gray-50 pb-10">
@@ -70,28 +98,28 @@ export function DashboardPage() {
           <SummaryCard
             label="Total Signals"
             value={formatNumberOrDash(summary.data?.total_signals ?? null)}
-            icon={<Activity size={18} />}
+            icon={<Activity size={14} />}
             iconClassName="bg-purple-50 text-purple-600"
             changePercentage={summary.data?.comparison.total_signals_percentage}
           />
           <SummaryCard
             label="Wins"
             value={formatNumberOrDash(summary.data?.wins ?? null)}
-            icon={<Trophy size={18} />}
+            icon={<Trophy size={14} />}
             iconClassName="bg-emerald-50 text-emerald-600"
             changePercentage={summary.data?.comparison.wins_percentage}
           />
           <SummaryCard
             label="Losses"
             value={formatNumberOrDash(summary.data?.losses ?? null)}
-            icon={<AlertOctagon size={18} />}
+            icon={<AlertOctagon size={14} />}
             iconClassName="bg-red-50 text-red-600"
             changePercentage={summary.data?.comparison.losses_percentage}
           />
           <SummaryCard
             label="Win Rate"
             value={formatPercentageOrDash(summary.data?.win_rate ?? null, 0)}
-            icon={<Scale size={18} />}
+            icon={<Scale size={14} />}
             iconClassName="bg-blue-50 text-blue-600"
             changePercentage={summary.data?.comparison.win_rate_percentage}
           />
@@ -100,7 +128,7 @@ export function DashboardPage() {
             value={
               summary.data?.average_rr != null ? summary.data.average_rr.toFixed(2) : "—"
             }
-            icon={<Gem size={18} />}
+            icon={<Gem size={14} />}
             iconClassName="bg-orange-50 text-orange-600"
             changePercentage={summary.data?.comparison.average_rr_percentage}
           />
@@ -177,6 +205,9 @@ export function DashboardPage() {
           loading={detailsLoading}
           error={detailsError}
           onClose={closeModal}
+          onTrade={handleTrade}
+          trading={trading}
+          tradeError={tradeError}
         />
       ) : null}
     </div>

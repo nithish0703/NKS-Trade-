@@ -1,52 +1,67 @@
 """
-Unit tests for app.data.market_data_provider.OKXMarketDataProvider.
+Unit tests for app.data.bybit_market_data_provider.BybitMarketDataProvider.
 
 All HTTP interactions use httpx.MockTransport; no real network requests
 are made.
 """
 
 import asyncio
-import json
-from datetime import timezone
+import socket
+import ssl
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 import httpx
 import pytest
 
-import socket
-import ssl
-
-from app.data.market_data_provider import (
+from app.data.bybit_market_data_provider import BybitMarketDataProvider
+from app.data.market_data_errors import (
     MarketDataError,
     MarketDataRequestError,
     MarketDataResponseError,
-    OKXMarketDataProvider,
 )
 
-BASE_URL = "https://www.okx.com"
+BASE_URL = "https://api.bybit.com"
+UTC_NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
 
-def _row(ts_ms: str, confirm: str = "1") -> list[str]:
-    return [ts_ms, "100", "110", "95", "105", "1000", "1000", "1000", confirm]
+def _row(start_time: datetime) -> list[str]:
+    ts_ms = str(int(start_time.timestamp() * 1000))
+    return [ts_ms, "100", "110", "95", "105", "1000", "100000"]
 
 
-def _make_provider(handler, **kwargs) -> OKXMarketDataProvider:
+def _closed_row(minutes_ago: int, reference: datetime = UTC_NOW) -> list[str]:
+    """A kline row guaranteed complete against any 15m/1h/4h interval."""
+    return _row(reference - timedelta(hours=24, minutes=minutes_ago))
+
+
+def _bybit_body(rows: list[list[str]], ret_code: int = 0) -> dict:
+    return {
+        "retCode": ret_code,
+        "retMsg": "OK",
+        "result": {"category": "linear", "symbol": "BTCUSDT", "list": rows},
+        "retExtInfo": {},
+        "time": int(UTC_NOW.timestamp() * 1000),
+    }
+
+
+def _make_provider(handler, **kwargs) -> BybitMarketDataProvider:
     transport = httpx.MockTransport(handler)
     client = httpx.AsyncClient(base_url=BASE_URL, transport=transport)
     kwargs.setdefault("retry_backoff_schedule_seconds", (0.0, 0.0, 0.0))
     kwargs.setdefault("min_request_interval_seconds", 0.0)
     kwargs.setdefault("inter_timeframe_delay_seconds", 0.0)
-    return OKXMarketDataProvider(
+    return BybitMarketDataProvider(
         base_url=BASE_URL, request_timeout_seconds=10, client=client, **kwargs
     )
 
 
 @pytest.mark.asyncio
 async def test_successful_candle_fetch():
-    rows = [_row("1700000060000"), _row("1700000000000")]
+    rows = [_closed_row(60), _closed_row(75)]
 
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"code": "0", "msg": "", "data": rows})
+        return httpx.Response(200, json=_bybit_body(rows))
 
     async with _make_provider(handler) as provider:
         candles = await provider.fetch_candles("BTC-USDT", "15m", 100)
@@ -61,40 +76,54 @@ async def test_correct_endpoint_path():
 
     def handler(request: httpx.Request) -> httpx.Response:
         captured["path"] = request.url.path
-        return httpx.Response(200, json={"code": "0", "msg": "", "data": []})
+        return httpx.Response(200, json=_bybit_body([]))
 
     async with _make_provider(handler) as provider:
         await provider.fetch_candles("BTC-USDT", "15m", 10)
 
-    assert captured["path"] == "/api/v5/market/candles"
+    assert captured["path"] == "/v5/market/kline"
 
 
 @pytest.mark.asyncio
-async def test_correct_inst_id_parameter():
+async def test_symbol_hyphen_stripped_for_bybit():
     captured = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
-        captured["instId"] = request.url.params.get("instId")
-        return httpx.Response(200, json={"code": "0", "msg": "", "data": []})
+        captured["symbol"] = request.url.params.get("symbol")
+        return httpx.Response(200, json=_bybit_body([]))
 
     async with _make_provider(handler) as provider:
         await provider.fetch_candles("ETH-USDT", "15m", 10)
 
-    assert captured["instId"] == "ETH-USDT"
+    assert captured["symbol"] == "ETHUSDT"
 
 
 @pytest.mark.asyncio
-async def test_correct_timeframe_conversion():
+async def test_correct_category_parameter():
     captured = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
-        captured["bar"] = request.url.params.get("bar")
-        return httpx.Response(200, json={"code": "0", "msg": "", "data": []})
+        captured["category"] = request.url.params.get("category")
+        return httpx.Response(200, json=_bybit_body([]))
+
+    async with _make_provider(handler) as provider:
+        await provider.fetch_candles("BTC-USDT", "15m", 10)
+
+    assert captured["category"] == "linear"
+
+
+@pytest.mark.asyncio
+async def test_correct_interval_conversion():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["interval"] = request.url.params.get("interval")
+        return httpx.Response(200, json=_bybit_body([]))
 
     async with _make_provider(handler) as provider:
         await provider.fetch_candles("BTC-USDT", "4h", 10)
 
-    assert captured["bar"] == "4H"
+    assert captured["interval"] == "240"
 
 
 @pytest.mark.asyncio
@@ -103,7 +132,7 @@ async def test_correct_limit_parameter():
 
     def handler(request: httpx.Request) -> httpx.Response:
         captured["limit"] = request.url.params.get("limit")
-        return httpx.Response(200, json={"code": "0", "msg": "", "data": []})
+        return httpx.Response(200, json=_bybit_body([]))
 
     async with _make_provider(handler) as provider:
         await provider.fetch_candles("BTC-USDT", "15m", 42)
@@ -113,10 +142,10 @@ async def test_correct_limit_parameter():
 
 @pytest.mark.asyncio
 async def test_newest_first_response_converted_to_ascending_order():
-    rows = [_row("1700000120000"), _row("1700000060000"), _row("1700000000000")]
+    rows = [_closed_row(0), _closed_row(30), _closed_row(60)]
 
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"code": "0", "msg": "", "data": rows})
+        return httpx.Response(200, json=_bybit_body(rows))
 
     async with _make_provider(handler) as provider:
         candles = await provider.fetch_candles("BTC-USDT", "15m", 100)
@@ -126,25 +155,30 @@ async def test_newest_first_response_converted_to_ascending_order():
 
 
 @pytest.mark.asyncio
-async def test_incomplete_candle_excluded():
-    rows = [_row("1700000060000", confirm="0"), _row("1700000000000", confirm="1")]
+async def test_still_forming_candle_excluded():
+    # The most recent row (now-2 minutes) is still within a 15m window
+    # and has no explicit "closed" flag from Bybit; completeness is
+    # inferred from startTime + interval duration <= now (real wall-clock
+    # time, since the provider itself calls datetime.now(timezone.utc)).
+    forming = _row(datetime.now(timezone.utc) - timedelta(minutes=2))
+    completed = _closed_row(60)
+    rows = [forming, completed]
 
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"code": "0", "msg": "", "data": rows})
+        return httpx.Response(200, json=_bybit_body(rows))
 
     async with _make_provider(handler) as provider:
         candles = await provider.fetch_candles("BTC-USDT", "15m", 100)
 
     assert len(candles) == 1
-    assert candles[0].timestamp.timestamp() == 1700000000
 
 
 @pytest.mark.asyncio
 async def test_timestamp_converted_to_utc():
-    rows = [_row("1700000000000")]
+    rows = [_closed_row(60)]
 
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"code": "0", "msg": "", "data": rows})
+        return httpx.Response(200, json=_bybit_body(rows))
 
     async with _make_provider(handler) as provider:
         candles = await provider.fetch_candles("BTC-USDT", "15m", 10)
@@ -174,22 +208,31 @@ async def test_invalid_json_response():
 
 
 @pytest.mark.asyncio
-async def test_okx_non_zero_response_code():
+async def test_bybit_non_zero_ret_code_permanent_not_retried():
+    call_count = 0
+
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            200, json={"code": "1", "msg": "bad request", "data": []}
-        )
+        nonlocal call_count
+        call_count += 1
+        return httpx.Response(200, json=_bybit_body([], ret_code=10001))
 
     async with _make_provider(handler) as provider:
         with pytest.raises(MarketDataError):
             await provider.fetch_candles("BTC-USDT", "15m", 10)
+
+    assert call_count == 1
 
 
 @pytest.mark.asyncio
 async def test_malformed_candle_response():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
-            200, json={"code": "0", "msg": "", "data": [["too", "short"]]}
+            200,
+            json={
+                "retCode": 0,
+                "retMsg": "OK",
+                "result": {"list": [["too", "short"]]},
+            },
         )
 
     async with _make_provider(handler) as provider:
@@ -200,7 +243,7 @@ async def test_malformed_candle_response():
 @pytest.mark.asyncio
 async def test_unsupported_symbol():
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"code": "0", "msg": "", "data": []})
+        return httpx.Response(200, json=_bybit_body([]))
 
     async with _make_provider(handler) as provider:
         with pytest.raises(ValueError):
@@ -210,7 +253,7 @@ async def test_unsupported_symbol():
 @pytest.mark.asyncio
 async def test_unsupported_timeframe():
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"code": "0", "msg": "", "data": []})
+        return httpx.Response(200, json=_bybit_body([]))
 
     async with _make_provider(handler) as provider:
         with pytest.raises(ValueError):
@@ -220,7 +263,7 @@ async def test_unsupported_timeframe():
 @pytest.mark.asyncio
 async def test_invalid_limit():
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"code": "0", "msg": "", "data": []})
+        return httpx.Response(200, json=_bybit_body([]))
 
     async with _make_provider(handler) as provider:
         with pytest.raises(ValueError):
@@ -233,16 +276,12 @@ async def test_invalid_limit():
 @pytest.mark.asyncio
 async def test_multiple_timeframe_fetching():
     def handler(request: httpx.Request) -> httpx.Response:
-        bar = request.url.params.get("bar")
-        ts_map = {"15m": "1700000000000", "1H": "1700000060000", "4H": "1700000120000"}
-        return httpx.Response(
-            200, json={"code": "0", "msg": "", "data": [_row(ts_map[bar])]}
-        )
+        interval = request.url.params.get("interval")
+        offsets = {"15": 60, "60": 120, "240": 300}
+        return httpx.Response(200, json=_bybit_body([_closed_row(offsets[interval])]))
 
     async with _make_provider(handler) as provider:
-        result = await provider.fetch_multiple_timeframes(
-            "BTC-USDT", ["15m", "1h", "4h"]
-        )
+        result = await provider.fetch_multiple_timeframes("BTC-USDT", ["15m", "1h", "4h"])
 
     assert set(result.keys()) == {"15m", "1h", "4h"}
     for candles in result.values():
@@ -252,10 +291,10 @@ async def test_multiple_timeframe_fetching():
 @pytest.mark.asyncio
 async def test_one_timeframe_failure_fails_entire_operation():
     def handler(request: httpx.Request) -> httpx.Response:
-        bar = request.url.params.get("bar")
-        if bar == "1H":
+        interval = request.url.params.get("interval")
+        if interval == "60":
             return httpx.Response(500, text="server error")
-        return httpx.Response(200, json={"code": "0", "msg": "", "data": []})
+        return httpx.Response(200, json=_bybit_body([]))
 
     async with _make_provider(handler) as provider:
         with pytest.raises(MarketDataError):
@@ -265,11 +304,11 @@ async def test_one_timeframe_failure_fails_entire_operation():
 @pytest.mark.asyncio
 async def test_injected_client_is_not_closed_automatically():
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"code": "0", "msg": "", "data": []})
+        return httpx.Response(200, json=_bybit_body([]))
 
     transport = httpx.MockTransport(handler)
     client = httpx.AsyncClient(base_url=BASE_URL, transport=transport)
-    provider = OKXMarketDataProvider(
+    provider = BybitMarketDataProvider(
         base_url=BASE_URL, request_timeout_seconds=10, client=client
     )
 
@@ -299,9 +338,9 @@ async def test_dns_failure_diagnostics():
     message = str(exc_info.value)
     assert "ConnectError" in message
     assert "dns_failure" in message
-    assert "www.okx.com" in message
-    # No query parameters (symbol/limit/bar values) or secrets in the message.
-    assert "instId" not in message
+    assert "api.bybit.com" in message
+    # No query parameters (symbol/limit/interval values) or secrets in the message.
+    assert "symbol=" not in message
 
 
 @pytest.mark.asyncio
@@ -316,7 +355,7 @@ async def test_connect_timeout_diagnostics():
     message = str(exc_info.value)
     assert "ConnectTimeout" in message
     assert "connect_timeout" in message
-    assert "www.okx.com" in message
+    assert "api.bybit.com" in message
 
 
 @pytest.mark.asyncio
@@ -331,7 +370,7 @@ async def test_read_timeout_diagnostics():
     message = str(exc_info.value)
     assert "ReadTimeout" in message
     assert "read_timeout" in message
-    assert "www.okx.com" in message
+    assert "api.bybit.com" in message
 
 
 @pytest.mark.asyncio
@@ -348,7 +387,7 @@ async def test_ssl_error_diagnostics():
     message = str(exc_info.value)
     assert "ConnectError" in message
     assert "ssl_error" in message
-    assert "www.okx.com" in message
+    assert "api.bybit.com" in message
 
 
 @pytest.mark.asyncio
@@ -366,7 +405,7 @@ async def test_http_403_diagnostics():
 
     message = str(exc_info.value)
     assert "403" in message
-    assert "www.okx.com" in message
+    assert "api.bybit.com" in message
     assert "forbidden" not in message  # never logs the full response body
     # Permanent client errors (400/401/403) are never retried.
     assert call_count == 1
@@ -383,7 +422,7 @@ async def test_http_429_diagnostics():
 
     message = str(exc_info.value)
     assert "429" in message
-    assert "www.okx.com" in message
+    assert "api.bybit.com" in message
     assert "attempts=3" in message
     assert "rate limited" not in message
 
@@ -399,7 +438,7 @@ async def test_http_500_diagnostics():
 
     message = str(exc_info.value)
     assert "500" in message
-    assert "www.okx.com" in message
+    assert "api.bybit.com" in message
     assert "attempts=3" in message
 
 
@@ -415,7 +454,7 @@ async def test_transport_failure_never_includes_query_secrets():
     message = str(exc_info.value)
     assert "?" not in message
     assert "limit=10" not in message
-    assert "bar=" not in message
+    assert "interval=" not in message
 
 
 @pytest.mark.asyncio
@@ -431,7 +470,7 @@ async def test_generic_transport_error_still_raises_market_data_request_error():
 
 
 # ---------------------------------------------------------------------------
-# Rate-limit (HTTP 429) handling and request scheduling
+# Rate-limit (HTTP 429 and body-level retCode) handling and scheduling
 # ---------------------------------------------------------------------------
 
 
@@ -444,7 +483,27 @@ async def test_429_then_success():
         call_count += 1
         if call_count == 1:
             return httpx.Response(429, text="rate limited")
-        return httpx.Response(200, json={"code": "0", "msg": "", "data": []})
+        return httpx.Response(200, json=_bybit_body([]))
+
+    async with _make_provider(handler) as provider:
+        candles = await provider.fetch_candles("BTC-USDT", "15m", 10)
+
+    assert candles == []
+    assert call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_ret_code_rate_limit_then_success():
+    # Bybit can signal rate-limiting via a non-zero retCode on an
+    # HTTP-200 response, not just via HTTP 429.
+    call_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return httpx.Response(200, json=_bybit_body([], ret_code=10006))
+        return httpx.Response(200, json=_bybit_body([]))
 
     async with _make_provider(handler) as provider:
         candles = await provider.fetch_candles("BTC-USDT", "15m", 10)
@@ -469,7 +528,7 @@ async def test_retry_after_header_used_when_present():
         call_count += 1
         if call_count == 1:
             return httpx.Response(429, headers={"Retry-After": "7"}, text="rate limited")
-        return httpx.Response(200, json={"code": "0", "msg": "", "data": []})
+        return httpx.Response(200, json=_bybit_body([]))
 
     async with _make_provider(handler) as provider:
         with patch("asyncio.sleep", _fake_sleep):
@@ -498,6 +557,22 @@ async def test_429_exhausted_retries_raises_with_three_attempts():
 
 
 @pytest.mark.asyncio
+async def test_ret_code_rate_limit_exhausted_retries_raises():
+    call_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        return httpx.Response(200, json=_bybit_body([], ret_code=10018))
+
+    async with _make_provider(handler) as provider:
+        with pytest.raises(MarketDataError):
+            await provider.fetch_candles("BTC-USDT", "15m", 10)
+
+    assert call_count == 3
+
+
+@pytest.mark.asyncio
 async def test_concurrent_requests_respect_concurrency_limiter():
     in_flight = 0
     max_observed_in_flight = 0
@@ -511,7 +586,7 @@ async def test_concurrent_requests_respect_concurrency_limiter():
         await asyncio.sleep(0.05)
         async with lock:
             in_flight -= 1
-        return httpx.Response(200, json={"code": "0", "msg": "", "data": []})
+        return httpx.Response(200, json=_bybit_body([]))
 
     async with _make_provider(
         handler, max_concurrent_requests=2, min_request_interval_seconds=0.0
@@ -544,11 +619,11 @@ async def test_complete_symbol_failure_when_one_timeframe_exhausts_retries():
     call_counts: dict[str, int] = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
-        bar = request.url.params.get("bar")
-        call_counts[bar] = call_counts.get(bar, 0) + 1
-        if bar == "1H":
+        interval = request.url.params.get("interval")
+        call_counts[interval] = call_counts.get(interval, 0) + 1
+        if interval == "60":
             return httpx.Response(429, text="rate limited")
-        return httpx.Response(200, json={"code": "0", "msg": "", "data": []})
+        return httpx.Response(200, json=_bybit_body([]))
 
     async with _make_provider(handler) as provider:
         with pytest.raises(MarketDataError) as exc_info:
@@ -556,4 +631,4 @@ async def test_complete_symbol_failure_when_one_timeframe_exhausts_retries():
 
     # No partial timeframe result is returned; the whole symbol fails.
     assert "1h" in str(exc_info.value)
-    assert call_counts["1H"] == 3
+    assert call_counts["60"] == 3

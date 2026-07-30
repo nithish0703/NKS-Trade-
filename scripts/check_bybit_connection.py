@@ -1,12 +1,12 @@
 """
-Manual connectivity check against the real OKX public market-data API.
+Manual connectivity check against the real Bybit public market-data API.
 
 This script is not run automatically as part of the pytest suite. It
-performs real network requests to verify that the OKXMarketDataProvider
-can successfully reach OKX and fetch completed candles.
+performs real network requests to verify that the BybitMarketDataProvider
+can successfully reach Bybit and fetch completed candles.
 
 Usage:
-    python scripts/check_okx_connection.py
+    python scripts/check_bybit_connection.py
 """
 
 import asyncio
@@ -14,7 +14,8 @@ import sys
 
 from app.config.pairs import BTC_SYMBOL
 from app.config.settings import get_settings
-from app.data.market_data_provider import MarketDataError, OKXMarketDataProvider
+from app.data.bybit_market_data_provider import BybitMarketDataProvider
+from app.data.market_data_errors import MarketDataError
 
 TIMEFRAMES = ["15m", "1h", "4h"]
 
@@ -24,13 +25,13 @@ async def main() -> None:
     settings = get_settings()
 
     try:
-        async with OKXMarketDataProvider(
+        async with BybitMarketDataProvider(
             base_url=settings.exchange_base_url,
             request_timeout_seconds=settings.request_timeout_seconds,
         ) as provider:
             results = await provider.fetch_multiple_timeframes(BTC_SYMBOL, TIMEFRAMES)
     except MarketDataError as exc:
-        print("OKX connectivity check failed.", file=sys.stderr)
+        print("Bybit connectivity check failed.", file=sys.stderr)
         # str(exc) already carries the safe, structured diagnostic
         # (exception class, timeout/connect/DNS/SSL classification, and
         # endpoint host) built by market_data_provider's error handling;

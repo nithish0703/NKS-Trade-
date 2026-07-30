@@ -20,7 +20,7 @@ from app.api.dashboard_service import DashboardService, build_pair_scan_updated_
 from app.api.runtime_store import DashboardRuntimeStore
 from app.api.websocket_manager import DashboardWebSocketManager
 from app.config.settings import get_settings
-from app.data.market_data_provider import OKXMarketDataProvider
+from app.data.bybit_market_data_provider import BybitMarketDataProvider
 from app.scanner.engine_factory import (
     build_scanner_service,
     dispose_scanner_notifications,
@@ -48,7 +48,7 @@ async def lifespan(app: FastAPI):
         else None
     )
 
-    market_data_provider = OKXMarketDataProvider(
+    market_data_provider = BybitMarketDataProvider(
         base_url=settings.exchange_base_url,
         request_timeout_seconds=settings.request_timeout_seconds,
     )

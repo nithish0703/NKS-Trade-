@@ -23,7 +23,7 @@ import sys
 from typing import Optional
 
 from app.config.pairs import BTC_SYMBOL
-from app.data.market_data_provider import MarketDataError
+from app.data.market_data_errors import MarketDataError
 from app.scanner.engine_factory import (
     build_scanner_service,
     build_strategy_engine,

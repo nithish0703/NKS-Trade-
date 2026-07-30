@@ -72,6 +72,9 @@ export interface ActiveSignal {
   confidence_score: number;
   signal_type: SignalTypeTier;
   detection_time_utc: string;
+  // Dashboard-only lifecycle status; always "ACTIVE" here. Never a real
+  // exchange position.
+  dashboard_status: "ACTIVE";
 }
 
 export interface PremiumSignal {
@@ -149,6 +152,9 @@ export interface SignalDetails {
   btc_market_alignment: boolean;
   detection_time_utc: string;
   institutional_reason: string;
+  // Dashboard-only lifecycle status ("NEW" or "ACTIVE"). Drives the
+  // modal's Trade button; never a real trading field.
+  dashboard_status: "NEW" | "ACTIVE";
 }
 
 export type DashboardWebSocketEventType =

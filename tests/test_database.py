@@ -136,3 +136,78 @@ class TestDatabaseManager:
         # Construction alone must not perform any I/O.
         manager = DatabaseManager(database_url)
         assert manager is not None
+
+
+class TestAdditiveColumnMigration:
+    async def test_adds_missing_column_to_pre_existing_table(self, database_url):
+        # Simulate a database created by an older version of the code:
+        # a "signals" table that exists but predates the dashboard_status
+        # column (this is exactly the on-disk state that caused a live
+        # 500 error on GET/POST endpoints reading dashboard_status).
+        manager = DatabaseManager(database_url)
+        try:
+            async with manager._engine.begin() as connection:
+                await connection.execute(
+                    text(
+                        "CREATE TABLE signals ("
+                        "id INTEGER PRIMARY KEY, trade_id VARCHAR(128) UNIQUE NOT NULL, "
+                        "setup_key VARCHAR(128) UNIQUE NOT NULL, coin VARCHAR(32) NOT NULL, "
+                        "direction VARCHAR(8) NOT NULL, entry_price FLOAT NOT NULL, "
+                        "stop_loss FLOAT NOT NULL, take_profit FLOAT NOT NULL, "
+                        "risk_reward_ratio FLOAT NOT NULL, confidence_score FLOAT NOT NULL, "
+                        "signal_type VARCHAR(16) NOT NULL, market_regime VARCHAR(32) NOT NULL, "
+                        "higher_timeframe_bias VARCHAR(16) NOT NULL, liquidity_type VARCHAR(32) NOT NULL, "
+                        "entry_zone_type VARCHAR(32) NOT NULL, structure_confirmation VARCHAR(16) NOT NULL, "
+                        "volume_confirmation BOOLEAN NOT NULL, atr_status VARCHAR(16) NOT NULL, "
+                        "trading_session VARCHAR(32) NOT NULL, btc_market_alignment BOOLEAN NOT NULL, "
+                        "detection_time_utc DATETIME NOT NULL, institutional_reason TEXT NOT NULL, "
+                        "liquidity_sweep_id VARCHAR(128) NOT NULL, structure_break_id VARCHAR(128) NOT NULL, "
+                        "entry_zone_id VARCHAR(128) NOT NULL, retest_id VARCHAR(128) NOT NULL, "
+                        "created_at_utc DATETIME NOT NULL)"
+                    )
+                )
+                await connection.execute(
+                    text(
+                        "INSERT INTO signals (trade_id, setup_key, coin, direction, entry_price, "
+                        "stop_loss, take_profit, risk_reward_ratio, confidence_score, signal_type, "
+                        "market_regime, higher_timeframe_bias, liquidity_type, entry_zone_type, "
+                        "structure_confirmation, volume_confirmation, atr_status, trading_session, "
+                        "btc_market_alignment, detection_time_utc, institutional_reason, "
+                        "liquidity_sweep_id, structure_break_id, entry_zone_id, retest_id, created_at_utc) "
+                        "VALUES ('t1', 's1', 'BTC-USDT', 'BUY', 100.0, 95.0, 110.0, 3.0, 90.0, 'PREMIUM', "
+                        "'TRENDING', 'BULLISH', 'EQUAL_HIGH', 'ORDER_BLOCK', 'BOS', 1, 'EXPANDING', "
+                        "'LONDON', 1, '2026-01-01T10:00:00+00:00', 'reason', 'sw1', 'br1', 'zo1', 're1', "
+                        "'2026-01-01T10:00:00+00:00')"
+                    )
+                )
+
+            # Must not raise: the missing dashboard_status column (and the
+            # unrelated rejected_analytics table) are added additively.
+            await manager.initialize()
+
+            async with manager.session_scope() as session:
+                columns = await session.connection()
+                column_names = await columns.run_sync(
+                    lambda sync_conn: {col["name"] for col in inspect(sync_conn).get_columns("signals")}
+                )
+                assert "dashboard_status" in column_names
+
+                # Pre-existing rows are backfilled with the column default.
+                result = await session.execute(text("SELECT dashboard_status FROM signals WHERE trade_id = 't1'"))
+                assert result.scalar() == "NEW"
+
+                table_names = await columns.run_sync(lambda sync_conn: inspect(sync_conn).get_table_names())
+                assert "rejected_analytics" in table_names
+        finally:
+            await manager.dispose()
+
+    async def test_migration_is_idempotent(self, database_url):
+        manager = DatabaseManager(database_url)
+        await manager.initialize()
+        await manager.initialize()  # must not raise on a second call
+        try:
+            async with manager.session_scope() as session:
+                result = await session.execute(text("SELECT COUNT(*) FROM signals"))
+                assert result.scalar() == 0
+        finally:
+            await manager.dispose()
