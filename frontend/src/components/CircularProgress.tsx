@@ -48,7 +48,7 @@ export function CircularProgress({
             percentage === null ? "text-slate-400" : "text-slate-900"
           }`}
         >
-          {percentage === null ? "--" : `${percentage}%`}
+          {percentage === null ? "--" : `${Math.round(percentage)}%`}
         </span>
       ) : null}
     </div>

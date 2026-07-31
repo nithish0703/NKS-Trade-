@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { ScanningCoinsTable } from "./ScanningCoinsTable";
 import type { ScanningCoin } from "../types/dashboard";
@@ -96,9 +96,9 @@ describe("ScanningCoinsTable", () => {
 
   it("renders a circular progress indicator matching the preview percentage", () => {
     render(<ScanningCoinsTable coins={[coin({ preview_progress_percentage: 63 })]} />);
-    const svg = document.querySelector("svg");
-    expect(svg).not.toBeNull();
-    const progressCircle = svg?.querySelectorAll("circle")[1];
+    const svgs = document.querySelectorAll("table svg");
+    expect(svgs.length).toBeGreaterThan(0);
+    const progressCircle = svgs[0]?.querySelectorAll("circle")[1];
     expect(progressCircle).toBeDefined();
     expect(progressCircle?.getAttribute("stroke-dashoffset")).not.toBeNull();
   });
@@ -147,11 +147,95 @@ describe("ScanningCoinsTable", () => {
     expect(screen.queryByText("0%")).not.toBeInTheDocument();
   });
 
+  it("orders coins by score descending, highest first", () => {
+    render(
+      <ScanningCoinsTable
+        coins={[
+          coin({ coin: "LOW-USDT", preview_progress_percentage: 10 }),
+          coin({ coin: "HIGH-USDT", preview_progress_percentage: 90 }),
+          coin({ coin: "MID-USDT", preview_progress_percentage: 50 }),
+        ]}
+      />,
+    );
+    const rows = screen.getAllByRole("row").slice(1); // skip header row
+    const coinNames = rows.map((row) => row.textContent);
+    expect(coinNames[0]).toContain("HIGH-USDT");
+    expect(coinNames[1]).toContain("MID-USDT");
+    expect(coinNames[2]).toContain("LOW-USDT");
+  });
+
+  it("places coins with a null score last", () => {
+    render(
+      <ScanningCoinsTable
+        coins={[
+          coin({ coin: "SCORED-USDT", preview_progress_percentage: 10 }),
+          coin({
+            coin: "SCANNING-USDT",
+            preview_progress_percentage: null,
+            preview_progress_raw_score: null,
+            preview_progress_max_score: null,
+          }),
+        ]}
+      />,
+    );
+    const rows = screen.getAllByRole("row").slice(1);
+    const coinNames = rows.map((row) => row.textContent);
+    expect(coinNames[0]).toContain("SCORED-USDT");
+    expect(coinNames[1]).toContain("SCANNING-USDT");
+  });
+
   it("shows the dashboard-preview-only tooltip notice on the score cell", () => {
     render(<ScanningCoinsTable coins={[coin()]} />);
     const scoreCell = screen.getByText("100%").closest("[title]");
     expect(scoreCell?.getAttribute("title")).toContain(
       "Dashboard preview only. This is not final trade confidence.",
     );
+  });
+
+  describe("search", () => {
+    it("renders a search input", () => {
+      render(<ScanningCoinsTable coins={[coin()]} />);
+      expect(screen.getByPlaceholderText("Search coin...")).toBeInTheDocument();
+    });
+
+    it("filters coins by name as the user types", () => {
+      render(
+        <ScanningCoinsTable
+          coins={[coin({ coin: "BTC-USDT" }), coin({ coin: "ETH-USDT" }), coin({ coin: "SOL-USDT" })]}
+        />,
+      );
+      fireEvent.change(screen.getByPlaceholderText("Search coin..."), {
+        target: { value: "eth" },
+      });
+      expect(screen.getByText("ETH-USDT")).toBeInTheDocument();
+      expect(screen.queryByText("BTC-USDT")).not.toBeInTheDocument();
+      expect(screen.queryByText("SOL-USDT")).not.toBeInTheDocument();
+    });
+
+    it("search is case-insensitive", () => {
+      render(<ScanningCoinsTable coins={[coin({ coin: "BTC-USDT" })]} />);
+      fireEvent.change(screen.getByPlaceholderText("Search coin..."), {
+        target: { value: "btc" },
+      });
+      expect(screen.getByText("BTC-USDT")).toBeInTheDocument();
+    });
+
+    it("shows an empty state when no coin matches the search", () => {
+      render(<ScanningCoinsTable coins={[coin({ coin: "BTC-USDT" })]} />);
+      fireEvent.change(screen.getByPlaceholderText("Search coin..."), {
+        target: { value: "doesnotexist" },
+      });
+      expect(screen.getByText("No coins match your search")).toBeInTheDocument();
+    });
+
+    it("clearing the search restores the full list", () => {
+      render(<ScanningCoinsTable coins={[coin({ coin: "BTC-USDT" }), coin({ coin: "ETH-USDT" })]} />);
+      const input = screen.getByPlaceholderText("Search coin...");
+      fireEvent.change(input, { target: { value: "btc" } });
+      expect(screen.queryByText("ETH-USDT")).not.toBeInTheDocument();
+      fireEvent.change(input, { target: { value: "" } });
+      expect(screen.getByText("BTC-USDT")).toBeInTheDocument();
+      expect(screen.getByText("ETH-USDT")).toBeInTheDocument();
+    });
   });
 });
