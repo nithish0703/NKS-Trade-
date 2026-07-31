@@ -34,14 +34,21 @@ from app.data.market_data_errors import (
     MarketDataResponseError,
     MarketDataValidationError,
 )
+from app.data.open_interest_point import OpenInterestPoint
 from app.data.provider_base import MarketDataProvider
 from app.data.ticker_snapshot import TickerSnapshot
 from app.models.candle import Candle
 
 KLINE_ENDPOINT = "/v5/market/kline"
 TICKER_ENDPOINT = "/v5/market/tickers"
+OPEN_INTEREST_ENDPOINT = "/v5/market/open-interest"
 MAX_CANDLE_LIMIT = 1000
+MAX_OPEN_INTEREST_LIMIT = 200
 LINEAR_CATEGORY = "linear"
+
+# Bybit's supported Open Interest history granularities
+# (GET /v5/market/open-interest `intervalTime` parameter).
+_VALID_OPEN_INTEREST_INTERVALS = frozenset({"5min", "15min", "30min", "1h", "4h", "1d"})
 
 # Request scheduling / retry tuning. These control only HTTP request
 # timing and retry behaviour against Bybit's public market-data API;
@@ -321,6 +328,31 @@ def _to_optional_float(value: object) -> Optional[float]:
     try:
         return float(Decimal(str(value)))
     except (InvalidOperation, TypeError, ValueError):
+        return None
+
+
+def _parse_open_interest_row(row: object, symbol: str) -> Optional[OpenInterestPoint]:
+    """
+    Parse a single row from Bybit's Open Interest history response into
+    an OpenInterestPoint. Never raises; a malformed row is skipped
+    rather than failing the whole batch.
+    """
+    if not isinstance(row, dict):
+        return None
+
+    open_interest = _to_optional_float(row.get("openInterest"))
+    if open_interest is None:
+        return None
+
+    timestamp_ms = row.get("timestamp")
+    try:
+        timestamp = datetime.fromtimestamp(int(timestamp_ms) / 1000, tz=timezone.utc)
+    except (TypeError, ValueError):
+        return None
+
+    try:
+        return OpenInterestPoint(symbol=symbol, timestamp=timestamp, open_interest=open_interest)
+    except ValueError:
         return None
 
 
@@ -769,3 +801,73 @@ class BybitMarketDataProvider(MarketDataProvider):
             if snapshot is not None:
                 snapshots.append(snapshot)
         return snapshots
+
+    async def fetch_open_interest_history(
+        self, symbol: str, interval: str, limit: int
+    ) -> list[OpenInterestPoint]:
+        """
+        Fetch a recent Open Interest time series for a single symbol
+        from Bybit's public Open Interest history endpoint
+        (category=linear), for Open Interest Confirmation.
+
+        `interval` must be one of Bybit's supported granularities
+        ("5min", "15min", "30min", "1h", "4h", "1d"). Uses only public
+        market data (no API keys). Never raises: on any request,
+        response, or validation failure -- including an unsupported
+        `interval` or non-positive `limit` -- this returns an empty
+        list so callers can treat OI confirmation as unavailable rather
+        than fabricating a rising/falling signal. Returned points are
+        in ascending chronological order (Bybit returns newest-first).
+        """
+        if interval not in _VALID_OPEN_INTEREST_INTERVALS:
+            return []
+        if limit <= 0 or limit > MAX_OPEN_INTEREST_LIMIT:
+            return []
+
+        try:
+            validated_symbol = self._validate_symbol(symbol)
+        except ValueError:
+            return []
+
+        bybit_symbol = _to_bybit_symbol(validated_symbol)
+
+        try:
+            response = await self._client.get(
+                OPEN_INTEREST_ENDPOINT,
+                params={
+                    "category": LINEAR_CATEGORY,
+                    "symbol": bybit_symbol,
+                    "intervalTime": interval,
+                    "limit": str(limit),
+                },
+            )
+        except httpx.HTTPError:
+            return []
+
+        if response.status_code != 200:
+            return []
+
+        try:
+            payload = response.json()
+        except ValueError:
+            return []
+
+        if not isinstance(payload, dict) or payload.get("retCode") != _SUCCESS_RET_CODE:
+            return []
+
+        result = payload.get("result")
+        if not isinstance(result, dict):
+            return []
+
+        oi_list = result.get("list")
+        if not isinstance(oi_list, list):
+            return []
+
+        points: list[OpenInterestPoint] = []
+        for row in oi_list:
+            point = _parse_open_interest_row(row, validated_symbol)
+            if point is not None:
+                points.append(point)
+
+        points.sort(key=lambda p: p.timestamp)
+        return points
