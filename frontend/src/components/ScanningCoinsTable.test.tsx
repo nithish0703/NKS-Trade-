@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import { ScanningCoinsTable } from "./ScanningCoinsTable";
+import { ScanningCoinsTable, scanningCoinsSummary } from "./ScanningCoinsTable";
 import type { ScanningCoin } from "../types/dashboard";
 
 function coin(overrides: Partial<ScanningCoin> = {}): ScanningCoin {
@@ -337,5 +337,74 @@ describe("ScanningCoinsTable", () => {
       expect(screen.getByText("BTC-USDT")).toBeInTheDocument();
       expect(screen.getByText("ETH-USDT")).toBeInTheDocument();
     });
+  });
+
+  describe("counts", () => {
+    it("shows the total coin count", () => {
+      render(
+        <ScanningCoinsTable
+          coins={[coin({ coin: "BTC-USDT" }), coin({ coin: "ETH-USDT" }), coin({ coin: "SOL-USDT" })]}
+        />,
+      );
+      expect(screen.getByText("3")).toBeInTheDocument();
+      expect(screen.getByText(/total coins/)).toBeInTheDocument();
+    });
+
+    it("uses singular wording for exactly one coin", () => {
+      render(<ScanningCoinsTable coins={[coin()]} />);
+      expect(screen.getByText(/total coin$/)).toBeInTheDocument();
+    });
+
+    it("shows the scanning-in-progress count when at least one coin is still SCANNING", () => {
+      render(
+        <ScanningCoinsTable
+          coins={[
+            coin({ coin: "BTC-USDT", status: "READY" }),
+            coin({ coin: "ETH-USDT", status: "SCANNING" }),
+            coin({ coin: "SOL-USDT", status: "SCANNING" }),
+          ]}
+        />,
+      );
+      expect(screen.getByText("2")).toBeInTheDocument();
+      expect(screen.getByText(/scanning/)).toBeInTheDocument();
+    });
+
+    it("hides the scanning count when every coin has a result", () => {
+      render(
+        <ScanningCoinsTable
+          coins={[
+            coin({ coin: "BTC-USDT", status: "READY" }),
+            coin({ coin: "ETH-USDT", status: "REJECTED" }),
+          ]}
+        />,
+      );
+      expect(screen.queryByText(/scanning$/)).not.toBeInTheDocument();
+    });
+
+    it("the total count is unaffected by the search filter", () => {
+      render(
+        <ScanningCoinsTable coins={[coin({ coin: "BTC-USDT" }), coin({ coin: "ETH-USDT" })]} />,
+      );
+      fireEvent.change(screen.getByPlaceholderText("Search coin..."), {
+        target: { value: "btc" },
+      });
+      expect(screen.getByText("2")).toBeInTheDocument();
+    });
+  });
+});
+
+describe("scanningCoinsSummary", () => {
+  it("counts total and scanning-status coins", () => {
+    const summary = scanningCoinsSummary([
+      coin({ coin: "A", status: "READY" }),
+      coin({ coin: "B", status: "SCANNING" }),
+      coin({ coin: "C", status: "SCANNING" }),
+      coin({ coin: "D", status: "REJECTED" }),
+    ]);
+    expect(summary).toEqual({ total: 4, scanning: 2 });
+  });
+
+  it("returns zero counts for an empty list", () => {
+    expect(scanningCoinsSummary([])).toEqual({ total: 0, scanning: 0 });
   });
 });

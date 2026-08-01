@@ -73,6 +73,13 @@ function statusColorClassName(status: ScanningCoin["status"]): string {
   }
 }
 
+export function scanningCoinsSummary(coins: ScanningCoin[]): { total: number; scanning: number } {
+  return {
+    total: coins.length,
+    scanning: coins.filter((coin) => coin.status === "SCANNING").length,
+  };
+}
+
 export function ScanningCoinsTable({ coins }: ScanningCoinsTableProps) {
   const [searchTerm, setSearchTerm] = useState("");
 
@@ -88,8 +95,22 @@ export function ScanningCoinsTable({ coins }: ScanningCoinsTableProps) {
     coin.coin.toLowerCase().includes(searchTerm.trim().toLowerCase()),
   );
 
+  const { total, scanning } = scanningCoinsSummary(coins);
+
   return (
     <div>
+      <div className="mb-3 flex items-center justify-between text-xs text-slate-500">
+        <span>
+          <span className="font-semibold text-slate-900">{total}</span> total coin
+          {total === 1 ? "" : "s"}
+        </span>
+        {scanning > 0 ? (
+          <span>
+            <span className="font-semibold text-purple-600">{scanning}</span> scanning
+          </span>
+        ) : null}
+      </div>
+
       <div className="relative mb-3 w-48">
         <Search
           size={14}
