@@ -113,6 +113,7 @@ def _build_scheduler(
     interval_seconds=15,
     clock=None,
     wall_clock=None,
+    retry_count_provider=None,
 ):
     kwargs = dict(
         pair_scanner=pair_scanner or _build_pair_scanner(),
@@ -123,6 +124,8 @@ def _build_scheduler(
     )
     if wall_clock is not None:
         kwargs["wall_clock"] = wall_clock
+    if retry_count_provider is not None:
+        kwargs["retry_count_provider"] = retry_count_provider
     return MultiPairScanScheduler(**kwargs)
 
 
@@ -285,6 +288,68 @@ class TestRunCycle:
         )
         assert active_positions == []
         assert active_position_candles == {}
+
+
+class TestRunCycleLogging:
+    async def test_scan_started_logged_with_pair_count(self, caplog):
+        scheduler = _build_scheduler(pairs=("BTC-USDT", "ETH-USDT"))
+        with caplog.at_level("INFO"):
+            await _run_cycle(scheduler)
+        assert any("scan started for 2 pairs" in message for message in caplog.messages)
+
+    async def test_scan_completed_logged_with_all_category_counts(self, caplog):
+        pair_scanner = _build_pair_scanner(
+            results_by_symbol={
+                "ETH-USDT": _pair_result("ETH-USDT", status=PairScanStatus.REJECTED),
+                "SOL-USDT": _pair_result("SOL-USDT", status=PairScanStatus.ERROR),
+            }
+        )
+        scheduler = _build_scheduler(
+            pair_scanner=pair_scanner, pairs=("BTC-USDT", "ETH-USDT", "SOL-USDT")
+        )
+        with caplog.at_level("INFO"):
+            await _run_cycle(scheduler)
+        completed_messages = [m for m in caplog.messages if "scan completed" in m]
+        assert len(completed_messages) == 1
+        message = completed_messages[0]
+        assert "1 valid" in message
+        assert "1 rejected" in message
+        assert "1 error" in message
+        assert "0 duplicate" in message
+
+    async def test_retry_count_delta_included_when_provider_given(self, caplog):
+        call_count = {"n": 0}
+
+        def _retry_count_provider():
+            call_count["n"] += 1
+            # First call (before scanning) returns 10, second call (after
+            # scanning) returns 13 -- a delta of 3 retries this cycle.
+            return 10 if call_count["n"] == 1 else 13
+
+        scheduler = _build_scheduler(
+            pairs=("BTC-USDT",), retry_count_provider=_retry_count_provider
+        )
+        with caplog.at_level("INFO"):
+            await _run_cycle(scheduler)
+        completed_messages = [m for m in caplog.messages if "scan completed" in m]
+        assert "retries=3" in completed_messages[0]
+
+    async def test_retries_reported_as_not_available_without_a_provider(self, caplog):
+        scheduler = _build_scheduler(pairs=("BTC-USDT",))
+        with caplog.at_level("INFO"):
+            await _run_cycle(scheduler)
+        completed_messages = [m for m in caplog.messages if "scan completed" in m]
+        assert "retries=n/a" in completed_messages[0]
+
+    async def test_rejection_breakdown_still_present_in_completed_log(self, caplog):
+        pair_scanner = _build_pair_scanner(
+            results_by_symbol={"ETH-USDT": _pair_result("ETH-USDT", status=PairScanStatus.REJECTED)}
+        )
+        scheduler = _build_scheduler(pair_scanner=pair_scanner, pairs=("BTC-USDT", "ETH-USDT"))
+        with caplog.at_level("INFO"):
+            await _run_cycle(scheduler)
+        completed_messages = [m for m in caplog.messages if "scan completed" in m]
+        assert "Rejected breakdown" in completed_messages[0]
 
 
 class TestRunForever:

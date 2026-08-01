@@ -123,13 +123,18 @@ def _preview_result(symbol="BTC-USDT") -> PreviewAnalysisResult:
 
 
 def _build_scanner(
-    strategy_engine=None, duplicate_guard=None, semaphore=None, preview_analyzer=None
+    strategy_engine=None,
+    duplicate_guard=None,
+    semaphore=None,
+    preview_analyzer=None,
+    on_pair_result=None,
 ) -> PairScanner:
     return PairScanner(
         strategy_engine=strategy_engine or MagicMock(),
         duplicate_guard=duplicate_guard or DuplicateSignalGuard(retention_seconds=3600, maximum_entries=1000),
         semaphore=semaphore or asyncio.Semaphore(5),
         preview_analyzer=preview_analyzer,
+        on_pair_result=on_pair_result,
     )
 
 
@@ -327,9 +332,10 @@ class TestPreviewAnalyzerWiring:
         assert result.status == PairScanStatus.VALID
         assert result.preview_result is None
 
-    async def test_preview_not_computed_for_error_result(self):
-        # An ERROR result never has a market_context (market data itself
-        # was unavailable), so no preview can be computed.
+    async def test_preview_not_computed_for_error_result_without_market_context(self):
+        # An unhandled exception (never reaching a StrategyPipelineResult
+        # at all) has no market_context to reuse, so no preview can be
+        # computed.
         engine = MagicMock()
         engine.analyze_symbol = AsyncMock(side_effect=RuntimeError("boom"))
 
@@ -342,6 +348,36 @@ class TestPreviewAnalyzerWiring:
         preview_analyzer.analyze.assert_not_called()
         assert result.status == PairScanStatus.ERROR
         assert result.preview_result is None
+
+    async def test_preview_computed_for_error_result_with_market_context(self):
+        # A PipelineStatus.ERROR result that DID reach market-data
+        # preparation (market_context is populated) should still get a
+        # preview score, the same as a REJECTED result -- an ERROR
+        # status must not silently fall back to no score when the
+        # necessary inputs are actually available.
+        error_result = StrategyPipelineResult(
+            symbol="BTC-USDT",
+            expected_direction=None,
+            detection_time_utc=UTC_NOW,
+            status=PipelineStatus.ERROR,
+            passed=False,
+            rejection_reason="Downstream calculation error.",
+            stages=[],
+            market_context=_market_context(),
+        )
+        engine = MagicMock()
+        engine.analyze_symbol = AsyncMock(return_value=error_result)
+
+        preview_analyzer = MagicMock()
+        preview_analyzer.analyze = MagicMock(return_value=_preview_result())
+
+        scanner = _build_scanner(strategy_engine=engine, preview_analyzer=preview_analyzer)
+        result = await _scan(scanner)
+
+        preview_analyzer.analyze.assert_called_once_with(error_result.market_context)
+        assert result.status == PairScanStatus.ERROR
+        assert result.preview_result is not None
+        assert result.preview_result.preview_direction == "BUY"
 
     async def test_no_preview_analyzer_configured_leaves_preview_result_none(self):
         pipeline_result = _rejected_pipeline_result(market_context=_market_context())
@@ -401,3 +437,55 @@ class TestPreviewAnalyzerWiring:
         assert result.status != PairScanStatus.VALID
         assert result.duplicate is False
         assert result.duplicate_key is None
+
+
+class TestOnPairResultCallback:
+    async def test_callback_invoked_with_the_final_result(self):
+        engine = MagicMock()
+        engine.analyze_symbol = AsyncMock(return_value=_valid_pipeline_result())
+
+        received = []
+
+        async def _on_pair_result(result):
+            received.append(result)
+
+        scanner = _build_scanner(strategy_engine=engine, on_pair_result=_on_pair_result)
+        result = await _scan(scanner)
+
+        assert received == [result]
+
+    async def test_callback_invoked_for_every_status_including_error(self):
+        engine = MagicMock()
+        engine.analyze_symbol = AsyncMock(side_effect=RuntimeError("boom"))
+
+        received = []
+
+        async def _on_pair_result(result):
+            received.append(result)
+
+        scanner = _build_scanner(strategy_engine=engine, on_pair_result=_on_pair_result)
+        result = await _scan(scanner)
+
+        assert len(received) == 1
+        assert received[0].status == PairScanStatus.ERROR
+
+    async def test_callback_exception_never_affects_the_returned_result(self):
+        engine = MagicMock()
+        engine.analyze_symbol = AsyncMock(return_value=_valid_pipeline_result())
+
+        async def _on_pair_result(result):
+            raise RuntimeError("observer boom")
+
+        scanner = _build_scanner(strategy_engine=engine, on_pair_result=_on_pair_result)
+        result = await _scan(scanner)  # must not raise
+
+        assert result.status == PairScanStatus.VALID
+
+    async def test_no_callback_configured_is_a_no_op(self):
+        engine = MagicMock()
+        engine.analyze_symbol = AsyncMock(return_value=_valid_pipeline_result())
+
+        scanner = _build_scanner(strategy_engine=engine, on_pair_result=None)
+        result = await _scan(scanner)  # must not raise
+
+        assert result.status == PairScanStatus.VALID

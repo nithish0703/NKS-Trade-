@@ -6,7 +6,7 @@ application settings and thresholds.
 from app.config import thresholds
 from app.config.settings import get_settings
 from app.data.candle_repository import CandleRepository
-from app.data.bybit_market_data_provider import BybitMarketDataProvider
+from app.data.binance_market_data_provider import BinanceFuturesMarketDataProvider
 from app.indicators.calculator import IndicatorCalculator
 from app.liquidity.calculator import LiquidityCalculator
 from app.liquidity.equal_high_low import EqualHighLowDetector
@@ -67,7 +67,7 @@ from app.config.pairs import get_configured_pairs, set_pair_source
 from app.scanner.active_state import EmptyActiveTradingStateProvider
 from app.scanner.candidate_buffer import ValidSignalCandidateBuffer
 from app.scanner.duplicate_guard import DuplicateSignalGuard
-from app.scanner.pair_discovery import DynamicPairDiscoveryService, PairWarmUpTracker
+from app.scanner.pair_discovery import DynamicPairDiscoveryService
 from app.scanner.pair_scanner import PairScanner
 from app.scanner.scan_scheduler import MultiPairScanScheduler
 from app.scanner.scanner_service import ScannerService
@@ -91,7 +91,7 @@ def build_strategy_engine() -> InstitutionalSMCStrategyEngine:
     """
     settings = get_settings()
 
-    market_data_provider = BybitMarketDataProvider(
+    market_data_provider = BinanceFuturesMarketDataProvider(
         base_url=settings.exchange_base_url,
         request_timeout_seconds=settings.request_timeout_seconds,
     )
@@ -348,7 +348,7 @@ def build_preview_analyzer() -> PreviewAnalyzer:
     )
 
 
-def build_scanner_service(*, on_event=None, on_cycle_result=None) -> ScannerService:
+def build_scanner_service(*, on_event=None, on_cycle_result=None, on_pair_result=None) -> ScannerService:
     """
     Construct a fully wired ScannerService using centralized Settings
     and thresholds.
@@ -361,6 +361,12 @@ def build_scanner_service(*, on_event=None, on_cycle_result=None) -> ScannerServ
     `on_event`, when provided, is passed straight through to
     ScannerService as its optional runtime-event observer (e.g. for a
     dashboard WebSocket broadcast). It never affects strategy behaviour.
+
+    `on_pair_result`, when provided, is passed through to PairScanner and
+    invoked the instant each individual pair's scan finishes -- not
+    batched at cycle-end -- so a dashboard observer can reflect each
+    coin's result in real time as it lands, independent of how long
+    other pairs in the same cycle take. Never affects strategy behaviour.
     """
     settings = get_settings()
 
@@ -376,38 +382,16 @@ def build_scanner_service(*, on_event=None, on_cycle_result=None) -> ScannerServ
         duplicate_guard=duplicate_guard,
         semaphore=semaphore,
         preview_analyzer=preview_analyzer,
+        on_pair_result=on_pair_result,
     )
 
     pair_discovery_service = None
     configured_pair_provider = get_configured_pairs
     if settings.dynamic_pair_discovery_enabled:
-        discovery_market_data_provider = BybitMarketDataProvider(
+        discovery_market_data_provider = BinanceFuturesMarketDataProvider(
             base_url=settings.exchange_base_url,
             request_timeout_seconds=settings.request_timeout_seconds,
         )
-
-        # A brand-new symbol's first-ever candle-history fetch has no
-        # cached fallback and no safety margin, so warm-up fetches use a
-        # dedicated provider with a more patient retry schedule than the
-        # live per-cycle scan path. This never affects fetches for
-        # symbols already in rotation (PairScanner / strategy engine
-        # keep using the unmodified provider built in
-        # build_strategy_engine()).
-        #
-        # validate_symbol_against_allow_list=False: a warm-up fetch's
-        # whole purpose is to test a symbol *before* it is added to
-        # get_configured_pairs(), so the default allow-list check would
-        # always reject it (the symbol genuinely isn't configured yet).
-        # Format-only validation is used instead -- the symbol still
-        # only reaches this call after passing the OI/turnover filters.
-        warmup_market_data_provider = BybitMarketDataProvider(
-            base_url=settings.exchange_base_url,
-            request_timeout_seconds=settings.request_timeout_seconds,
-            max_request_attempts=thresholds.PAIR_WARMUP_MAX_REQUEST_ATTEMPTS,
-            retry_backoff_schedule_seconds=thresholds.PAIR_WARMUP_RETRY_BACKOFF_SCHEDULE_SECONDS,
-            validate_symbol_against_allow_list=False,
-        )
-        warm_up_tracker = PairWarmUpTracker(market_data_provider=warmup_market_data_provider)
 
         async def _on_pair_list_refreshed(updated: bool, current_pairs: list) -> None:
             if on_event is None:
@@ -430,7 +414,6 @@ def build_scanner_service(*, on_event=None, on_cycle_result=None) -> ScannerServ
             minimum_turnover_24h_usdt=settings.pair_discovery_minimum_turnover_24h_usdt,
             refresh_interval_seconds=settings.pair_discovery_interval_seconds,
             maximum_pairs=settings.pair_discovery_maximum_pairs,
-            warm_up_tracker=warm_up_tracker,
             on_refresh=_on_pair_list_refreshed,
         )
         set_pair_source(pair_discovery_service.get_current_pairs)
@@ -443,6 +426,7 @@ def build_scanner_service(*, on_event=None, on_cycle_result=None) -> ScannerServ
         configured_pair_provider=configured_pair_provider,
         scanner_interval_seconds=settings.scanner_interval_seconds,
         maximum_concurrent_scans=settings.max_concurrent_scans,
+        retry_count_provider=lambda: strategy_engine._market_data_provider.total_retry_count,
     )
     candidate_buffer = ValidSignalCandidateBuffer(
         maximum_size=settings.candidate_buffer_maximum_size

@@ -27,11 +27,12 @@ ATR_STOP_LOSS_MULTIPLIER: Final[float] = 1.5
 SCANNER_INTERVAL_SECONDS: Final[int] = 300
 
 # Dynamic Liquidity + Open Interest coin-discovery configuration.
-# The refresh interval defaults to 15 minutes: Bybit's public tickers
-# endpoint returns Open Interest and 24h turnover for every USDT
-# perpetual in a single call, so there is no meaningful rate-limit cost
-# to refreshing this often -- unlike per-symbol candle fetching, it
-# does not scale with the number of coins being tracked.
+# The refresh interval defaults to 15 minutes. Binance Futures' public
+# 24hr ticker endpoint returns turnover for every USDT-M perpetual in a
+# single call; Open Interest still requires one request per
+# turnover-qualifying candidate (Binance has no bulk OI-value endpoint),
+# so unlike turnover this refresh's cost does scale with the number of
+# candidates -- kept at 15 minutes as a reasonable balance.
 PAIR_DISCOVERY_INTERVAL_SECONDS: Final[int] = 900
 PAIR_DISCOVERY_MINIMUM_OPEN_INTEREST_USDT: Final[float] = 5_000_000.0
 PAIR_DISCOVERY_MINIMUM_TURNOVER_24H_USDT: Final[float] = 10_000_000.0
@@ -47,7 +48,6 @@ PAIR_WARMUP_MAX_REQUEST_ATTEMPTS: Final[int] = 5
 PAIR_WARMUP_RETRY_BACKOFF_SCHEDULE_SECONDS: Final[tuple[float, ...]] = (2.0, 4.0, 8.0, 15.0)
 
 # Signal scoring
-MIN_PUBLISHABLE_CONFIDENCE_SCORE: Final[float] = 80.0
 PREMIUM_SIGNAL_MIN_SCORE: Final[float] = 90.0
 STRONG_SIGNAL_MIN_SCORE: Final[float] = 80.0
 MEDIUM_SIGNAL_MIN_SCORE: Final[float] = 70.0
@@ -129,6 +129,8 @@ SCORE_MAXIMUM_RAW: Final[int] = 115
 
 # Confidence classification thresholds
 PREMIUM_SIGNAL_MINIMUM_SCORE: Final[float] = 90.0
-STRONG_SIGNAL_MINIMUM_SCORE: Final[float] = 80.0
 MEDIUM_SIGNAL_MINIMUM_SCORE: Final[float] = 70.0
-MINIMUM_PUBLISHABLE_CONFIDENCE_SCORE: Final[float] = 80.0
+# STRONG_SIGNAL_MINIMUM_SCORE (the publishable-signal cutoff) moved to
+# app.config.settings.Settings.min_publishable_confidence_score so
+# signal frequency can be tuned via the MIN_PUBLISHABLE_CONFIDENCE_SCORE
+# env var without a code change/redeploy. Default is unchanged (80.0).

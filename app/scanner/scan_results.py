@@ -118,6 +118,7 @@ class ScanCycleResult(BaseModel):
     duplicate_count: int
     error_count: int
     skipped_count: int
+    rejection_breakdown: dict[str, int] = {}
     metadata: Optional[dict[str, Any]] = None
 
     @field_validator("started_at_utc", "completed_at_utc")

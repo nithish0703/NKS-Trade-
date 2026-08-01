@@ -9,6 +9,7 @@ import pytest
 
 from app.api.dashboard_service import (
     DashboardService,
+    build_pair_scan_updated_event,
     build_pair_scan_updated_events,
     calculate_chart_trend,
     calculate_validation_progress,
@@ -849,6 +850,103 @@ class TestPairScanUpdatedEvents:
         assert "Traceback" not in payload_text
         assert "TELEGRAM_BOT_TOKEN" not in payload_text
         assert "candles" not in payload_text.lower()
+
+
+class TestSinglePairScanUpdatedEvent:
+    def test_matches_the_batch_builder_for_the_same_pair(self):
+        # build_pair_scan_updated_event (used for real-time per-pair
+        # delivery) must produce the exact same event shape as the
+        # per-cycle batch builder for an identical pair result -- the
+        # only difference is when it's called, never its content.
+        pipeline_result = StrategyPipelineResult(
+            symbol="ETH-USDT", expected_direction=None, detection_time_utc=UTC_NOW,
+            status=PipelineStatus.REJECTED, passed=False,
+            failed_layer="LIQUIDITY_SWEEP", rejection_reason="Institutional liquidity sweep missing",
+            stages=_stages_with_failure("LIQUIDITY_SWEEP"),
+        )
+        pair_result = PairScanResult(
+            symbol="ETH-USDT", status=PairScanStatus.REJECTED, pipeline_result=pipeline_result,
+            started_at_utc=UTC_NOW, completed_at_utc=UTC_NOW, duration_ms=1.0,
+            reason="Institutional liquidity sweep missing",
+        )
+        single_event = build_pair_scan_updated_event(pair_result)
+        [batch_event] = build_pair_scan_updated_events(
+            ScanCycleResult(
+                cycle_id="c1", started_at_utc=UTC_NOW, completed_at_utc=UTC_NOW, duration_ms=1.0,
+                configured_pairs=["ETH-USDT"], attempted_pairs=["ETH-USDT"],
+                valid_results=[], rejected_results=[], duplicate_results=[], error_results=[],
+                skipped_results=[], pair_results=[pair_result], total_pairs=1,
+                valid_count=0, rejected_count=0, duplicate_count=0, error_count=0, skipped_count=0,
+            )
+        )
+        assert single_event.event == batch_event.event
+        assert single_event.data == batch_event.data
+
+
+class TestRecordPairResult:
+    async def test_scanning_coins_reflects_a_pair_result_recorded_before_any_full_cycle(self):
+        # Real-time per-pair delivery: record_pair_result must make a
+        # single coin's result visible via get_scanning_coins immediately,
+        # without waiting for record_cycle_result (the whole cycle) to
+        # ever be called.
+        runtime_store = DashboardRuntimeStore()
+        confidence_result = ConfidenceScoreResult(
+            raw_score=115.0, maximum_raw_score=115, normalized_score=96.0,
+            classification=ConfidenceClassification.PREMIUM, publishable=True,
+            mandatory_layers_passed=True, layer_scores=[], failed_mandatory_layers=[],
+            reason="PREMIUM",
+        )
+        pipeline_result = StrategyPipelineResult(
+            symbol="BTC-USDT", expected_direction="BUY", detection_time_utc=UTC_NOW,
+            status=PipelineStatus.VALID, passed=True, stages=[],
+            risk_plan=_real_risk_plan(), confidence_result=confidence_result,
+        )
+        pair_result = PairScanResult(
+            symbol="BTC-USDT", status=PairScanStatus.VALID, pipeline_result=pipeline_result,
+            started_at_utc=UTC_NOW, completed_at_utc=UTC_NOW, duration_ms=1.0,
+        )
+
+        await runtime_store.record_pair_result(pair_result)
+        service = _build_service(runtime_store=runtime_store)
+
+        coins = await service.get_scanning_coins()
+        btc = next(c for c in coins if c.coin == "BTC-USDT")
+        assert btc.status == "READY"
+        assert btc.score == 96.0
+
+    async def test_later_pair_result_for_the_same_symbol_overwrites_the_earlier_one(self):
+        runtime_store = DashboardRuntimeStore()
+        first = PairScanResult(
+            symbol="BTC-USDT", status=PairScanStatus.ERROR, pipeline_result=None,
+            started_at_utc=UTC_NOW, completed_at_utc=UTC_NOW, duration_ms=1.0,
+            reason="Transient failure.", error_type="MarketDataRequestError",
+        )
+        second = PairScanResult(
+            symbol="BTC-USDT", status=PairScanStatus.ERROR, pipeline_result=None,
+            started_at_utc=UTC_NOW, completed_at_utc=UTC_NOW, duration_ms=1.0,
+            reason="Second attempt also failed.", error_type="MarketDataRequestError",
+        )
+
+        await runtime_store.record_pair_result(first)
+        await runtime_store.record_pair_result(second)
+
+        latest = await runtime_store.get_latest_pair_results()
+        assert latest["BTC-USDT"].reason == "Second attempt also failed."
+
+    async def test_does_not_affect_results_for_other_symbols(self):
+        runtime_store = DashboardRuntimeStore()
+        btc_result = PairScanResult(
+            symbol="BTC-USDT", status=PairScanStatus.ERROR, pipeline_result=None,
+            started_at_utc=UTC_NOW, completed_at_utc=UTC_NOW, duration_ms=1.0,
+            reason="failed", error_type="MarketDataRequestError",
+        )
+        await runtime_store.record_pair_result(btc_result)
+        service = _build_service(runtime_store=runtime_store)
+
+        coins = await service.get_scanning_coins()
+        eth = next(c for c in coins if c.coin == "ETH-USDT")
+        assert eth.status == "SCANNING"
+        assert eth.score is None
 
 
 def _with_status(signal: Signal, dashboard_status: str = DASHBOARD_STATUS_NEW) -> SignalWithStatus:

@@ -71,6 +71,7 @@ class MultiPairScanScheduler:
         configured_pair_provider: Callable[[], Sequence[str]],
         scanner_interval_seconds: float,
         maximum_concurrent_scans: int,
+        retry_count_provider: Optional[Callable[[], int]] = None,
         clock: ClockProvider = _default_clock,
         wall_clock: WallClockProvider = _default_wall_clock,
         logger: Optional[logging.Logger] = None,
@@ -79,6 +80,12 @@ class MultiPairScanScheduler:
         self._configured_pair_provider = configured_pair_provider
         self._scanner_interval_seconds = scanner_interval_seconds
         self._maximum_concurrent_scans = maximum_concurrent_scans
+        # Optional accessor returning the process-lifetime total retry
+        # count from the underlying market-data provider (e.g.
+        # BinanceFuturesMarketDataProvider.total_retry_count), used only
+        # to log a per-cycle retry delta -- never read by any
+        # scan/strategy logic.
+        self._retry_count_provider = retry_count_provider
         self._clock = clock
         self._wall_clock = wall_clock
         self._logger = logger or logging.getLogger(__name__)
@@ -106,6 +113,14 @@ class MultiPairScanScheduler:
 
         configured_pairs = list(self._configured_pair_provider())
         detection_time_utc = started_at_utc
+
+        self._logger.info(
+            "Cycle %s: scan started for %d pairs at %s.",
+            cycle_id,
+            len(configured_pairs),
+            started_at_utc.isoformat(),
+        )
+        retry_count_before = self._retry_count_provider() if self._retry_count_provider else None
 
         tasks = [
             asyncio.create_task(
@@ -143,6 +158,26 @@ class MultiPairScanScheduler:
         error_results = [r for r in pair_results if r.status == PairScanStatus.ERROR]
         skipped_results = [r for r in pair_results if r.status == PairScanStatus.SKIPPED]
 
+        rejection_breakdown = self._build_rejection_breakdown(rejected_results)
+        retry_count_delta = None
+        if self._retry_count_provider is not None and retry_count_before is not None:
+            retry_count_delta = self._retry_count_provider() - retry_count_before
+
+        self._logger.info(
+            "Cycle %s: scan completed at %s (%.0fms). %d pairs scanned, %d valid, "
+            "%d rejected, %d error, %d duplicate, retries=%s. Rejected breakdown: %s",
+            cycle_id,
+            completed_at_utc.isoformat(),
+            duration_ms,
+            len(configured_pairs),
+            len(valid_results),
+            len(rejected_results),
+            len(error_results),
+            len(duplicate_results),
+            retry_count_delta if retry_count_delta is not None else "n/a",
+            rejection_breakdown,
+        )
+
         return ScanCycleResult(
             cycle_id=cycle_id,
             started_at_utc=started_at_utc,
@@ -162,7 +197,31 @@ class MultiPairScanScheduler:
             duplicate_count=len(duplicate_results),
             error_count=len(error_results),
             skipped_count=len(skipped_results),
+            rejection_breakdown=rejection_breakdown,
         )
+
+    @staticmethod
+    def _build_rejection_breakdown(rejected_results: list[PairScanResult]) -> dict[str, int]:
+        """
+        Count rejected pairs grouped by pipeline layer, so a scan cycle's
+        signal frequency can be diagnosed at a glance: is a low VALID
+        count coming from one of the six hard-mandatory strategy gates
+        (market regime, HTF bias, liquidity sweep, structure shift,
+        volume confirmation, entry zone), or from setups that clear all
+        gates but don't reach the publishable confidence threshold?
+
+        Grouped by `pipeline_result.failed_layer` when a hard-mandatory
+        gate rejected the pipeline outright; results rejected after
+        clearing every gate (e.g. below the publishable confidence
+        score) have no `failed_layer` and fall back to their generic
+        `reason` string instead of being dropped from the breakdown.
+        """
+        breakdown: dict[str, int] = {}
+        for result in rejected_results:
+            layer = result.pipeline_result.failed_layer if result.pipeline_result else None
+            key = layer or result.reason or "UNKNOWN"
+            breakdown[key] = breakdown.get(key, 0) + 1
+        return breakdown
 
     @staticmethod
     def _rank_valid_results(valid_results: list[PairScanResult]) -> list[PairScanResult]:

@@ -39,6 +39,20 @@ class DashboardRuntimeStore:
                 self._latest_pair_results[pair_result.symbol] = pair_result
             self._last_updated_utc = datetime.now(timezone.utc)
 
+    async def record_pair_result(self, pair_result: PairScanResult) -> None:
+        """
+        Record a single pair's result the instant its scan finishes, so
+        REST polling (get_scanning_coins) reflects each coin in real
+        time instead of waiting for the whole cycle to complete. Safe to
+        call interleaved with an in-flight `record_cycle_result` for the
+        same cycle -- the eventual `record_cycle_result` call always
+        wins for that symbol since it runs after every pair's task,
+        including this one, has completed.
+        """
+        async with self._lock:
+            self._latest_pair_results[pair_result.symbol] = pair_result
+            self._last_updated_utc = datetime.now(timezone.utc)
+
     async def record_event(self, event: ScannerEvent) -> None:
         async with self._lock:
             self._recent_events.append(event)

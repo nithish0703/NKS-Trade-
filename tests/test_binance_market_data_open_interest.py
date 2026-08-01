@@ -1,46 +1,41 @@
 """
-Tests for BybitMarketDataProvider.fetch_open_interest_history, using
-httpx.MockTransport.
+Tests for BinanceFuturesMarketDataProvider.fetch_open_interest_history,
+using httpx.MockTransport.
 """
 
 import httpx
 import pytest
 
-from app.data.bybit_market_data_provider import BybitMarketDataProvider
+from app.data.binance_market_data_provider import BinanceFuturesMarketDataProvider
 
 pytestmark = pytest.mark.asyncio
 
-BASE_URL = "https://api.bybit.com"
+BASE_URL = "https://fapi.binance.com"
 
 
-def _provider(handler) -> BybitMarketDataProvider:
+def _provider(handler) -> BinanceFuturesMarketDataProvider:
     transport = httpx.MockTransport(handler)
     client = httpx.AsyncClient(transport=transport, base_url=BASE_URL)
-    return BybitMarketDataProvider(base_url=BASE_URL, request_timeout_seconds=10.0, client=client)
-
-
-def _oi_body(entries: list[dict], ret_code: int = 0) -> dict:
-    return {
-        "retCode": ret_code,
-        "retMsg": "OK",
-        "result": {"category": "linear", "symbol": "BTCUSDT", "list": entries},
-        "retExtInfo": {},
-        "time": 0,
-    }
+    return BinanceFuturesMarketDataProvider(base_url=BASE_URL, request_timeout_seconds=10.0, client=client)
 
 
 class TestFetchOpenInterestHistory:
     async def test_successful_fetch_parses_points_ascending(self):
-        # Bybit returns newest-first; the provider must return ascending.
         def handler(request):
             return httpx.Response(
                 200,
-                json=_oi_body(
-                    [
-                        {"openInterest": "5100.5", "timestamp": "1735693200000"},
-                        {"openInterest": "5000.0", "timestamp": "1735689600000"},
-                    ]
-                ),
+                json=[
+                    {
+                        "symbol": "BTCUSDT",
+                        "sumOpenInterestValue": "5000.0",
+                        "timestamp": "1735689600000",
+                    },
+                    {
+                        "symbol": "BTCUSDT",
+                        "sumOpenInterestValue": "5100.5",
+                        "timestamp": "1735693200000",
+                    },
+                ],
             )
 
         provider = _provider(handler)
@@ -56,14 +51,13 @@ class TestFetchOpenInterestHistory:
         def handler(request):
             captured["path"] = request.url.path
             captured["params"] = dict(request.url.params)
-            return httpx.Response(200, json=_oi_body([]))
+            return httpx.Response(200, json=[])
 
         provider = _provider(handler)
-        await provider.fetch_open_interest_history("ETH-USDT", "15min", 50)
-        assert captured["path"] == "/v5/market/open-interest"
-        assert captured["params"]["category"] == "linear"
+        await provider.fetch_open_interest_history("ETH-USDT", "15m", 50)
+        assert captured["path"] == "/futures/data/openInterestHist"
         assert captured["params"]["symbol"] == "ETHUSDT"
-        assert captured["params"]["intervalTime"] == "15min"
+        assert captured["params"]["period"] == "15m"
         assert captured["params"]["limit"] == "50"
 
     async def test_invalid_interval_returns_empty_list_without_request(self):
@@ -71,7 +65,7 @@ class TestFetchOpenInterestHistory:
 
         def handler(request):
             called["count"] += 1
-            return httpx.Response(200, json=_oi_body([]))
+            return httpx.Response(200, json=[])
 
         provider = _provider(handler)
         points = await provider.fetch_open_interest_history("BTC-USDT", "not-an-interval", 10)
@@ -79,20 +73,17 @@ class TestFetchOpenInterestHistory:
         assert called["count"] == 0
 
     async def test_non_positive_limit_returns_empty_list(self):
-        provider = _provider(lambda r: httpx.Response(200, json=_oi_body([])))
+        provider = _provider(lambda r: httpx.Response(200, json=[]))
         assert await provider.fetch_open_interest_history("BTC-USDT", "1h", 0) == []
         assert await provider.fetch_open_interest_history("BTC-USDT", "1h", -5) == []
 
     async def test_limit_above_maximum_returns_empty_list(self):
-        provider = _provider(lambda r: httpx.Response(200, json=_oi_body([])))
+        provider = _provider(lambda r: httpx.Response(200, json=[]))
         points = await provider.fetch_open_interest_history("BTC-USDT", "1h", 100_000)
         assert points == []
 
     async def test_http_error_returns_empty_list(self):
-        def handler(request):
-            return httpx.Response(500)
-
-        provider = _provider(handler)
+        provider = _provider(lambda r: httpx.Response(500))
         points = await provider.fetch_open_interest_history("BTC-USDT", "1h", 10)
         assert points == []
 
@@ -105,18 +96,12 @@ class TestFetchOpenInterestHistory:
         assert points == []
 
     async def test_malformed_json_returns_empty_list(self):
-        def handler(request):
-            return httpx.Response(200, content=b"not json")
-
-        provider = _provider(handler)
+        provider = _provider(lambda r: httpx.Response(200, content=b"not json"))
         points = await provider.fetch_open_interest_history("BTC-USDT", "1h", 10)
         assert points == []
 
-    async def test_error_ret_code_returns_empty_list(self):
-        def handler(request):
-            return httpx.Response(200, json=_oi_body([], ret_code=170121))
-
-        provider = _provider(handler)
+    async def test_non_list_payload_returns_empty_list(self):
+        provider = _provider(lambda r: httpx.Response(200, json={"not": "a list"}))
         points = await provider.fetch_open_interest_history("BTC-USDT", "1h", 10)
         assert points == []
 
@@ -124,12 +109,14 @@ class TestFetchOpenInterestHistory:
         def handler(request):
             return httpx.Response(
                 200,
-                json=_oi_body(
-                    [
-                        {"timestamp": "1735689600000"},
-                        {"openInterest": "5000.0", "timestamp": "1735693200000"},
-                    ]
-                ),
+                json=[
+                    {"symbol": "BTCUSDT", "timestamp": "1735689600000"},
+                    {
+                        "symbol": "BTCUSDT",
+                        "sumOpenInterestValue": "5000.0",
+                        "timestamp": "1735693200000",
+                    },
+                ],
             )
 
         provider = _provider(handler)
@@ -141,12 +128,18 @@ class TestFetchOpenInterestHistory:
         def handler(request):
             return httpx.Response(
                 200,
-                json=_oi_body(
-                    [
-                        {"openInterest": "5000.0", "timestamp": "not-a-timestamp"},
-                        {"openInterest": "5100.0", "timestamp": "1735693200000"},
-                    ]
-                ),
+                json=[
+                    {
+                        "symbol": "BTCUSDT",
+                        "sumOpenInterestValue": "5000.0",
+                        "timestamp": "not-a-timestamp",
+                    },
+                    {
+                        "symbol": "BTCUSDT",
+                        "sumOpenInterestValue": "5100.0",
+                        "timestamp": "1735693200000",
+                    },
+                ],
             )
 
         provider = _provider(handler)
@@ -155,7 +148,7 @@ class TestFetchOpenInterestHistory:
         assert points[0].open_interest == 5100.0
 
     async def test_invalid_symbol_returns_empty_list(self):
-        provider = _provider(lambda r: httpx.Response(200, json=_oi_body([])))
+        provider = _provider(lambda r: httpx.Response(200, json=[]))
         points = await provider.fetch_open_interest_history("not-a-symbol", "1h", 10)
         assert points == []
 
@@ -164,10 +157,9 @@ class TestFetchOpenInterestHistory:
 
         def handler(request):
             captured["headers"] = dict(request.headers)
-            return httpx.Response(200, json=_oi_body([]))
+            return httpx.Response(200, json=[])
 
         provider = _provider(handler)
         await provider.fetch_open_interest_history("BTC-USDT", "1h", 10)
         header_keys = {key.lower() for key in captured["headers"]}
-        assert "x-bapi-api-key" not in header_keys
-        assert "x-bapi-sign" not in header_keys
+        assert "x-mbx-apikey" not in header_keys

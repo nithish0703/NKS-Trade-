@@ -177,10 +177,10 @@ class DynamicPairDiscoveryService:
     `get_current_pairs()` for use as a `configured_pair_provider`.
 
     Refresh interval defaults to 15 minutes (see
-    `app.config.thresholds.PAIR_DISCOVERY_INTERVAL_SECONDS`): Bybit's
-    bulk tickers endpoint returns Open Interest and turnover for every
-    USDT perpetual in a single call, so there is no meaningful
-    rate-limit cost to refreshing this often.
+    `app.config.thresholds.PAIR_DISCOVERY_INTERVAL_SECONDS`): Binance
+    Futures' bulk 24hr ticker endpoint returns turnover for every USDT-M
+    perpetual in a single call, but Open Interest still requires one
+    additional request per turnover-qualifying candidate.
 
     A failed or empty refresh always keeps the previous list rather
     than ever leaving the scanner with an empty scan universe. Before
@@ -255,6 +255,11 @@ class DynamicPairDiscoveryService:
             self._logger.warning("Dynamic pair discovery refresh failed: %s", exc)
             await self._notify_refresh(updated=False)
             return False
+
+        self._logger.info(
+            "Dynamic pair discovery: %d total USDT linear tickers fetched from the exchange.",
+            len(tickers),
+        )
 
         ranked_pairs = filter_and_rank_pairs(
             tickers,

@@ -16,6 +16,12 @@ from app.config.thresholds import (
     SCANNER_INTERVAL_SECONDS,
 )
 
+# Default publishable-signal confidence cutoff (STRONG classification's
+# lower bound). Kept as a plain literal here, rather than imported from
+# app.config.thresholds, so app.scoring.classification (which needs the
+# same value) has no import-time dependency on Settings construction.
+_DEFAULT_MIN_PUBLISHABLE_CONFIDENCE_SCORE = 80.0
+
 load_dotenv()
 
 
@@ -58,7 +64,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     exchange_base_url: str = Field(
-        default="https://api.bybit.com", alias="EXCHANGE_BASE_URL"
+        default="https://fapi.binance.com", alias="EXCHANGE_BASE_URL"
     )
     database_url: str = Field(
         default="sqlite+aiosqlite:///./data/smc_engine.db",
@@ -90,8 +96,12 @@ class Settings(BaseSettings):
         default=False, alias="STORAGE_FAILURE_IS_FATAL"
     )
 
+    # Defaults to enabled: the scanner should cover every qualifying
+    # USDT perpetual by default rather than the static 10-pair
+    # DEFAULT_PAIRS fallback. Set to false to pin the scanner to
+    # DEFAULT_PAIRS only.
     dynamic_pair_discovery_enabled: bool = Field(
-        default=False, alias="DYNAMIC_PAIR_DISCOVERY_ENABLED"
+        default=True, alias="DYNAMIC_PAIR_DISCOVERY_ENABLED"
     )
     pair_discovery_interval_seconds: int = Field(
         default=PAIR_DISCOVERY_INTERVAL_SECONDS, alias="PAIR_DISCOVERY_INTERVAL_SECONDS"
@@ -109,6 +119,17 @@ class Settings(BaseSettings):
     # limit (ranked by turnover, highest first).
     pair_discovery_maximum_pairs: Optional[int] = Field(
         default=None, alias="PAIR_DISCOVERY_MAXIMUM_PAIRS"
+    )
+
+    # Minimum normalized (0-100) confidence score for a signal to be
+    # considered publishable (STRONG classification's lower bound; a
+    # score at or above PREMIUM_SIGNAL_MINIMUM_SCORE in app.config
+    # .thresholds is always publishable too). Lowering this via env var
+    # surfaces more MEDIUM-adjacent setups without a code change; it
+    # never needs to exceed PREMIUM_SIGNAL_MINIMUM_SCORE (90.0).
+    min_publishable_confidence_score: float = Field(
+        default=_DEFAULT_MIN_PUBLISHABLE_CONFIDENCE_SCORE,
+        alias="MIN_PUBLISHABLE_CONFIDENCE_SCORE",
     )
 
     telegram_enabled: bool = Field(default=False, alias="TELEGRAM_ENABLED")

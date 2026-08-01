@@ -138,40 +138,48 @@ def calculate_chart_trend(market_context) -> Optional[str]:
     return None
 
 
-def build_pair_scan_updated_events(cycle_result: ScanCycleResult) -> list[ScannerEvent]:
+def build_pair_scan_updated_event(pair_result: PairScanResult) -> ScannerEvent:
     """
-    Build one PAIR_SCAN_UPDATED ScannerEvent per pair in a completed scan
-    cycle, for dashboard WebSocket visibility only.
+    Build a single PAIR_SCAN_UPDATED ScannerEvent for one pair's scan
+    result, for dashboard WebSocket visibility only.
 
     Carries only the same safe fields the scanning-coins REST response
     already exposes (coin, direction, validation-progress percentage,
     last/failed layer, reason). Never includes candles, secrets, tokens,
     or chat IDs, and never affects strategy, storage, or notification
-    behaviour — this is a pure, read-only projection of the cycle result.
+    behaviour — this is a pure, read-only projection of one pair result.
     """
-    events: list[ScannerEvent] = []
-    for pair_result in cycle_result.pair_results:
-        pipeline_result = pair_result.pipeline_result
-        direction = pipeline_result.expected_direction if pipeline_result is not None else None
-        stages = pipeline_result.stages if pipeline_result is not None else None
-        _, _, percentage, last_executed_layer = calculate_validation_progress(stages)
-        failed_layer = pipeline_result.failed_layer if pipeline_result is not None else None
+    pipeline_result = pair_result.pipeline_result
+    direction = pipeline_result.expected_direction if pipeline_result is not None else None
+    stages = pipeline_result.stages if pipeline_result is not None else None
+    _, _, percentage, last_executed_layer = calculate_validation_progress(stages)
+    failed_layer = pipeline_result.failed_layer if pipeline_result is not None else None
 
-        events.append(
-            ScannerEvent(
-                event=ScannerEventType.PAIR_SCAN_UPDATED,
-                timestamp_utc=pair_result.completed_at_utc,
-                data={
-                    "coin": pair_result.symbol,
-                    "direction": direction,
-                    "validation_progress_percentage": percentage if stages else None,
-                    "last_executed_layer": last_executed_layer,
-                    "failed_layer": failed_layer,
-                    "reason": pair_result.reason,
-                },
-            )
-        )
-    return events
+    return ScannerEvent(
+        event=ScannerEventType.PAIR_SCAN_UPDATED,
+        timestamp_utc=pair_result.completed_at_utc,
+        data={
+            "coin": pair_result.symbol,
+            "direction": direction,
+            "validation_progress_percentage": percentage if stages else None,
+            "last_executed_layer": last_executed_layer,
+            "failed_layer": failed_layer,
+            "reason": pair_result.reason,
+        },
+    )
+
+
+def build_pair_scan_updated_events(cycle_result: ScanCycleResult) -> list[ScannerEvent]:
+    """
+    Build one PAIR_SCAN_UPDATED ScannerEvent per pair in a completed scan
+    cycle, for dashboard WebSocket visibility only. Retained for any
+    consumer that still wants a full-cycle batch (e.g. backfilling a
+    freshly connected WebSocket client with the latest known state);
+    real-time per-pair delivery during a running cycle instead uses
+    `build_pair_scan_updated_event` directly from PairScanner's
+    `on_pair_result` callback as each pair finishes.
+    """
+    return [build_pair_scan_updated_event(pair_result) for pair_result in cycle_result.pair_results]
 
 
 def _distance_to_take_profit_percentage(

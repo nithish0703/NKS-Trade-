@@ -173,6 +173,25 @@ class TestDynamicPairDiscoveryServiceRefreshOnce:
         assert service.has_refreshed_successfully is True
         assert service.last_error is None
 
+    async def test_logs_total_tickers_fetched(self, caplog):
+        provider = _provider(
+            [
+                _ticker("SOL-USDT", 10_000_000, 20_000_000),
+                _ticker("XRP-USDT", 1_000, 1_000),  # fails the filter, still counted as fetched
+            ]
+        )
+        service = DynamicPairDiscoveryService(
+            market_data_provider=provider,
+            minimum_open_interest_usdt=5_000_000,
+            minimum_turnover_24h_usdt=10_000_000,
+            refresh_interval_seconds=900,
+        )
+        with caplog.at_level("INFO"):
+            await service.refresh_once()
+        assert any(
+            "2 total USDT linear tickers fetched" in message for message in caplog.messages
+        )
+
     async def test_btc_always_included(self):
         provider = _provider([_ticker("SOL-USDT", 10_000_000, 20_000_000)])
         service = DynamicPairDiscoveryService(

@@ -56,17 +56,117 @@ describe("ScanningCoinsTable", () => {
     expect(dash.className).toContain("text-slate-400");
   });
 
-  it("does not render a Status column heading", () => {
+  it("renders a Status column heading", () => {
     render(<ScanningCoinsTable coins={[coin()]} />);
-    expect(screen.queryByText("Status")).not.toBeInTheDocument();
+    expect(screen.getByText("Status")).toBeInTheDocument();
   });
 
-  it("renders the Coin, Direction, and Score (%) headings only", () => {
+  it("renders the Coin, Direction, Score (%), and Status headings only", () => {
     render(<ScanningCoinsTable coins={[coin()]} />);
     expect(screen.getByText("Coin")).toBeInTheDocument();
     expect(screen.getByText("Direction")).toBeInTheDocument();
     expect(screen.getByText("Score (%)")).toBeInTheDocument();
+    expect(screen.getByText("Status")).toBeInTheDocument();
     expect(screen.queryByText("Chart")).not.toBeInTheDocument();
+  });
+
+  it("shows the rejection reason inline for a REJECTED coin instead of only on hover", () => {
+    render(
+      <ScanningCoinsTable
+        coins={[
+          coin({
+            status: "REJECTED",
+            score: null,
+            direction: null,
+            failed_layer: "HTF_BIAS",
+            reason: "1H trend is BEARISH; no BUY permitted.",
+          }),
+        ]}
+      />,
+    );
+    expect(screen.getByText("REJECTED: HTF_BIAS")).toBeInTheDocument();
+  });
+
+  it("shows a plain REJECTED label when no failed_layer is available", () => {
+    render(
+      <ScanningCoinsTable
+        coins={[
+          coin({
+            status: "REJECTED",
+            score: null,
+            direction: null,
+            failed_layer: null,
+            reason: "Pipeline result is not a publishable PREMIUM/STRONG setup.",
+          }),
+        ]}
+      />,
+    );
+    expect(screen.getByText("REJECTED")).toBeInTheDocument();
+  });
+
+  it("shows SCANNING status for a coin with no result yet", () => {
+    render(<ScanningCoinsTable coins={[coin({ status: "SCANNING" })]} />);
+    expect(screen.getByText("SCANNING")).toBeInTheDocument();
+  });
+
+  it("summarizes an insufficient-candle-history ERROR instead of the full backend sentence", () => {
+    render(
+      <ScanningCoinsTable
+        coins={[
+          coin({
+            status: "ERROR",
+            score: null,
+            direction: null,
+            reason:
+              "Required market data or indicator calculation is unavailable. " +
+              "(Failed to calculate indicators for 1 timeframe(s): 4h: " +
+              "Insufficient candles to calculate a 200-period EMA200.)",
+          }),
+        ]}
+      />,
+    );
+    expect(screen.getByText("ERROR: not enough history for EMA200 (needs 200 candles)")).toBeInTheDocument();
+  });
+
+  it("shows a plain ERROR label when no reason is available", () => {
+    render(
+      <ScanningCoinsTable
+        coins={[coin({ status: "ERROR", score: null, direction: null, reason: null })]}
+      />,
+    );
+    expect(screen.getByText("ERROR")).toBeInTheDocument();
+  });
+
+  it("shows the full untruncated reason for a non-candle-history ERROR", () => {
+    render(
+      <ScanningCoinsTable
+        coins={[
+          coin({
+            status: "ERROR",
+            score: null,
+            direction: null,
+            reason: "Unexpected technical error during pair scan.",
+          }),
+        ]}
+      />,
+    );
+    expect(
+      screen.getByText("ERROR: Unexpected technical error during pair scan."),
+    ).toBeInTheDocument();
+  });
+
+  it("shows READY status in a distinct color from REJECTED", () => {
+    render(
+      <ScanningCoinsTable
+        coins={[
+          coin({ coin: "READY-USDT", status: "READY" }),
+          coin({ coin: "REJECTED-USDT", status: "REJECTED", failed_layer: "MARKET_REGIME" }),
+        ]}
+      />,
+    );
+    const readyStatus = screen.getByText("READY");
+    const rejectedStatus = screen.getByText("REJECTED: MARKET_REGIME");
+    expect(readyStatus.className).not.toBe(rejectedStatus.className);
   });
 
   it("renders BUY preview direction in a green, semibold style", () => {

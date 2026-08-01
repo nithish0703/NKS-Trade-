@@ -29,6 +29,50 @@ function scoreTooltip(coin: ScanningCoin): string {
   return lines.join("\n");
 }
 
+const INSUFFICIENT_CANDLES_PATTERN = /insufficient candles.*?a (\d+)-period (\w+)/i;
+
+function shortErrorReason(reason: string | null): string | null {
+  if (!reason) {
+    return null;
+  }
+  // The most common ERROR case by far is a newly listed pair that
+  // doesn't yet have enough historical candles for a long-lookback
+  // indicator (e.g. EMA200 needs ~200 4h candles, roughly a month of
+  // trading history) -- summarize that specific, expected case in a
+  // few words instead of the full backend diagnostic sentence.
+  const match = reason.match(INSUFFICIENT_CANDLES_PATTERN);
+  if (match) {
+    return `not enough history for ${match[2]} (needs ${match[1]} candles)`;
+  }
+  return reason;
+}
+
+function statusLabel(coin: ScanningCoin): string {
+  if (coin.status === "REJECTED") {
+    return coin.failed_layer ? `REJECTED: ${coin.failed_layer}` : "REJECTED";
+  }
+  if (coin.status === "ERROR") {
+    const shortReason = shortErrorReason(coin.reason);
+    return shortReason ? `ERROR: ${shortReason}` : "ERROR";
+  }
+  return coin.status;
+}
+
+function statusColorClassName(status: ScanningCoin["status"]): string {
+  switch (status) {
+    case "READY":
+      return "text-emerald-600";
+    case "REJECTED":
+      return "text-red-600";
+    case "ERROR":
+      return "text-red-600";
+    case "DUPLICATE":
+      return "text-amber-600";
+    default:
+      return "text-slate-400";
+  }
+}
+
 export function ScanningCoinsTable({ coins }: ScanningCoinsTableProps) {
   const [searchTerm, setSearchTerm] = useState("");
 
@@ -70,7 +114,8 @@ export function ScanningCoinsTable({ coins }: ScanningCoinsTableProps) {
               <tr className="text-xs uppercase tracking-wide text-slate-400">
                 <th className="w-auto pb-2 pr-4 font-medium">Coin</th>
                 <th className="pb-2 pr-6 font-medium">Direction</th>
-                <th className="pb-2 font-medium">Score (%)</th>
+                <th className="pb-2 pr-6 font-medium">Score (%)</th>
+                <th className="pb-2 font-medium">Status</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
@@ -82,7 +127,7 @@ export function ScanningCoinsTable({ coins }: ScanningCoinsTableProps) {
                     <td className="py-1 pr-6">
                       <DirectionBadge direction={coin.preview_direction} />
                     </td>
-                    <td className="py-1">
+                    <td className="py-1 pr-6">
                       <div className="flex items-center" title={scoreTooltip(coin)}>
                         <CircularProgress
                           percentage={coin.preview_progress_percentage === null ? null : percentage}
@@ -91,6 +136,12 @@ export function ScanningCoinsTable({ coins }: ScanningCoinsTableProps) {
                           showLabel
                         />
                       </div>
+                    </td>
+                    <td
+                      className={`py-1 text-xs ${statusColorClassName(coin.status)}`}
+                      title={scoreTooltip(coin)}
+                    >
+                      {statusLabel(coin)}
                     </td>
                   </tr>
                 );

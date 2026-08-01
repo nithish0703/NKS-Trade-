@@ -5,12 +5,13 @@ Check 5: CVD (Cumulative Volume Delta) Confirmation.
   SELL: CVD lower high
   If CVD disagrees -> ignore.
 
-Bybit kline data does not expose a taker buy/sell volume split, so CVD
-here is computed via the standard proxy used when true tick/taker data
-isn't available: a candle's full volume counts as buy volume if it
-closed green (bullish) and sell volume if it closed red (bearish), and
-CVD is the running cumulative sum of (buy_volume - sell_volume) per
-candle. A doji (close == open) contributes zero to the delta.
+Binance Futures kline data does include a takerBuyBaseVolume field, but
+this application does not currently consume it; CVD here is computed
+via the standard proxy used when true tick/taker data isn't wired up:
+a candle's full volume counts as buy volume if it closed green
+(bullish) and sell volume if it closed red (bearish), and CVD is the
+running cumulative sum of (buy_volume - sell_volume) per candle. A
+doji (close == open) contributes zero to the delta.
 """
 
 from typing import Optional, Sequence

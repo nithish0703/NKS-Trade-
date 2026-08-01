@@ -30,8 +30,12 @@ def _isolate_from_real_env(monkeypatch):
 
 
 class TestDynamicPairDiscoverySettings:
-    def test_disabled_by_default(self):
+    def test_enabled_by_default(self):
         settings = Settings(_env_file=None)
+        assert settings.dynamic_pair_discovery_enabled is True
+
+    def test_can_disable_via_env_style_kwargs(self):
+        settings = Settings(_env_file=None, DYNAMIC_PAIR_DISCOVERY_ENABLED="false")
         assert settings.dynamic_pair_discovery_enabled is False
 
     def test_default_interval_is_15_minutes(self):
