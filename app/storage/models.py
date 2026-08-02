@@ -3,6 +3,7 @@ SQLAlchemy ORM models for locally persisted signals and analytics.
 """
 
 from datetime import datetime
+from typing import Optional
 
 from sqlalchemy import Boolean, DateTime, Float, Integer, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -45,12 +46,26 @@ class SignalRecord(Base):
     retest_id: Mapped[str] = mapped_column(String(128), nullable=False)
     created_at_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
-    # Dashboard-only lifecycle status ("NEW" or "ACTIVE"). This is a pure
-    # UI state transition set by the dashboard "Trade" action; it is
-    # never read or written by strategy, scoring, risk, or notification
-    # code, and never affects the persisted signal's trading fields.
+    # Dashboard-only lifecycle status ("NEW", "ACTIVE", "CLOSED_WIN", or
+    # "CLOSED_LOSS"). This is a pure UI state transition set by the
+    # dashboard "Trade" action (NEW -> ACTIVE) and by TradeOutcomeMonitor
+    # (ACTIVE -> CLOSED_WIN/CLOSED_LOSS once price touches take_profit or
+    # stop_loss). It is never read or written by strategy, scoring, or
+    # risk code, and never affects the persisted signal's original
+    # trading fields (entry_price, stop_loss, take_profit, etc. above
+    # are never mutated after insert).
     dashboard_status: Mapped[str] = mapped_column(
         String(16), nullable=False, default="NEW", server_default="NEW"
+    )
+
+    # Trade outcome tracking, populated only by TradeOutcomeMonitor once
+    # an ACTIVE signal's take_profit or stop_loss price is touched.
+    # All three remain NULL for signals that are still NEW/ACTIVE (i.e.
+    # never activated, or activated but not yet closed).
+    outcome: Mapped[Optional[str]] = mapped_column(String(16), nullable=True, default=None)
+    exit_price: Mapped[Optional[float]] = mapped_column(Float, nullable=True, default=None)
+    closed_at_utc: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True, default=None
     )
 
 

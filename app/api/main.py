@@ -20,11 +20,13 @@ from app.api.dashboard_service import (
     DashboardService,
     build_pair_scan_updated_event,
     build_pair_scan_updated_events,
+    build_trade_outcome_updated_event,
 )
 from app.api.runtime_store import DashboardRuntimeStore
 from app.api.websocket_manager import DashboardWebSocketManager
 from app.config.settings import get_settings
 from app.data.binance_market_data_provider import BinanceFuturesMarketDataProvider
+from app.monitoring.trade_outcome_monitor import TradeOutcomeMonitor
 from app.scanner.engine_factory import (
     build_scanner_service,
     dispose_scanner_notifications,
@@ -85,6 +87,7 @@ async def lifespan(app: FastAPI):
     app.state.websocket_manager = websocket_manager
     app.state.dashboard_service = dashboard_service
     app.state.scanner_service = None
+    app.state.trade_outcome_monitor = None
 
     scanner_task = None
     if settings.dashboard_api_enabled:
@@ -125,6 +128,32 @@ async def lifespan(app: FastAPI):
 
         scanner_task = asyncio.create_task(_run_scanner())
 
+    trade_outcome_monitor = None
+    trade_outcome_monitor_task = None
+    if settings.dashboard_api_enabled and settings.trade_outcome_monitor_enabled:
+
+        async def _on_trade_closed(closed_result) -> None:
+            if settings.dashboard_websocket_enabled:
+                await websocket_manager.broadcast_event(
+                    build_trade_outcome_updated_event(closed_result)
+                )
+
+        trade_outcome_monitor = TradeOutcomeMonitor(
+            signal_repository=signal_repository,
+            market_data_provider=market_data_provider,
+            interval_seconds=settings.trade_outcome_monitor_interval_seconds,
+            on_signal_closed=_on_trade_closed,
+        )
+        app.state.trade_outcome_monitor = trade_outcome_monitor
+
+        async def _run_trade_outcome_monitor() -> None:
+            try:
+                await trade_outcome_monitor.run_forever()
+            except Exception as exc:  # noqa: BLE001 - keep the API process alive
+                logger.error("Trade outcome monitor background task stopped unexpectedly: %s", exc)
+
+        trade_outcome_monitor_task = asyncio.create_task(_run_trade_outcome_monitor())
+
     try:
         yield
     finally:
@@ -135,6 +164,10 @@ async def lifespan(app: FastAPI):
             await dispose_scanner_notifications(scanner_service)
             if scanner_service.signal_storage_service is not None:
                 await scanner_service.signal_storage_service.database_manager.dispose()
+
+        if trade_outcome_monitor_task is not None:
+            trade_outcome_monitor.request_shutdown()
+            await asyncio.wait_for(trade_outcome_monitor_task, timeout=30.0)
 
         await database_manager.dispose()
 
