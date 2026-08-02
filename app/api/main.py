@@ -16,11 +16,17 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import dashboard, health, scanner, signals, websocket
-from app.api.dashboard_service import DashboardService, build_pair_scan_updated_events
+from app.api.dashboard_service import (
+    DashboardService,
+    build_pair_scan_updated_event,
+    build_pair_scan_updated_events,
+    build_trade_outcome_updated_event,
+)
 from app.api.runtime_store import DashboardRuntimeStore
 from app.api.websocket_manager import DashboardWebSocketManager
 from app.config.settings import get_settings
-from app.data.bybit_market_data_provider import BybitMarketDataProvider
+from app.data.binance_market_data_provider import BinanceFuturesMarketDataProvider
+from app.monitoring.trade_outcome_monitor import TradeOutcomeMonitor
 from app.scanner.engine_factory import (
     build_scanner_service,
     dispose_scanner_notifications,
@@ -29,10 +35,17 @@ from app.scanner.engine_factory import (
 from app.storage.analytics_repository import AnalyticsRepository
 from app.storage.database import DatabaseManager
 from app.storage.signal_repository import SignalRepository
+from app.utils.logger import configure_logging
 
 logger = logging.getLogger(__name__)
 
 _DASHBOARD_ACCOUNT_BALANCE = 10_000.0
+
+# Configured at import time (before the lifespan context runs, and
+# before any scanner/discovery log call can happen) so every module's
+# logging.getLogger(__name__) call is visible from the very first line
+# of startup, not just after the app object is constructed.
+configure_logging(get_settings().log_level)
 
 
 @asynccontextmanager
@@ -48,7 +61,7 @@ async def lifespan(app: FastAPI):
         else None
     )
 
-    market_data_provider = BybitMarketDataProvider(
+    market_data_provider = BinanceFuturesMarketDataProvider(
         base_url=settings.exchange_base_url,
         request_timeout_seconds=settings.request_timeout_seconds,
     )
@@ -74,6 +87,7 @@ async def lifespan(app: FastAPI):
     app.state.websocket_manager = websocket_manager
     app.state.dashboard_service = dashboard_service
     app.state.scanner_service = None
+    app.state.trade_outcome_monitor = None
 
     scanner_task = None
     if settings.dashboard_api_enabled:
@@ -83,14 +97,22 @@ async def lifespan(app: FastAPI):
                 await websocket_manager.broadcast_event(event)
 
         async def _on_cycle_result(cycle_result) -> None:
+            # Per-pair results have already been recorded/broadcast in
+            # real time via _on_pair_result as each pair's scan finished;
+            # this only stores the final cycle-level aggregate (rejection
+            # breakdown, counts, ranking) that isn't known until every
+            # pair in the cycle has completed.
             await runtime_store.record_cycle_result(cycle_result)
-            for pair_event in build_pair_scan_updated_events(cycle_result):
-                await runtime_store.record_event(pair_event)
-                if settings.dashboard_websocket_enabled:
-                    await websocket_manager.broadcast_event(pair_event)
+
+        async def _on_pair_result(pair_result) -> None:
+            await runtime_store.record_pair_result(pair_result)
+            if settings.dashboard_websocket_enabled:
+                await websocket_manager.broadcast_event(build_pair_scan_updated_event(pair_result))
 
         scanner_service = build_scanner_service(
-            on_event=_on_scanner_event, on_cycle_result=_on_cycle_result
+            on_event=_on_scanner_event,
+            on_cycle_result=_on_cycle_result,
+            on_pair_result=_on_pair_result,
         )
         await initialize_scanner_storage(scanner_service)
         app.state.scanner_service = scanner_service
@@ -106,6 +128,32 @@ async def lifespan(app: FastAPI):
 
         scanner_task = asyncio.create_task(_run_scanner())
 
+    trade_outcome_monitor = None
+    trade_outcome_monitor_task = None
+    if settings.dashboard_api_enabled and settings.trade_outcome_monitor_enabled:
+
+        async def _on_trade_closed(closed_result) -> None:
+            if settings.dashboard_websocket_enabled:
+                await websocket_manager.broadcast_event(
+                    build_trade_outcome_updated_event(closed_result)
+                )
+
+        trade_outcome_monitor = TradeOutcomeMonitor(
+            signal_repository=signal_repository,
+            market_data_provider=market_data_provider,
+            interval_seconds=settings.trade_outcome_monitor_interval_seconds,
+            on_signal_closed=_on_trade_closed,
+        )
+        app.state.trade_outcome_monitor = trade_outcome_monitor
+
+        async def _run_trade_outcome_monitor() -> None:
+            try:
+                await trade_outcome_monitor.run_forever()
+            except Exception as exc:  # noqa: BLE001 - keep the API process alive
+                logger.error("Trade outcome monitor background task stopped unexpectedly: %s", exc)
+
+        trade_outcome_monitor_task = asyncio.create_task(_run_trade_outcome_monitor())
+
     try:
         yield
     finally:
@@ -116,6 +164,10 @@ async def lifespan(app: FastAPI):
             await dispose_scanner_notifications(scanner_service)
             if scanner_service.signal_storage_service is not None:
                 await scanner_service.signal_storage_service.database_manager.dispose()
+
+        if trade_outcome_monitor_task is not None:
+            trade_outcome_monitor.request_shutdown()
+            await asyncio.wait_for(trade_outcome_monitor_task, timeout=30.0)
 
         await database_manager.dispose()
 

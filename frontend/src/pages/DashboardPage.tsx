@@ -93,8 +93,8 @@ export function DashboardPage() {
     <div className="min-h-screen bg-gray-50 pb-10">
       <DashboardHeader isConnected={isConnected} />
 
-      <main className="mx-auto max-w-[1400px] space-y-6 px-6">
-        <div className="flex flex-wrap gap-4">
+      <main className="mx-auto max-w-[1400px] space-y-6 px-4 sm:px-6">
+        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
           <SummaryCard
             label="Total Signals"
             value={formatNumberOrDash(summary.data?.total_signals ?? null)}
@@ -139,7 +139,7 @@ export function DashboardPage() {
             title="Scanning Coins"
             icon={<Activity size={16} />}
             iconClassName="bg-purple-50 text-purple-600"
-            className="lg:col-span-3"
+            className="lg:col-span-2"
           >
             {scanningCoins.loading ? (
               <LoadingSkeleton />
@@ -154,7 +154,7 @@ export function DashboardPage() {
             title="Active Signals"
             icon={<span className="h-2 w-2 rounded-full bg-emerald-500" />}
             iconClassName="bg-emerald-50"
-            className="lg:col-span-2"
+            className="lg:col-span-3"
           >
             {activeSignals.loading ? (
               <LoadingSkeleton />
@@ -168,25 +168,10 @@ export function DashboardPage() {
 
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-5">
           <DataCard
-            title="Premium Signals"
-            icon={<Gem size={16} />}
-            iconClassName="bg-purple-50 text-purple-600"
-            className="lg:col-span-2"
-          >
-            {premiumSignals.loading ? (
-              <LoadingSkeleton />
-            ) : premiumSignals.error ? (
-              <ErrorState message={premiumSignals.error} />
-            ) : (
-              <PremiumSignalsTable signals={premiumSignals.data ?? []} onView={handleView} />
-            )}
-          </DataCard>
-
-          <DataCard
             title="Strong Signals"
             icon={<Activity size={16} />}
             iconClassName="bg-blue-50 text-blue-600"
-            className="lg:col-span-3"
+            className="lg:col-span-2"
           >
             {strongSignals.loading ? (
               <LoadingSkeleton />
@@ -194,6 +179,21 @@ export function DashboardPage() {
               <ErrorState message={strongSignals.error} />
             ) : (
               <StrongSignalsTable signals={strongSignals.data ?? []} />
+            )}
+          </DataCard>
+
+          <DataCard
+            title="Premium Signals"
+            icon={<Gem size={16} />}
+            iconClassName="bg-purple-50 text-purple-600"
+            className="lg:col-span-3"
+          >
+            {premiumSignals.loading ? (
+              <LoadingSkeleton />
+            ) : premiumSignals.error ? (
+              <ErrorState message={premiumSignals.error} />
+            ) : (
+              <PremiumSignalsTable signals={premiumSignals.data ?? []} onView={handleView} />
             )}
           </DataCard>
         </div>

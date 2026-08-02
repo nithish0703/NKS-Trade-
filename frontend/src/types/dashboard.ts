@@ -4,8 +4,6 @@ export type SignalTypeTier = "PREMIUM" | "STRONG";
 
 export type ScanningCoinStatus = "READY" | "SCANNING" | "REJECTED" | "ERROR" | "DUPLICATE";
 
-export type ChartTrend = "UP" | "DOWN";
-
 export interface ComparisonPercentages {
   total_signals_percentage: number | null;
   wins_percentage: number | null;
@@ -54,10 +52,6 @@ export interface ScanningCoin {
   preview_completed_layers: string[] | null;
   preview_failed_layers: string[] | null;
   preview_data_availability: Record<string, string> | null;
-  // Dashboard-only visual cue: raw price direction of the most recent
-  // completed entry-timeframe candle vs. the one before it. Never
-  // HTF-bias-derived and never a substitute for direction/preview_direction.
-  chart_trend: ChartTrend | null;
 }
 
 export interface ActiveSignal {

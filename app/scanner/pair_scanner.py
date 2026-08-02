@@ -5,7 +5,7 @@ Single-pair scan execution wrapping the institutional SMC strategy engine.
 import asyncio
 import logging
 from datetime import datetime, timezone
-from typing import Mapping, Optional, Sequence
+from typing import Awaitable, Callable, Mapping, Optional, Sequence
 
 from app.models.candle import Candle
 from app.scanner.duplicate_guard import DuplicateGuardError, DuplicateSignalGuard
@@ -51,15 +51,38 @@ class PairScanner:
         duplicate_guard: DuplicateSignalGuard,
         semaphore: asyncio.Semaphore,
         preview_analyzer: Optional[PreviewAnalyzer] = None,
+        on_pair_result: Optional[Callable[[PairScanResult], Awaitable[None]]] = None,
         logger: Optional[logging.Logger] = None,
     ) -> None:
         self._strategy_engine = strategy_engine
         self._duplicate_guard = duplicate_guard
         self._semaphore = semaphore
         self._preview_analyzer = preview_analyzer
+        self._on_pair_result = on_pair_result
         self._logger = logger or logging.getLogger(__name__)
 
     async def scan_pair(
+        self,
+        *,
+        symbol: str,
+        account_balance: float,
+        active_trade_count: int,
+        active_positions: Sequence[object],
+        active_position_candles: Mapping[str, Sequence[Candle]],
+        detection_time_utc: datetime,
+    ) -> PairScanResult:
+        result = await self._scan_pair(
+            symbol=symbol,
+            account_balance=account_balance,
+            active_trade_count=active_trade_count,
+            active_positions=active_positions,
+            active_position_candles=active_position_candles,
+            detection_time_utc=detection_time_utc,
+        )
+        await self._notify_pair_result(result)
+        return result
+
+    async def _scan_pair(
         self,
         *,
         symbol: str,
@@ -108,6 +131,20 @@ class PairScanner:
             detection_time_utc=detection_time_utc,
         )
 
+    async def _notify_pair_result(self, result: PairScanResult) -> None:
+        """
+        Best-effort real-time notification the instant this single pair's
+        scan finishes, independent of when the rest of the cycle's pairs
+        complete. Never raises: an observer failure must never affect the
+        returned PairScanResult or any other pair's scan.
+        """
+        if self._on_pair_result is None:
+            return
+        try:
+            await self._on_pair_result(result)
+        except Exception as exc:  # noqa: BLE001 - an observer failure must never affect scanning
+            self._logger.warning("Pair-result observer failed for %s: %s", result.symbol, exc)
+
     async def _interpret_pipeline_result(
         self,
         *,
@@ -137,6 +174,7 @@ class PairScanner:
                 start_ms=start_ms,
                 reason=pipeline_result.rejection_reason or "Pipeline reported an ERROR status.",
                 error_type="PipelineError",
+                preview_result=self._safe_preview(symbol, pipeline_result),
             )
 
         confidence_result = pipeline_result.confidence_result

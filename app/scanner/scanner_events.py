@@ -22,6 +22,11 @@ class ScannerEventType(str, Enum):
     TELEGRAM_SENT = "TELEGRAM_SENT"
     TELEGRAM_FAILED = "TELEGRAM_FAILED"
     SCANNER_STATUS_CHANGED = "SCANNER_STATUS_CHANGED"
+    PAIR_LIST_REFRESHED = "PAIR_LIST_REFRESHED"
+    # Emitted by TradeOutcomeMonitor (app.monitoring), never by the
+    # scanner/strategy pipeline, when a dashboard-ACTIVE signal's
+    # take_profit or stop_loss is touched by the live price.
+    TRADE_OUTCOME_UPDATED = "TRADE_OUTCOME_UPDATED"
 
 
 class ScannerEvent(BaseModel):

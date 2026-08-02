@@ -7,7 +7,7 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
-_MAXIMUM_RAW_SCORE = 120
+_MAXIMUM_RAW_SCORE = 115
 
 
 class ConfidenceClassification(str, Enum):

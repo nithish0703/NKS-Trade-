@@ -2,6 +2,7 @@
 Core strategy engine orchestrating structure, liquidity, zones, and validators.
 """
 
+import asyncio
 import time
 from datetime import datetime, timezone
 from typing import Mapping, Optional, Sequence
@@ -24,7 +25,6 @@ from app.models.market_context import MarketContext
 from app.models.validation_result import ValidationResult
 from app.risk.calculator import RiskManagementCalculator
 from app.scoring.calculator import ConfidenceCalculator
-from app.validators.atr import ATRValidator
 from app.validators.btc_alignment import BTCAlignmentValidator
 from app.validators.candle_quality import CandleQualityValidator
 from app.validators.entry_zone import EntryZoneValidator
@@ -32,11 +32,9 @@ from app.validators.fake_breakout_filter import FakeBreakoutFilter
 from app.validators.htf_bias import HigherTimeframeBiasValidator
 from app.validators.liquidity_sweep import LiquiditySweepValidator
 from app.validators.market_regime import MarketRegimeValidator
-from app.validators.momentum_filter import MomentumFilter
 from app.validators.risk_management import RiskManagementValidator
 from app.validators.session_filter import SessionFilter
 from app.validators.structure_shift import StructureShiftValidator
-from app.validators.volatility_filter import VolatilityFilter
 from app.validators.volume_confirmation import VolumeConfirmationValidator
 from app.zones.calculator import ZoneCalculator
 from app.zones.order_block import ZoneCalculationError
@@ -61,17 +59,39 @@ _STAGE_DEFINITIONS: tuple[tuple[int, str], ...] = (
     (6, "ENTRY_ZONE"),
     (7, "PREMIUM_DISCOUNT"),
     (8, "RETEST_CONFIRMATION"),
-    (9, "MOMENTUM_FILTER"),
-    (10, "VOLATILITY_FILTER"),
-    (11, "SESSION_FILTER"),
-    (12, "BTC_ALIGNMENT"),
-    (13, "FAKE_BREAKOUT_FILTER"),
-    (14, "CANDLE_QUALITY"),
-    (15, "ATR"),
-    (16, "RISK_MANAGEMENT"),
-    (17, "CONFIDENCE_SCORING"),
+    (9, "SESSION_FILTER"),
+    (10, "BTC_ALIGNMENT"),
+    (11, "FAKE_BREAKOUT_FILTER"),
+    (12, "CANDLE_QUALITY"),
+    (13, "RISK_MANAGEMENT"),
+    (14, "CONFIDENCE_SCORING"),
 )
-_MANDATORY_STAGES = {name for _, name in _STAGE_DEFINITIONS} - {"MOMENTUM_FILTER"}
+
+# Hard-mandatory gates: failure rejects the pipeline immediately.
+_HARD_MANDATORY_STAGES = {
+    "MARKET_REGIME",
+    "HTF_BIAS",
+    "LIQUIDITY_SWEEP",
+    "STRUCTURE_SHIFT",
+    "VOLUME_CONFIRMATION",
+    "ENTRY_ZONE",
+}
+# Soft-scoring layers: failure never rejects; only zeroes that layer's score.
+_SOFT_SCORING_STAGES = {
+    "PREMIUM_DISCOUNT",
+    "RETEST_CONFIRMATION",
+    "SESSION_FILTER",
+    "BTC_ALIGNMENT",
+    "FAKE_BREAKOUT_FILTER",
+}
+# CANDLE_QUALITY, RISK_MANAGEMENT, CONFIDENCE_SCORING remain hard gates:
+# structural/account-safety requirements that were never part of the
+# soft-scoring redesign.
+_MANDATORY_STAGES = _HARD_MANDATORY_STAGES | {
+    "CANDLE_QUALITY",
+    "RISK_MANAGEMENT",
+    "CONFIDENCE_SCORING",
+}
 
 
 def _now_ms() -> float:
@@ -87,8 +107,10 @@ class InstitutionalSMCStrategyEngine:
     """
     Orchestrates the complete institutional Smart Money Concepts strategy
     pipeline for a single symbol: market-data preparation, direction
-    resolution from higher-timeframe bias, and the 17 ordered mandatory
-    and non-mandatory validation stages, ending in confidence scoring.
+    resolution from higher-timeframe bias, and the 14 ordered validation
+    stages (6 hard-mandatory gates, 5 soft-scoring layers that never stop
+    the pipeline, and 3 remaining structural/account-safety gates),
+    ending in confidence scoring.
 
     Every dependency is injected; this class does not construct its own
     calculators or validators. It never mutates input candles, contexts,
@@ -112,13 +134,10 @@ class InstitutionalSMCStrategyEngine:
         structure_shift_validator: StructureShiftValidator,
         volume_confirmation_validator: VolumeConfirmationValidator,
         entry_zone_validator: EntryZoneValidator,
-        momentum_filter: MomentumFilter,
-        volatility_filter: VolatilityFilter,
         session_filter: SessionFilter,
         btc_alignment_validator: BTCAlignmentValidator,
         fake_breakout_filter: FakeBreakoutFilter,
         candle_quality_validator: CandleQualityValidator,
-        atr_validator: ATRValidator,
         risk_management_calculator: RiskManagementCalculator,
         risk_management_validator: RiskManagementValidator,
         confidence_calculator: ConfidenceCalculator,
@@ -137,16 +156,25 @@ class InstitutionalSMCStrategyEngine:
         self._structure_shift_validator = structure_shift_validator
         self._volume_confirmation_validator = volume_confirmation_validator
         self._entry_zone_validator = entry_zone_validator
-        self._momentum_filter = momentum_filter
-        self._volatility_filter = volatility_filter
         self._session_filter = session_filter
         self._btc_alignment_validator = btc_alignment_validator
         self._fake_breakout_filter = fake_breakout_filter
         self._candle_quality_validator = candle_quality_validator
-        self._atr_validator = atr_validator
         self._risk_management_calculator = risk_management_calculator
         self._risk_management_validator = risk_management_validator
         self._confidence_calculator = confidence_calculator
+
+        # Every symbol scanned within the same scan cycle shares the same
+        # `detection_time_utc` (set once by MultiPairScanScheduler.run_cycle),
+        # so it doubles as a per-cycle cache key: this avoids refetching
+        # identical BTC candles from the exchange once per non-BTC symbol
+        # every cycle. The lock makes concurrent analyze_symbol() calls
+        # (fanned out via asyncio.gather) share a single in-flight BTC
+        # fetch instead of racing duplicate requests. Bounded to the most
+        # recent cycle only -- never accumulates across cycles.
+        self._btc_candle_cache_key: Optional[str] = None
+        self._btc_candle_cache: Optional[dict[str, list[Candle]]] = None
+        self._btc_candle_cache_lock = asyncio.Lock()
 
     async def analyze_symbol(
         self,
@@ -212,6 +240,29 @@ class InstitutionalSMCStrategyEngine:
             stages=stages,
         )
 
+    async def _fetch_btc_candles_for_cycle(
+        self, detection_time_utc: datetime
+    ) -> dict[str, list[Candle]]:
+        """
+        Fetch BTC candles once per scan cycle and reuse the result for
+        every non-BTC symbol analyzed within that same cycle, instead of
+        refetching identical BTC market data from the exchange once per
+        symbol. `detection_time_utc` is the same value for every symbol
+        scanned within one MultiPairScanScheduler cycle, so it serves as
+        the cache key; a new cycle (a new `detection_time_utc`) always
+        fetches fresh data and replaces the cache -- never reuses a
+        previous cycle's BTC candles.
+        """
+        cache_key = detection_time_utc.isoformat()
+        async with self._btc_candle_cache_lock:
+            if self._btc_candle_cache_key == cache_key and self._btc_candle_cache is not None:
+                return self._btc_candle_cache
+
+            btc_candles = await self._market_data_provider.fetch_symbol_market_data(BTC_SYMBOL)
+            self._btc_candle_cache_key = cache_key
+            self._btc_candle_cache = btc_candles
+            return btc_candles
+
     async def _prepare_market_context(self, symbol: str, detection_time_utc: datetime) -> MarketContext:
         """Fetch candles, persist them, and calculate indicators/structures/HTF bias."""
         symbol_candles = await self._market_data_provider.fetch_symbol_market_data(symbol)
@@ -229,7 +280,7 @@ class InstitutionalSMCStrategyEngine:
         if symbol == BTC_SYMBOL:
             btc_candles = symbol_candles
         else:
-            btc_candles = await self._market_data_provider.fetch_symbol_market_data(BTC_SYMBOL)
+            btc_candles = await self._fetch_btc_candles_for_cycle(detection_time_utc)
             for timeframe in _REQUIRED_TIMEFRAMES:
                 btc_tf_candles = btc_candles.get(timeframe)
                 if not btc_tf_candles:
@@ -296,7 +347,7 @@ class InstitutionalSMCStrategyEngine:
 
         # Stage 1: MARKET_REGIME
         start = _now_ms()
-        market_regime_result = self._market_regime_validator.validate(entry_snapshot)
+        market_regime_result = self._market_regime_validator.validate(entry_snapshot, entry_candles)
         stages.append(self._stage(1, "MARKET_REGIME", market_regime_result, start))
         if not market_regime_result.passed:
             return self._build_rejected_result(context, None, stages, "MARKET_REGIME", market_regime_result)
@@ -421,9 +472,11 @@ class InstitutionalSMCStrategyEngine:
                 context, expected_direction, stages, "ENTRY_ZONE", entry_zone_validation
             )
 
-        # Stages 7 & 8: PREMIUM_DISCOUNT then RETEST_CONFIRMATION
+        # Stages 7 & 8: PREMIUM_DISCOUNT then RETEST_CONFIRMATION (soft-scoring)
         # (ZoneSetupConfirmationCalculator evaluates Premium/Discount first
         # and only evaluates retest if that passes, matching the required order.)
+        # Neither failure stops the pipeline: downstream stages continue
+        # using the best-available zone/retest data rather than aborting.
         start = _now_ms()
         setup_result = self._zone_setup_confirmation_calculator.calculate(
             entry_candles,
@@ -437,24 +490,20 @@ class InstitutionalSMCStrategyEngine:
         premium_discount_validation = _rename_layer(
             setup_result.premium_discount_validation, "PREMIUM_DISCOUNT"
         )
-        stages.append(self._stage(7, "PREMIUM_DISCOUNT", premium_discount_validation, start))
+        stages.append(
+            self._stage(7, "PREMIUM_DISCOUNT", premium_discount_validation, start, mandatory=False)
+        )
         context = context.with_updates(dealing_range_result=setup_result.dealing_range)
-        if not premium_discount_validation.passed:
-            return self._build_rejected_result(
-                context, expected_direction, stages, "PREMIUM_DISCOUNT", premium_discount_validation
-            )
 
         start = _now_ms()
         retest_result = setup_result.retest
         retest_validation = _rename_layer(setup_result.retest_validation, "RETEST_CONFIRMATION")
-        stages.append(self._stage(8, "RETEST_CONFIRMATION", retest_validation, start))
+        stages.append(self._stage(8, "RETEST_CONFIRMATION", retest_validation, start, mandatory=False))
         context = context.with_updates(retest_result=retest_result)
-        if not retest_validation.passed:
-            return self._build_rejected_result(
-                context, expected_direction, stages, "RETEST_CONFIRMATION", retest_validation
-            )
 
-        # Stage 5 (phase B): finalize VOLUME_CONFIRMATION with displacement + retest
+        # Stage 5 (phase B): finalize VOLUME_CONFIRMATION with displacement +
+        # whatever retest data is available (unconfirmed if RETEST_CONFIRMATION
+        # failed above -- never fabricated).
         final_volume_result = self._volume_confirmation_validator.validate(displacement, retest_result)
         stages[4] = self._stage(5, "VOLUME_CONFIRMATION", final_volume_result, 0.0)
         if not final_volume_result.passed:
@@ -464,21 +513,7 @@ class InstitutionalSMCStrategyEngine:
 
         confirmation_candle = self._resolve_confirmation_candle(entry_candles, retest_result)
 
-        # Stage 9: MOMENTUM_FILTER (never stops the pipeline)
-        start = _now_ms()
-        momentum_validation = self._momentum_filter.validate(entry_snapshot, expected_direction)
-        stages.append(self._stage(9, "MOMENTUM_FILTER", momentum_validation, start, mandatory=False))
-
-        # Stage 10: VOLATILITY_FILTER
-        start = _now_ms()
-        volatility_validation = self._volatility_filter.validate(entry_candles, entry_snapshot)
-        stages.append(self._stage(10, "VOLATILITY_FILTER", volatility_validation, start))
-        if not volatility_validation.passed:
-            return self._build_rejected_result(
-                context, expected_direction, stages, "VOLATILITY_FILTER", volatility_validation
-            )
-
-        # Stage 11: SESSION_FILTER
+        # Stage 9: SESSION_FILTER (soft-scoring)
         start = _now_ms()
         btc_trend_strong = btc_structure_4h.trend_direction.value in ("BULLISH", "BEARISH")
         atr_high = entry_snapshot.atr is not None and entry_snapshot.atr > 0
@@ -490,53 +525,36 @@ class InstitutionalSMCStrategyEngine:
         session_validation = self._session_filter.validate(
             context.detection_time_utc, btc_trend_strong, atr_high, volume_high
         )
-        stages.append(self._stage(11, "SESSION_FILTER", session_validation, start))
-        if not session_validation.passed:
-            return self._build_rejected_result(
-                context, expected_direction, stages, "SESSION_FILTER", session_validation
-            )
+        stages.append(self._stage(9, "SESSION_FILTER", session_validation, start, mandatory=False))
 
-        # Stage 12: BTC_ALIGNMENT
+        # Stage 10: BTC_ALIGNMENT (soft-scoring)
         start = _now_ms()
         btc_alignment_validation = self._btc_alignment_validator.validate(
             symbol, expected_direction, btc_structure_4h, btc_htf_bias_result
         )
-        stages.append(self._stage(12, "BTC_ALIGNMENT", btc_alignment_validation, start))
-        if not btc_alignment_validation.passed:
-            return self._build_rejected_result(
-                context, expected_direction, stages, "BTC_ALIGNMENT", btc_alignment_validation
-            )
+        stages.append(self._stage(10, "BTC_ALIGNMENT", btc_alignment_validation, start, mandatory=False))
 
-        # Stage 13: FAKE_BREAKOUT_FILTER
+        # Stage 11: FAKE_BREAKOUT_FILTER (soft-scoring)
         start = _now_ms()
         fake_breakout_validation = self._fake_breakout_filter.validate(
             entry_candles, selected_sweep, selected_break
         )
-        stages.append(self._stage(13, "FAKE_BREAKOUT_FILTER", fake_breakout_validation, start))
-        if not fake_breakout_validation.passed:
-            return self._build_rejected_result(
-                context, expected_direction, stages, "FAKE_BREAKOUT_FILTER", fake_breakout_validation
-            )
+        stages.append(
+            self._stage(11, "FAKE_BREAKOUT_FILTER", fake_breakout_validation, start, mandatory=False)
+        )
 
-        # Stage 14: CANDLE_QUALITY
+        # Stage 12: CANDLE_QUALITY
         start = _now_ms()
         candle_quality_validation = self._candle_quality_validator.validate(
             confirmation_candle, expected_direction
         )
-        stages.append(self._stage(14, "CANDLE_QUALITY", candle_quality_validation, start))
+        stages.append(self._stage(12, "CANDLE_QUALITY", candle_quality_validation, start))
         if not candle_quality_validation.passed:
             return self._build_rejected_result(
                 context, expected_direction, stages, "CANDLE_QUALITY", candle_quality_validation
             )
 
-        # Stage 15: ATR
-        start = _now_ms()
-        atr_validation = self._atr_validator.validate(entry_snapshot)
-        stages.append(self._stage(15, "ATR", atr_validation, start))
-        if not atr_validation.passed:
-            return self._build_rejected_result(context, expected_direction, stages, "ATR", atr_validation)
-
-        # Stage 16: RISK_MANAGEMENT
+        # Stage 13: RISK_MANAGEMENT
         start = _now_ms()
         entry_price = confirmation_candle.close
         major_swings = entry_structure.swings
@@ -565,12 +583,12 @@ class InstitutionalSMCStrategyEngine:
             ) from exc
 
         risk_validation = self._risk_management_validator.validate(risk_plan)
-        stages.append(self._stage(16, "RISK_MANAGEMENT", risk_validation, start))
+        stages.append(self._stage(13, "RISK_MANAGEMENT", risk_validation, start))
         context = context.with_updates(risk_plan=risk_plan)
         if not risk_validation.passed:
             return self._build_rejected_result(context, expected_direction, stages, "RISK_MANAGEMENT", risk_validation)
 
-        # Stage 17: CONFIDENCE_SCORING
+        # Stage 14: CONFIDENCE_SCORING
         start = _now_ms()
         try:
             confidence_result = self._confidence_calculator.calculate(
@@ -582,7 +600,6 @@ class InstitutionalSMCStrategyEngine:
                 entry_zone=entry_zone_validation,
                 premium_discount=premium_discount_validation,
                 retest_confirmation=retest_validation,
-                atr=atr_validation,
                 session_filter=session_validation,
                 btc_alignment=btc_alignment_validation,
                 fake_breakout_filter=fake_breakout_validation,
@@ -599,7 +616,7 @@ class InstitutionalSMCStrategyEngine:
             reason=confidence_result.reason,
             score=confidence_result.normalized_score,
         )
-        stages.append(self._stage(17, "CONFIDENCE_SCORING", confidence_stage_result, start))
+        stages.append(self._stage(14, "CONFIDENCE_SCORING", confidence_stage_result, start))
         context = context.with_updates(confidence_result=confidence_result)
 
         if not confidence_result.publishable:
@@ -628,8 +645,6 @@ class InstitutionalSMCStrategyEngine:
             selected_entry_zone=selected_zone,
             dealing_range_result=setup_result.dealing_range,
             retest_result=retest_result,
-            momentum_result=momentum_validation,
-            volatility_result=volatility_validation,
             session_result=session_validation,
             btc_alignment_result=btc_alignment_validation,
             fake_breakout_result=fake_breakout_validation,

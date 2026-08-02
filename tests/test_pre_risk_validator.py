@@ -28,9 +28,7 @@ from app.validators.candle_quality import CandleQualityValidator
 from app.validators.context_validator import PreRiskValidator
 from app.validators.fake_breakout_filter import FakeBreakoutFilter
 from app.validators.market_regime import MarketRegimeValidator
-from app.validators.momentum_filter import MomentumFilter
 from app.validators.session_filter import SessionFilter
-from app.validators.volatility_filter import VolatilityFilter
 
 UTC_NOW = datetime(2026, 1, 1, 10, 0, tzinfo=timezone.utc)  # London session
 
@@ -201,11 +199,6 @@ def _make_validator(
             adx_rejection_maximum=adx_rejection_max,
             ema_flat_threshold=0.0005,
             minimum_atr_expansion_ratio=1.0,
-        ),
-        momentum_filter=MomentumFilter(),
-        volatility_filter=VolatilityFilter(
-            minimum_atr_value=0.00000001,
-            minimum_atr_expansion_ratio=1.0,
             compression_lookback=10,
             minimum_candle_range_ratio=0.50,
         ),
@@ -244,7 +237,7 @@ class TestPreRiskValidator:
         )
         assert result.passed is True
         assert result.failed_layer is None
-        assert len(result.validation_results) == 7
+        assert len(result.validation_results) == 5
 
     def test_market_regime_failure_stops_later_validators(self):
         candles = _normal_candles(11)
@@ -265,32 +258,12 @@ class TestPreRiskValidator:
         assert result.passed is False
         assert result.failed_layer == "MARKET_REGIME"
         assert len(result.validation_results) == 1
-        assert result.momentum is None
+        assert result.session is None
 
-    def test_momentum_conflict_does_not_stop_flow(self):
-        candles = _normal_candles(11)
-        sweep = _sweep(UTC_NOW - timedelta(minutes=20))
-        structure_break = _structure_break(sweep)
-
-        result = _make_validator().validate(
-            _market_context(),
-            "BUY",
-            candles,
-            _snapshot(ema20=90.0, ema50=100.0),  # momentum conflict for BUY
-            _btc_structure(),
-            _btc_bias(),
-            sweep,
-            structure_break,
-            _confirmation_candle(),
-        )
-        assert result.momentum is not None
-        assert result.momentum.passed is True  # momentum always passes
-        assert result.passed is True  # pipeline still completes
-
-    def test_volatility_failure_stops_flow(self):
-        # Valid ATR/ADX for market regime, but a tiny final candle range
-        # relative to the preceding average triggers TINY_CANDLE in
-        # volatility specifically (not a market-regime ATR failure).
+    def test_tiny_candle_range_fails_market_regime(self):
+        # Valid ATR/ADX, but a tiny final candle range relative to the
+        # preceding average triggers TINY_CANDLE -- now folded into
+        # MARKET_REGIME itself (formerly a separate VOLATILITY_FILTER stage).
         candles = _normal_candles(10) + [_candle(10, 100, 100.5, 100, 100.2)]
         sweep = _sweep(UTC_NOW - timedelta(minutes=20))
         structure_break = _structure_break(sweep)
@@ -307,7 +280,7 @@ class TestPreRiskValidator:
             _confirmation_candle(),
         )
         assert result.passed is False
-        assert result.failed_layer == "VOLATILITY_FILTER"
+        assert result.failed_layer == "MARKET_REGIME"
         assert result.session is None
 
     def test_session_failure_stops_flow(self):
@@ -422,8 +395,6 @@ class TestPreRiskValidator:
         layer_names = [r.layer_name for r in result.validation_results]
         assert layer_names == [
             "MARKET_REGIME",
-            "MOMENTUM_FILTER",
-            "VOLATILITY_FILTER",
             "SESSION_FILTER",
             "BTC_ALIGNMENT",
             "FAKE_BREAKOUT_FILTER",

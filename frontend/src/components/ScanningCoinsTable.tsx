@@ -1,6 +1,8 @@
+import { useState } from "react";
+import { Search } from "lucide-react";
 import type { ScanningCoin } from "../types/dashboard";
 import { DirectionBadge } from "./DirectionBadge";
-import { ProgressBar } from "./ProgressBar";
+import { CircularProgress } from "./CircularProgress";
 import { EmptyState } from "./EmptyState";
 
 interface ScanningCoinsTableProps {
@@ -8,11 +10,9 @@ interface ScanningCoinsTableProps {
 }
 
 const PREVIEW_TOOLTIP_NOTICE = "Dashboard preview only. This is not final trade confidence.";
-const CHART_TREND_TOOLTIP =
-  "Chart trend: raw price direction of the last completed candle vs. the previous one. Not a trade signal.";
 
 function progressColorClassName(percentage: number): string {
-  return percentage > 0 ? "bg-emerald-500" : "bg-slate-300";
+  return percentage > 0 ? "text-emerald-500" : "text-slate-300";
 }
 
 function scoreTooltip(coin: ScanningCoin): string {
@@ -29,70 +29,148 @@ function scoreTooltip(coin: ScanningCoin): string {
   return lines.join("\n");
 }
 
-function ChartTrendIndicator({ trend }: { trend: ScanningCoin["chart_trend"] }) {
-  if (trend !== "UP" && trend !== "DOWN") {
-    return <span className="text-sm text-slate-400">—</span>;
+const INSUFFICIENT_CANDLES_PATTERN = /insufficient candles.*?a (\d+)-period (\w+)/i;
+
+function shortErrorReason(reason: string | null): string | null {
+  if (!reason) {
+    return null;
   }
-  const isUp = trend === "UP";
-  return (
-    <span
-      title={CHART_TREND_TOOLTIP}
-      className={`text-sm font-semibold ${isUp ? "text-emerald-600" : "text-red-600"}`}
-    >
-      {isUp ? "↑" : "↓"}
-    </span>
-  );
+  // The most common ERROR case by far is a newly listed pair that
+  // doesn't yet have enough historical candles for a long-lookback
+  // indicator (e.g. EMA200 needs ~200 4h candles, roughly a month of
+  // trading history) -- summarize that specific, expected case in a
+  // few words instead of the full backend diagnostic sentence.
+  const match = reason.match(INSUFFICIENT_CANDLES_PATTERN);
+  if (match) {
+    return `not enough history for ${match[2]} (needs ${match[1]} candles)`;
+  }
+  return reason;
+}
+
+function statusLabel(coin: ScanningCoin): string {
+  if (coin.status === "REJECTED") {
+    return coin.failed_layer ? `REJECTED: ${coin.failed_layer}` : "REJECTED";
+  }
+  if (coin.status === "ERROR") {
+    const shortReason = shortErrorReason(coin.reason);
+    return shortReason ? `ERROR: ${shortReason}` : "ERROR";
+  }
+  return coin.status;
+}
+
+function statusColorClassName(status: ScanningCoin["status"]): string {
+  switch (status) {
+    case "READY":
+      return "text-emerald-600";
+    case "REJECTED":
+      return "text-red-600";
+    case "ERROR":
+      return "text-red-600";
+    case "DUPLICATE":
+      return "text-amber-600";
+    default:
+      return "text-slate-400";
+  }
+}
+
+export function scanningCoinsSummary(coins: ScanningCoin[]): { total: number; scanning: number } {
+  return {
+    total: coins.length,
+    scanning: coins.filter((coin) => coin.status === "SCANNING").length,
+  };
 }
 
 export function ScanningCoinsTable({ coins }: ScanningCoinsTableProps) {
+  const [searchTerm, setSearchTerm] = useState("");
+
   if (coins.length === 0) {
     return <EmptyState message="Waiting for scanner" />;
   }
 
+  const sortedCoins = [...coins].sort(
+    (a, b) => (b.preview_progress_percentage ?? -1) - (a.preview_progress_percentage ?? -1),
+  );
+
+  const filteredCoins = sortedCoins.filter((coin) =>
+    coin.coin.toLowerCase().includes(searchTerm.trim().toLowerCase()),
+  );
+
+  const { total, scanning } = scanningCoinsSummary(coins);
+
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-left text-sm">
-        <thead>
-          <tr className="text-xs uppercase tracking-wide text-slate-400">
-            <th className="pb-2 font-medium">Coin</th>
-            <th className="pb-2 font-medium">Direction</th>
-            <th className="pb-2 font-medium">Chart</th>
-            <th className="pb-2 font-medium">Score (%)</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-slate-100">
-          {coins.map((coin) => {
-            const percentage = coin.preview_progress_percentage;
-            return (
-              <tr key={coin.coin}>
-                <td className="py-2.5 font-medium text-slate-900">{coin.coin}</td>
-                <td className="py-2.5">
-                  <DirectionBadge direction={coin.preview_direction} />
-                </td>
-                <td className="py-2.5">
-                  <ChartTrendIndicator trend={coin.chart_trend} />
-                </td>
-                <td className="py-2.5">
-                  <div
-                    className="flex items-center gap-2 text-slate-600"
-                    title={scoreTooltip(coin)}
-                  >
-                    <span className="w-10 tabular-nums">
-                      {percentage === null ? "—" : `${percentage}%`}
-                    </span>
-                    {percentage === null ? null : (
-                      <ProgressBar
-                        percentage={percentage}
-                        colorClassName={progressColorClassName(percentage)}
-                      />
-                    )}
-                  </div>
-                </td>
+    <div>
+      <div className="mb-3 flex items-center justify-between text-xs text-slate-500">
+        <span>
+          <span className="font-semibold text-slate-900">{total}</span> total coin
+          {total === 1 ? "" : "s"}
+        </span>
+        {scanning > 0 ? (
+          <span>
+            <span className="font-semibold text-purple-600">{scanning}</span> scanning
+          </span>
+        ) : null}
+      </div>
+
+      <div className="relative mb-3 w-48">
+        <Search
+          size={14}
+          className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400"
+        />
+        <input
+          type="text"
+          value={searchTerm}
+          onChange={(event) => setSearchTerm(event.target.value)}
+          placeholder="Search coin..."
+          aria-label="Search coin"
+          className="w-full rounded-md border border-slate-200 py-1.5 pl-8 pr-3 text-sm text-slate-900 placeholder:text-slate-400 focus:border-purple-400 focus:outline-none focus:ring-1 focus:ring-purple-400"
+        />
+      </div>
+
+      {filteredCoins.length === 0 ? (
+        <EmptyState message="No coins match your search" />
+      ) : (
+        <div className="max-h-[440px] overflow-y-auto overflow-x-auto">
+          <table className="w-full table-auto border-collapse text-left text-sm">
+            <thead className="sticky top-0 z-10 bg-white">
+              <tr className="text-xs uppercase tracking-wide text-slate-400">
+                <th className="w-auto pb-2 pr-4 font-medium">Coin</th>
+                <th className="pb-2 pr-6 font-medium">Direction</th>
+                <th className="pb-2 pr-6 font-medium">Score (%)</th>
+                <th className="pb-2 font-medium">Status</th>
               </tr>
-            );
-          })}
-        </tbody>
-      </table>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {filteredCoins.map((coin) => {
+                const percentage = coin.preview_progress_percentage ?? 0;
+                return (
+                  <tr key={coin.coin}>
+                    <td className="py-1 pr-4 font-medium text-slate-900">{coin.coin}</td>
+                    <td className="py-1 pr-6">
+                      <DirectionBadge direction={coin.preview_direction} />
+                    </td>
+                    <td className="py-1 pr-6">
+                      <div className="flex items-center" title={scoreTooltip(coin)}>
+                        <CircularProgress
+                          percentage={coin.preview_progress_percentage === null ? null : percentage}
+                          colorClassName={progressColorClassName(percentage)}
+                          size={46}
+                          showLabel
+                        />
+                      </div>
+                    </td>
+                    <td
+                      className={`py-1 text-xs ${statusColorClassName(coin.status)}`}
+                      title={scoreTooltip(coin)}
+                    >
+                      {statusLabel(coin)}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }

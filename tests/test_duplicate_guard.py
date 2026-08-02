@@ -19,7 +19,7 @@ UTC_NOW = datetime(2026, 1, 1, 10, 0, tzinfo=timezone.utc)
 def _confidence() -> ConfidenceScoreResult:
     return ConfidenceScoreResult(
         raw_score=115.0,
-        maximum_raw_score=120,
+        maximum_raw_score=115,
         normalized_score=95.8,
         classification=ConfidenceClassification.PREMIUM,
         publishable=True,
@@ -129,7 +129,7 @@ class TestBuildSetupKey:
             update={
                 "confidence_result": ConfidenceScoreResult(
                     raw_score=100.0,
-                    maximum_raw_score=120,
+                    maximum_raw_score=115,
                     normalized_score=83.3,
                     classification=ConfidenceClassification.STRONG,
                     publishable=True,

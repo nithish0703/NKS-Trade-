@@ -7,7 +7,7 @@ implemented at this stage.
 
 from typing import Optional
 
-from app.data.bybit_data_validator import validate_candle_sequence
+from app.data.candle_validator import validate_candle_sequence
 from app.models.candle import Candle
 
 DEFAULT_MAX_CANDLES_PER_KEY = 1000

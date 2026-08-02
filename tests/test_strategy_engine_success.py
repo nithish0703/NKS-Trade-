@@ -3,7 +3,7 @@ Tests for app.scanner.strategy_engine.InstitutionalSMCStrategyEngine
 success paths, using fully mocked passing dependencies.
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
 import pytest
@@ -54,21 +54,81 @@ class TestStrategyEngineSuccess:
         # (reused for both "symbol" and "BTC" data) rather than twice.
         assert engine._market_data_provider.fetch_symbol_market_data.call_count == 1
 
+    async def test_btc_candles_cached_across_symbols_in_the_same_cycle(self):
+        # ETH-USDT and SOL-USDT are scanned within the same cycle
+        # (same detection_time_utc). BTC candles must be fetched once
+        # and reused, not refetched per non-BTC symbol.
+        engine = _build_engine()
+        await _analyze(engine, symbol="ETH-USDT")
+        await _analyze(engine, symbol="SOL-USDT")
+
+        fetched_symbols = [
+            call.args[0] if call.args else call.kwargs.get("s")
+            for call in engine._market_data_provider.fetch_symbol_market_data.await_args_list
+        ]
+        assert fetched_symbols.count("BTC-USDT") == 1
+        assert fetched_symbols.count("ETH-USDT") == 1
+        assert fetched_symbols.count("SOL-USDT") == 1
+
+    async def test_btc_candles_refetched_for_a_new_cycle(self):
+        # A different detection_time_utc means a new cycle: the BTC
+        # candle cache must not be reused across cycles.
+        engine = _build_engine()
+        await _analyze(engine, symbol="ETH-USDT")
+
+        new_detection_time = UTC_NOW + timedelta(minutes=5)
+        await engine.analyze_symbol(
+            symbol="SOL-USDT",
+            account_balance=10000.0,
+            active_trade_count=0,
+            active_positions=[],
+            active_position_candles={},
+            detection_time_utc=new_detection_time,
+        )
+
+        fetched_symbols = [
+            call.args[0] if call.args else call.kwargs.get("s")
+            for call in engine._market_data_provider.fetch_symbol_market_data.await_args_list
+        ]
+        assert fetched_symbols.count("BTC-USDT") == 2
+
+    async def test_concurrent_symbols_in_the_same_cycle_single_flight_btc_fetch(self):
+        # Simulates MultiPairScanScheduler's asyncio.gather fan-out:
+        # multiple symbols analyzed concurrently within one cycle must
+        # still only trigger a single BTC candle fetch, not one race per
+        # concurrent task.
+        import asyncio
+
+        engine = _build_engine()
+        symbols = ["ETH-USDT", "SOL-USDT", "XRP-USDT", "AVAX-USDT"]
+        await asyncio.gather(*(_analyze(engine, symbol=symbol) for symbol in symbols))
+
+        fetched_symbols = [
+            call.args[0] if call.args else call.kwargs.get("s")
+            for call in engine._market_data_provider.fetch_symbol_market_data.await_args_list
+        ]
+        assert fetched_symbols.count("BTC-USDT") == 1
+
     async def test_all_mandatory_stages_pass(self):
         engine = _build_engine()
         result = await _analyze(engine)
         mandatory_executed = [s for s in result.stages if s.mandatory and s.executed]
         assert all(s.passed for s in mandatory_executed)
-        assert len(mandatory_executed) == 16  # all but MOMENTUM_FILTER
+        # 9 hard-mandatory stages: MARKET_REGIME, HTF_BIAS, LIQUIDITY_SWEEP,
+        # STRUCTURE_SHIFT, VOLUME_CONFIRMATION, ENTRY_ZONE, CANDLE_QUALITY,
+        # RISK_MANAGEMENT, CONFIDENCE_SCORING. The other 5 (PREMIUM_DISCOUNT,
+        # RETEST_CONFIRMATION, SESSION_FILTER, BTC_ALIGNMENT,
+        # FAKE_BREAKOUT_FILTER) are soft-scoring, non-mandatory.
+        assert len(mandatory_executed) == 9
 
-    async def test_momentum_neutral_still_allows_success(self):
+    async def test_soft_layer_failure_still_allows_success(self):
         from app.models.validation_result import ValidationResult
 
-        momentum_filter = MagicMock()
-        momentum_filter.validate = MagicMock(
-            return_value=ValidationResult.success(layer_name="MOMENTUM_FILTER", reason="MOMENTUM_NEUTRAL")
+        session_filter = MagicMock()
+        session_filter.validate = MagicMock(
+            return_value=ValidationResult.failure(layer_name="SESSION_FILTER", reason="off-hours")
         )
-        engine = _build_engine(momentum_filter=momentum_filter)
+        engine = _build_engine(session_filter=session_filter)
         result = await _analyze(engine)
         assert result.status == PipelineStatus.VALID
 
@@ -107,7 +167,7 @@ class TestStrategyEngineSuccess:
         confidence_calculator.calculate = MagicMock(
             return_value=ConfidenceScoreResult(
                 raw_score=115.0,
-                maximum_raw_score=120,
+                maximum_raw_score=115,
                 normalized_score=95.83,
                 classification=ConfidenceClassification.PREMIUM,
                 publishable=True,
@@ -127,7 +187,7 @@ class TestStrategyEngineSuccess:
         confidence_calculator.calculate = MagicMock(
             return_value=ConfidenceScoreResult(
                 raw_score=100.0,
-                maximum_raw_score=120,
+                maximum_raw_score=115,
                 normalized_score=83.33,
                 classification=ConfidenceClassification.STRONG,
                 publishable=True,
@@ -145,7 +205,7 @@ class TestStrategyEngineSuccess:
     async def test_final_result_includes_complete_stage_audit(self):
         engine = _build_engine()
         result = await _analyze(engine)
-        assert len(result.stages) == 17
+        assert len(result.stages) == 14
         assert all(s.executed for s in result.stages)
 
     async def test_inputs_not_mutated(self):

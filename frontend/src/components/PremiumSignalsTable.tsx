@@ -1,8 +1,9 @@
 import type { PremiumSignal } from "../types/dashboard";
 import { DirectionBadge } from "./DirectionBadge";
 import { ConfidenceBadge } from "./ConfidenceBadge";
+import { SignalField } from "./SignalField";
 import { EmptyState } from "./EmptyState";
-import { formatPriceOrDash } from "../utils/format";
+import { formatIstTime, formatPriceOrDash } from "../utils/format";
 
 interface PremiumSignalsTableProps {
   signals: PremiumSignal[];
@@ -15,51 +16,38 @@ export function PremiumSignalsTable({ signals, onView }: PremiumSignalsTableProp
   }
 
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-left text-sm">
-        <thead>
-          <tr className="text-xs uppercase tracking-wide text-slate-400">
-            <th className="pb-2 font-medium">Coin</th>
-            <th className="pb-2 font-medium">Dir</th>
-            <th className="pb-2 font-medium">Tier</th>
-            <th className="pb-2 font-medium">Entry</th>
-            <th className="pb-2 font-medium">TP</th>
-            <th className="pb-2 font-medium">SL</th>
-            <th className="pb-2 font-medium">Confidence</th>
-            <th className="pb-2 font-medium">Action</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-slate-100">
-          {signals.map((signal) => (
-            <tr key={signal.trade_id}>
-              <td className="py-2.5 font-medium text-slate-900">{signal.coin}</td>
-              <td className="py-2.5">
-                <DirectionBadge direction={signal.direction} />
-              </td>
-              <td className="py-2.5">
-                <span className="inline-flex items-center rounded-md bg-purple-50 px-2 py-0.5 text-xs font-semibold text-purple-700">
-                  PREMIUM
-                </span>
-              </td>
-              <td className="py-2.5 text-slate-600">{formatPriceOrDash(signal.entry_price)}</td>
-              <td className="py-2.5 text-emerald-600">{formatPriceOrDash(signal.take_profit)}</td>
-              <td className="py-2.5 text-red-600">{formatPriceOrDash(signal.stop_loss)}</td>
-              <td className="py-2.5">
-                <ConfidenceBadge score={signal.confidence_score} tier="PREMIUM" />
-              </td>
-              <td className="py-2.5">
-                <button
-                  type="button"
-                  onClick={() => onView(signal.trade_id)}
-                  className="rounded-md bg-purple-600 px-3 py-1 text-xs font-semibold text-white hover:bg-purple-700"
-                >
-                  Go
-                </button>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+    <div className="space-y-3">
+      {signals.map((signal) => (
+        <div key={signal.trade_id} className="rounded-lg border border-slate-100 p-3">
+          <div className="mb-2 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <span className="font-semibold text-slate-900">{signal.coin}</span>
+              <DirectionBadge direction={signal.direction} />
+            </div>
+            <button
+              type="button"
+              onClick={() => onView(signal.trade_id)}
+              className="rounded-md bg-purple-600 px-3 py-1 text-xs font-semibold text-white hover:bg-purple-700"
+            >
+              Go
+            </button>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-4">
+            <SignalField label="Entry" value={formatPriceOrDash(signal.entry_price)} />
+            <SignalField label="TP" value={formatPriceOrDash(signal.take_profit)} valueClassName="text-emerald-600" />
+            <SignalField label="SL" value={formatPriceOrDash(signal.stop_loss)} valueClassName="text-red-600" />
+            <div className="flex flex-col">
+              <span className="text-[11px] uppercase tracking-wide text-slate-400">Confidence</span>
+              <ConfidenceBadge score={signal.confidence_score} tier="PREMIUM" />
+            </div>
+          </div>
+
+          <div className="mt-2 text-xs text-slate-400">
+            Signal given: {formatIstTime(signal.detection_time_utc)}
+          </div>
+        </div>
+      ))}
     </div>
   );
 }

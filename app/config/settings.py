@@ -9,7 +9,19 @@ from dotenv import load_dotenv
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from app.config.thresholds import SCANNER_INTERVAL_SECONDS
+from app.config.thresholds import (
+    PAIR_DISCOVERY_INTERVAL_SECONDS,
+    PAIR_DISCOVERY_MINIMUM_OPEN_INTEREST_USDT,
+    PAIR_DISCOVERY_MINIMUM_TURNOVER_24H_USDT,
+    SCANNER_INTERVAL_SECONDS,
+    TRADE_OUTCOME_MONITOR_INTERVAL_SECONDS,
+)
+
+# Default publishable-signal confidence cutoff (STRONG classification's
+# lower bound). Kept as a plain literal here, rather than imported from
+# app.config.thresholds, so app.scoring.classification (which needs the
+# same value) has no import-time dependency on Settings construction.
+_DEFAULT_MIN_PUBLISHABLE_CONFIDENCE_SCORE = 80.0
 
 load_dotenv()
 
@@ -53,7 +65,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     exchange_base_url: str = Field(
-        default="https://api.bybit.com", alias="EXCHANGE_BASE_URL"
+        default="https://fapi.binance.com", alias="EXCHANGE_BASE_URL"
     )
     database_url: str = Field(
         default="sqlite+aiosqlite:///./data/smc_engine.db",
@@ -85,6 +97,42 @@ class Settings(BaseSettings):
         default=False, alias="STORAGE_FAILURE_IS_FATAL"
     )
 
+    # Defaults to enabled: the scanner should cover every qualifying
+    # USDT perpetual by default rather than the static 10-pair
+    # DEFAULT_PAIRS fallback. Set to false to pin the scanner to
+    # DEFAULT_PAIRS only.
+    dynamic_pair_discovery_enabled: bool = Field(
+        default=True, alias="DYNAMIC_PAIR_DISCOVERY_ENABLED"
+    )
+    pair_discovery_interval_seconds: int = Field(
+        default=PAIR_DISCOVERY_INTERVAL_SECONDS, alias="PAIR_DISCOVERY_INTERVAL_SECONDS"
+    )
+    pair_discovery_minimum_open_interest_usdt: float = Field(
+        default=PAIR_DISCOVERY_MINIMUM_OPEN_INTEREST_USDT,
+        alias="PAIR_DISCOVERY_MINIMUM_OPEN_INTEREST_USDT",
+    )
+    pair_discovery_minimum_turnover_24h_usdt: float = Field(
+        default=PAIR_DISCOVERY_MINIMUM_TURNOVER_24H_USDT,
+        alias="PAIR_DISCOVERY_MINIMUM_TURNOVER_24H_USDT",
+    )
+    # `None` (the default) means no cap: every coin passing both filters
+    # is included. Set to a positive integer to re-enable a "top N"
+    # limit (ranked by turnover, highest first).
+    pair_discovery_maximum_pairs: Optional[int] = Field(
+        default=None, alias="PAIR_DISCOVERY_MAXIMUM_PAIRS"
+    )
+
+    # Minimum normalized (0-100) confidence score for a signal to be
+    # considered publishable (STRONG classification's lower bound; a
+    # score at or above PREMIUM_SIGNAL_MINIMUM_SCORE in app.config
+    # .thresholds is always publishable too). Lowering this via env var
+    # surfaces more MEDIUM-adjacent setups without a code change; it
+    # never needs to exceed PREMIUM_SIGNAL_MINIMUM_SCORE (90.0).
+    min_publishable_confidence_score: float = Field(
+        default=_DEFAULT_MIN_PUBLISHABLE_CONFIDENCE_SCORE,
+        alias="MIN_PUBLISHABLE_CONFIDENCE_SCORE",
+    )
+
     telegram_enabled: bool = Field(default=False, alias="TELEGRAM_ENABLED")
     telegram_bot_token: Optional[str] = Field(default=None, alias="TELEGRAM_BOT_TOKEN")
     telegram_chat_ids_raw: str = Field(default="", alias="TELEGRAM_CHAT_IDS")
@@ -108,6 +156,20 @@ class Settings(BaseSettings):
     )
     dashboard_websocket_enabled: bool = Field(
         default=False, alias="DASHBOARD_WEBSOCKET_ENABLED"
+    )
+
+    # Trade outcome monitor: periodically re-checks every ACTIVE
+    # (dashboard "Trade" button) signal's current price against its
+    # take_profit/stop_loss and records a WIN/LOSS outcome once one is
+    # touched. Runs only alongside the dashboard API (see
+    # dashboard_api_enabled above); has no effect on strategy, scoring,
+    # risk, storage, or notification behaviour.
+    trade_outcome_monitor_enabled: bool = Field(
+        default=True, alias="TRADE_OUTCOME_MONITOR_ENABLED"
+    )
+    trade_outcome_monitor_interval_seconds: int = Field(
+        default=TRADE_OUTCOME_MONITOR_INTERVAL_SECONDS,
+        alias="TRADE_OUTCOME_MONITOR_INTERVAL_SECONDS",
     )
 
     @property
@@ -154,6 +216,22 @@ class Settings(BaseSettings):
         # fast, matching the previous field_validator's behaviour.
         _parse_chat_ids(self.telegram_chat_ids_raw)
         return self
+
+    @field_validator("pair_discovery_maximum_pairs", mode="before")
+    @classmethod
+    def _blank_pair_discovery_maximum_pairs_means_no_limit(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @field_validator("pair_discovery_maximum_pairs")
+    @classmethod
+    def _pair_discovery_maximum_pairs_must_be_positive(
+        cls, value: Optional[int]
+    ) -> Optional[int]:
+        if value is not None and value <= 0:
+            raise ValueError("pair_discovery_maximum_pairs must be a positive integer, or unset for no limit.")
+        return value
 
     @model_validator(mode="after")
     def _telegram_credentials_required_when_enabled(self) -> "Settings":

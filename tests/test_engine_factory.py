@@ -83,14 +83,14 @@ class TestPreviewAnalyzerFactory:
             == thresholds.ADX_TRENDING_MIN
         )
         assert (
-            engine._atr_validator._minimum_atr_expansion_ratio
-            == analyzer._atr_validator._minimum_atr_expansion_ratio
-            == thresholds.MARKET_REGIME_MINIMUM_ATR_EXPANSION_RATIO
+            engine._market_regime_validator._compression_lookback
+            == analyzer._market_regime_validator._compression_lookback
+            == thresholds.VOLATILITY_COMPRESSION_LOOKBACK
         )
 
     def test_preview_analyzer_layer_weights_match_confidence_scoring_weights(self):
         """
-        The preview's 120-point layer weights must be the exact same
+        The preview's 115-point layer weights must be the exact same
         SCORE_* constants ConfidenceScoringEngine uses -- never a
         reimplemented or divergent copy.
         """
@@ -105,7 +105,6 @@ class TestPreviewAnalyzerFactory:
         assert analyzer._layer_weights["ENTRY_ZONE"] == thresholds.SCORE_ENTRY_ZONE
         assert analyzer._layer_weights["PREMIUM_DISCOUNT"] == thresholds.SCORE_PREMIUM_DISCOUNT
         assert analyzer._layer_weights["RETEST_CONFIRMATION"] == thresholds.SCORE_RETEST_CONFIRMATION
-        assert analyzer._layer_weights["ATR"] == thresholds.SCORE_ATR
         assert analyzer._layer_weights["SESSION_FILTER"] == thresholds.SCORE_SESSION
         assert analyzer._layer_weights["BTC_ALIGNMENT"] == thresholds.SCORE_BTC_ALIGNMENT
         assert analyzer._layer_weights["FAKE_BREAKOUT_FILTER"] == thresholds.SCORE_FAKE_BREAKOUT

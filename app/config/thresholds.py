@@ -26,8 +26,33 @@ ATR_STOP_LOSS_MULTIPLIER: Final[float] = 1.5
 # Scanner
 SCANNER_INTERVAL_SECONDS: Final[int] = 300
 
+# Trade outcome monitor: how often ACTIVE (dashboard "Trade" button)
+# signals are re-checked against the latest exchange ticker price to
+# see if take_profit or stop_loss has been touched.
+TRADE_OUTCOME_MONITOR_INTERVAL_SECONDS: Final[int] = 60
+
+# Dynamic Liquidity + Open Interest coin-discovery configuration.
+# The refresh interval defaults to 15 minutes. Binance Futures' public
+# 24hr ticker endpoint returns turnover for every USDT-M perpetual in a
+# single call; Open Interest still requires one request per
+# turnover-qualifying candidate (Binance has no bulk OI-value endpoint),
+# so unlike turnover this refresh's cost does scale with the number of
+# candidates -- kept at 15 minutes as a reasonable balance.
+PAIR_DISCOVERY_INTERVAL_SECONDS: Final[int] = 900
+PAIR_DISCOVERY_MINIMUM_OPEN_INTEREST_USDT: Final[float] = 5_000_000.0
+PAIR_DISCOVERY_MINIMUM_TURNOVER_24H_USDT: Final[float] = 10_000_000.0
+
+# Warm-up fetch for newly discovered pairs (see app.scanner.pair_discovery).
+# A brand-new symbol's first full candle-history fetch has no cached
+# fallback and no safety margin, so it gets a more patient retry
+# schedule than the routine per-cycle fetch used once a symbol is
+# already in rotation -- this only delays a new symbol's first
+# appearance on a transient failure; it never changes retry behaviour
+# for symbols already being scanned.
+PAIR_WARMUP_MAX_REQUEST_ATTEMPTS: Final[int] = 5
+PAIR_WARMUP_RETRY_BACKOFF_SCHEDULE_SECONDS: Final[tuple[float, ...]] = (2.0, 4.0, 8.0, 15.0)
+
 # Signal scoring
-MIN_PUBLISHABLE_CONFIDENCE_SCORE: Final[float] = 80.0
 PREMIUM_SIGNAL_MIN_SCORE: Final[float] = 90.0
 STRONG_SIGNAL_MIN_SCORE: Final[float] = 80.0
 MEDIUM_SIGNAL_MIN_SCORE: Final[float] = 70.0
@@ -92,22 +117,25 @@ MAXIMUM_ALLOWED_POSITION_CORRELATION: Final[float] = 0.80
 CORRELATION_MINIMUM_OBSERVATIONS: Final[int] = 30
 
 # Confidence scoring layer weights (must sum to SCORE_MAXIMUM_RAW)
+# Hard-mandatory layers (pipeline gates; failure rejects before scoring runs):
 SCORE_MARKET_REGIME: Final[int] = 15
 SCORE_HTF_BIAS: Final[int] = 25
 SCORE_LIQUIDITY_SWEEP: Final[int] = 15
 SCORE_STRUCTURE_SHIFT: Final[int] = 15
 SCORE_VOLUME_CONFIRMATION: Final[int] = 10
 SCORE_ENTRY_ZONE: Final[int] = 10
+# Soft-scoring layers (never reject; failure awards zero points only):
 SCORE_PREMIUM_DISCOUNT: Final[int] = 5
 SCORE_RETEST_CONFIRMATION: Final[int] = 5
-SCORE_ATR: Final[int] = 5
 SCORE_SESSION: Final[int] = 5
 SCORE_BTC_ALIGNMENT: Final[int] = 5
 SCORE_FAKE_BREAKOUT: Final[int] = 5
-SCORE_MAXIMUM_RAW: Final[int] = 120
+SCORE_MAXIMUM_RAW: Final[int] = 115
 
 # Confidence classification thresholds
 PREMIUM_SIGNAL_MINIMUM_SCORE: Final[float] = 90.0
-STRONG_SIGNAL_MINIMUM_SCORE: Final[float] = 80.0
 MEDIUM_SIGNAL_MINIMUM_SCORE: Final[float] = 70.0
-MINIMUM_PUBLISHABLE_CONFIDENCE_SCORE: Final[float] = 80.0
+# STRONG_SIGNAL_MINIMUM_SCORE (the publishable-signal cutoff) moved to
+# app.config.settings.Settings.min_publishable_confidence_score so
+# signal frequency can be tuned via the MIN_PUBLISHABLE_CONFIDENCE_SCORE
+# env var without a code change/redeploy. Default is unchanged (80.0).

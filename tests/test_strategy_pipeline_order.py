@@ -2,7 +2,7 @@
 Tests for the exact strategy-pipeline stage execution order.
 """
 
-from app.scanner.strategy_engine import _MANDATORY_STAGES, _STAGE_DEFINITIONS
+from app.scanner.strategy_engine import _MANDATORY_STAGES, _SOFT_SCORING_STAGES, _STAGE_DEFINITIONS
 
 EXPECTED_ORDER = [
     "MARKET_REGIME",
@@ -13,13 +13,10 @@ EXPECTED_ORDER = [
     "ENTRY_ZONE",
     "PREMIUM_DISCOUNT",
     "RETEST_CONFIRMATION",
-    "MOMENTUM_FILTER",
-    "VOLATILITY_FILTER",
     "SESSION_FILTER",
     "BTC_ALIGNMENT",
     "FAKE_BREAKOUT_FILTER",
     "CANDLE_QUALITY",
-    "ATR",
     "RISK_MANAGEMENT",
     "CONFIDENCE_SCORING",
 ]
@@ -42,6 +39,13 @@ class TestStrategyPipelineOrder:
     def test_no_unexpected_stage_added(self):
         assert len(_STAGE_DEFINITIONS) == len(EXPECTED_ORDER)
 
-    def test_momentum_is_the_only_non_mandatory_stage(self):
+    def test_soft_scoring_stages_are_the_only_non_mandatory_stages(self):
         non_mandatory = {name for _, name in _STAGE_DEFINITIONS} - _MANDATORY_STAGES
-        assert non_mandatory == {"MOMENTUM_FILTER"}
+        assert non_mandatory == _SOFT_SCORING_STAGES
+        assert non_mandatory == {
+            "PREMIUM_DISCOUNT",
+            "RETEST_CONFIRMATION",
+            "SESSION_FILTER",
+            "BTC_ALIGNMENT",
+            "FAKE_BREAKOUT_FILTER",
+        }

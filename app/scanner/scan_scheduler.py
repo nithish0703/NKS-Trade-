@@ -18,15 +18,43 @@ from app.scanner.scan_results import (
 )
 
 ClockProvider = Callable[[], float]
+WallClockProvider = Callable[[], datetime]
 
 
 def _default_clock() -> float:
     return asyncio.get_event_loop().time()
 
 
+def _default_wall_clock() -> datetime:
+    return datetime.now(timezone.utc)
+
+
 def _build_cycle_id(sequence_number: int, started_at_utc: datetime) -> str:
     digest_input = f"{sequence_number}|{started_at_utc.isoformat()}"
     return hashlib.sha256(digest_input.encode("utf-8")).hexdigest()[:16]
+
+
+def _seconds_until_next_interval_boundary(now: datetime, interval_seconds: float) -> float:
+    """
+    Seconds remaining until the next wall-clock UTC boundary that is a
+    multiple of `interval_seconds` since the epoch (e.g. for the default
+    300-second/5-minute interval: :00, :05, :10, ... past every hour).
+
+    This is what lets the scanner trigger immediately when a new
+    5-minute candle closes, rather than drifting from real candle-close
+    timestamps based on process start time or cycle-duration variance.
+    Returns `interval_seconds` itself (a full interval) if `now` lands
+    exactly on a boundary, and `interval_seconds` unchanged for any
+    non-positive interval (never divides by zero or returns a negative
+    wait).
+    """
+    if interval_seconds <= 0:
+        return interval_seconds
+    elapsed_in_interval = now.timestamp() % interval_seconds
+    remaining = interval_seconds - elapsed_in_interval
+    if remaining <= 0:
+        return interval_seconds
+    return remaining
 
 
 class MultiPairScanScheduler:
@@ -43,14 +71,23 @@ class MultiPairScanScheduler:
         configured_pair_provider: Callable[[], Sequence[str]],
         scanner_interval_seconds: float,
         maximum_concurrent_scans: int,
+        retry_count_provider: Optional[Callable[[], int]] = None,
         clock: ClockProvider = _default_clock,
+        wall_clock: WallClockProvider = _default_wall_clock,
         logger: Optional[logging.Logger] = None,
     ) -> None:
         self._pair_scanner = pair_scanner
         self._configured_pair_provider = configured_pair_provider
         self._scanner_interval_seconds = scanner_interval_seconds
         self._maximum_concurrent_scans = maximum_concurrent_scans
+        # Optional accessor returning the process-lifetime total retry
+        # count from the underlying market-data provider (e.g.
+        # BinanceFuturesMarketDataProvider.total_retry_count), used only
+        # to log a per-cycle retry delta -- never read by any
+        # scan/strategy logic.
+        self._retry_count_provider = retry_count_provider
         self._clock = clock
+        self._wall_clock = wall_clock
         self._logger = logger or logging.getLogger(__name__)
 
         self._shutdown_event = asyncio.Event()
@@ -76,6 +113,14 @@ class MultiPairScanScheduler:
 
         configured_pairs = list(self._configured_pair_provider())
         detection_time_utc = started_at_utc
+
+        self._logger.info(
+            "Cycle %s: scan started for %d pairs at %s.",
+            cycle_id,
+            len(configured_pairs),
+            started_at_utc.isoformat(),
+        )
+        retry_count_before = self._retry_count_provider() if self._retry_count_provider else None
 
         tasks = [
             asyncio.create_task(
@@ -107,10 +152,31 @@ class MultiPairScanScheduler:
         duration_ms = max(0.0, (self._clock() - start_clock) * 1000)
 
         valid_results = [r for r in pair_results if r.status == PairScanStatus.VALID]
+        valid_results = self._rank_valid_results(valid_results)
         rejected_results = [r for r in pair_results if r.status == PairScanStatus.REJECTED]
         duplicate_results = [r for r in pair_results if r.status == PairScanStatus.DUPLICATE]
         error_results = [r for r in pair_results if r.status == PairScanStatus.ERROR]
         skipped_results = [r for r in pair_results if r.status == PairScanStatus.SKIPPED]
+
+        rejection_breakdown = self._build_rejection_breakdown(rejected_results)
+        retry_count_delta = None
+        if self._retry_count_provider is not None and retry_count_before is not None:
+            retry_count_delta = self._retry_count_provider() - retry_count_before
+
+        self._logger.info(
+            "Cycle %s: scan completed at %s (%.0fms). %d pairs scanned, %d valid, "
+            "%d rejected, %d error, %d duplicate, retries=%s. Rejected breakdown: %s",
+            cycle_id,
+            completed_at_utc.isoformat(),
+            duration_ms,
+            len(configured_pairs),
+            len(valid_results),
+            len(rejected_results),
+            len(error_results),
+            len(duplicate_results),
+            retry_count_delta if retry_count_delta is not None else "n/a",
+            rejection_breakdown,
+        )
 
         return ScanCycleResult(
             cycle_id=cycle_id,
@@ -131,6 +197,45 @@ class MultiPairScanScheduler:
             duplicate_count=len(duplicate_results),
             error_count=len(error_results),
             skipped_count=len(skipped_results),
+            rejection_breakdown=rejection_breakdown,
+        )
+
+    @staticmethod
+    def _build_rejection_breakdown(rejected_results: list[PairScanResult]) -> dict[str, int]:
+        """
+        Count rejected pairs grouped by pipeline layer, so a scan cycle's
+        signal frequency can be diagnosed at a glance: is a low VALID
+        count coming from one of the six hard-mandatory strategy gates
+        (market regime, HTF bias, liquidity sweep, structure shift,
+        volume confirmation, entry zone), or from setups that clear all
+        gates but don't reach the publishable confidence threshold?
+
+        Grouped by `pipeline_result.failed_layer` when a hard-mandatory
+        gate rejected the pipeline outright; results rejected after
+        clearing every gate (e.g. below the publishable confidence
+        score) have no `failed_layer` and fall back to their generic
+        `reason` string instead of being dropped from the breakdown.
+        """
+        breakdown: dict[str, int] = {}
+        for result in rejected_results:
+            layer = result.pipeline_result.failed_layer if result.pipeline_result else None
+            key = layer or result.reason or "UNKNOWN"
+            breakdown[key] = breakdown.get(key, 0) + 1
+        return breakdown
+
+    @staticmethod
+    def _rank_valid_results(valid_results: list[PairScanResult]) -> list[PairScanResult]:
+        """
+        Rank every VALID result by its final confidence score, highest
+        first, so the cycle's output always carries an explicit final
+        ranking across all filtered coins -- never just the first match
+        or discovery order. Never recalculates the score; only reorders
+        the already-computed results.
+        """
+        return sorted(
+            valid_results,
+            key=lambda r: r.pipeline_result.confidence_result.normalized_score,
+            reverse=True,
         )
 
     @staticmethod
@@ -171,8 +276,6 @@ class MultiPairScanScheduler:
         self._running = True
         try:
             while not self._shutdown_event.is_set():
-                cycle_start_clock = self._clock()
-
                 active_state = await active_state_provider()
 
                 try:
@@ -194,8 +297,14 @@ class MultiPairScanScheduler:
                 if self._shutdown_event.is_set():
                     break
 
-                elapsed_seconds = self._clock() - cycle_start_clock
-                remaining_seconds = max(0.0, self._scanner_interval_seconds - elapsed_seconds)
+                # Sleep until the next real UTC interval boundary (e.g.
+                # the next 5-minute candle close) rather than a fixed
+                # offset from cycle-start clock time, so the scanner
+                # cadence stays aligned with candle closes indefinitely
+                # instead of drifting after restarts or slow cycles.
+                remaining_seconds = _seconds_until_next_interval_boundary(
+                    self._wall_clock(), self._scanner_interval_seconds
+                )
 
                 try:
                     await asyncio.wait_for(

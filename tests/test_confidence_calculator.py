@@ -6,7 +6,7 @@ from app.models.validation_result import ValidationResult
 from app.scoring.calculator import ConfidenceCalculator
 from app.scoring.input_adapter import ConfidenceInputAdapter
 from app.scoring.results import ConfidenceClassification
-from app.scoring.score_engine import ConfidenceScoringEngine, _MANDATORY_LAYERS
+from app.scoring.score_engine import ConfidenceScoringEngine, _SOFT_LAYERS
 
 
 def _passing_kwargs() -> dict:
@@ -19,7 +19,6 @@ def _passing_kwargs() -> dict:
         "entry_zone": ValidationResult.success(layer_name="ENTRY_ZONE"),
         "premium_discount": ValidationResult.success(layer_name="PREMIUM_DISCOUNT"),
         "retest_confirmation": ValidationResult.success(layer_name="RETEST_CONFIRMATION"),
-        "atr": ValidationResult.success(layer_name="ATR"),
         "session_filter": ValidationResult.success(layer_name="SESSION_FILTER"),
         "btc_alignment": ValidationResult.success(layer_name="BTC_ALIGNMENT"),
         "fake_breakout_filter": ValidationResult.success(layer_name="FAKE_BREAKOUT_FILTER"),
@@ -35,54 +34,55 @@ def _calculator() -> ConfidenceCalculator:
 class TestConfidenceCalculator:
     def test_complete_calculation_using_all_validator_results(self):
         result = _calculator().calculate(**_passing_kwargs())
-        assert result.raw_score == 120.0
+        assert result.raw_score == 115.0
 
     def test_premium_result(self):
         result = _calculator().calculate(**_passing_kwargs())
         assert result.classification == ConfidenceClassification.PREMIUM
         assert result.publishable is True
 
-    def test_strong_result(self):
-        # Since all 12 scoring layers are mandatory, any single failure
-        # forces IGNORE per spec, regardless of the numeric score. STRONG
-        # classification is therefore only reachable via the scoring
-        # engine directly, using a hypothetical non-mandatory layer setup
-        # -- verified here by classifying a raw score in the STRONG band
-        # through the classification helper the calculator relies on.
-        from app.scoring.classification import classify_confidence
-
-        assert classify_confidence(85.0) == ConfidenceClassification.STRONG
-
-    def test_medium_result_internal_only(self):
-        # See note in test_strong_result: MEDIUM is only reachable at the
-        # classification level when not all layers are mandatory-gated;
-        # verify the classification boundary itself here.
-        from app.scoring.classification import classify_confidence
-
-        assert classify_confidence(75.0) == ConfidenceClassification.MEDIUM
-
-    def test_ignore_result(self):
-        kwargs = _passing_kwargs()
-        for layer in list(_MANDATORY_LAYERS)[:8]:
-            kwargs_key = next(
-                k
-                for k, v in kwargs.items()
-                if v.layer_name == layer
-            )
-            kwargs[kwargs_key] = ValidationResult.failure(layer_name=layer, reason="fail")
-        result = _calculator().calculate(**kwargs)
-        assert result.classification == ConfidenceClassification.IGNORE
-        assert result.publishable is False
-
-    def test_mandatory_failure_forces_ignore(self):
+    def test_soft_layer_failure_does_not_force_ignore(self):
+        # Soft layers (e.g. FAKE_BREAKOUT_FILTER) only cost their own
+        # points; a single failure should not force IGNORE if the
+        # resulting normalized score still lands in a publishable band.
+        # raw = 110/115 = 95.65 -> still PREMIUM.
         kwargs = _passing_kwargs()
         kwargs["fake_breakout_filter"] = ValidationResult.failure(
             layer_name="FAKE_BREAKOUT_FILTER", reason="fail"
         )
-        # raw = 115/120 = 95.8 numerically PREMIUM range, but mandatory failed.
+        result = _calculator().calculate(**kwargs)
+        assert result.mandatory_layers_passed is True
+        assert result.classification == ConfidenceClassification.PREMIUM
+        assert result.raw_score == 110.0
+
+    def test_strong_result_reachable_via_soft_layer_failures(self):
+        # Fail 3 of 5 soft layers: raw = 100/115 = 86.96 -> STRONG.
+        kwargs = _passing_kwargs()
+        for layer in ("PREMIUM_DISCOUNT", "RETEST_CONFIRMATION", "SESSION_FILTER"):
+            kwargs_key = next(k for k, v in kwargs.items() if v.layer_name == layer)
+            kwargs[kwargs_key] = ValidationResult.failure(layer_name=layer, reason="fail")
+        result = _calculator().calculate(**kwargs)
+        assert result.classification == ConfidenceClassification.STRONG
+        assert result.publishable is True
+
+    def test_medium_result_internal_only(self):
+        # Fail all 5 soft layers: raw = 90/115 = 78.26 -> MEDIUM, not publishable.
+        kwargs = _passing_kwargs()
+        for layer in _SOFT_LAYERS:
+            kwargs_key = next(k for k, v in kwargs.items() if v.layer_name == layer)
+            kwargs[kwargs_key] = ValidationResult.failure(layer_name=layer, reason="fail")
+        result = _calculator().calculate(**kwargs)
+        assert result.classification == ConfidenceClassification.MEDIUM
+        assert result.publishable is False
+        assert result.mandatory_layers_passed is True
+
+    def test_hard_layer_failure_forces_ignore(self):
+        kwargs = _passing_kwargs()
+        kwargs["htf_bias"] = ValidationResult.failure(layer_name="HTF_BIAS", reason="fail")
         result = _calculator().calculate(**kwargs)
         assert result.classification == ConfidenceClassification.IGNORE
         assert result.mandatory_layers_passed is False
+        assert result.publishable is False
 
     def test_publishable_only_for_premium_and_strong(self):
         premium = _calculator().calculate(**_passing_kwargs())
@@ -90,9 +90,8 @@ class TestConfidenceCalculator:
 
         kwargs = _passing_kwargs()
         kwargs["htf_bias"] = ValidationResult.failure(layer_name="HTF_BIAS", reason="fail")
-        kwargs["entry_zone"] = ValidationResult.failure(layer_name="ENTRY_ZONE", reason="fail")
-        medium = _calculator().calculate(**kwargs)
-        assert medium.publishable is False
+        ignored = _calculator().calculate(**kwargs)
+        assert ignored.publishable is False
 
     def test_no_signal_generated(self):
         result = _calculator().calculate(**_passing_kwargs())

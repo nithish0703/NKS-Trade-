@@ -6,7 +6,7 @@ application settings and thresholds.
 from app.config import thresholds
 from app.config.settings import get_settings
 from app.data.candle_repository import CandleRepository
-from app.data.bybit_market_data_provider import BybitMarketDataProvider
+from app.data.binance_market_data_provider import BinanceFuturesMarketDataProvider
 from app.indicators.calculator import IndicatorCalculator
 from app.liquidity.calculator import LiquidityCalculator
 from app.liquidity.equal_high_low import EqualHighLowDetector
@@ -34,7 +34,6 @@ from app.risk.take_profit import SingleTakeProfitCalculator
 from app.scoring.calculator import ConfidenceCalculator
 from app.scoring.input_adapter import ConfidenceInputAdapter
 from app.scoring.score_engine import ConfidenceScoringEngine
-from app.validators.atr import ATRValidator
 from app.validators.btc_alignment import BTCAlignmentValidator
 from app.validators.candle_quality import CandleQualityValidator
 from app.validators.entry_zone import EntryZoneValidator
@@ -42,13 +41,11 @@ from app.validators.fake_breakout_filter import FakeBreakoutFilter
 from app.validators.htf_bias import HigherTimeframeBiasValidator
 from app.validators.liquidity_sweep import LiquiditySweepValidator
 from app.validators.market_regime import MarketRegimeValidator
-from app.validators.momentum_filter import MomentumFilter
 from app.validators.premium_discount import PremiumDiscountValidator
 from app.validators.retest_confirmation import RetestConfirmationValidator
 from app.validators.risk_management import RiskManagementValidator
 from app.validators.session_filter import SessionFilter
 from app.validators.structure_shift import StructureShiftValidator
-from app.validators.volatility_filter import VolatilityFilter
 from app.validators.volume_confirmation import VolumeConfirmationValidator
 from app.zones.breaker_block import BreakerBlockDetector
 from app.zones.calculator import ZoneCalculator
@@ -66,10 +63,11 @@ from app.scanner.strategy_engine import InstitutionalSMCStrategyEngine
 
 import asyncio
 
-from app.config.pairs import get_configured_pairs
+from app.config.pairs import get_configured_pairs, set_pair_source
 from app.scanner.active_state import EmptyActiveTradingStateProvider
 from app.scanner.candidate_buffer import ValidSignalCandidateBuffer
 from app.scanner.duplicate_guard import DuplicateSignalGuard
+from app.scanner.pair_discovery import DynamicPairDiscoveryService
 from app.scanner.pair_scanner import PairScanner
 from app.scanner.scan_scheduler import MultiPairScanScheduler
 from app.scanner.scanner_service import ScannerService
@@ -93,7 +91,7 @@ def build_strategy_engine() -> InstitutionalSMCStrategyEngine:
     """
     settings = get_settings()
 
-    market_data_provider = BybitMarketDataProvider(
+    market_data_provider = BinanceFuturesMarketDataProvider(
         base_url=settings.exchange_base_url,
         request_timeout_seconds=settings.request_timeout_seconds,
     )
@@ -221,19 +219,14 @@ def build_strategy_engine() -> InstitutionalSMCStrategyEngine:
             adx_rejection_maximum=thresholds.ADX_REJECTION_MAX,
             ema_flat_threshold=thresholds.EMA_FLAT_THRESHOLD,
             minimum_atr_expansion_ratio=thresholds.MARKET_REGIME_MINIMUM_ATR_EXPANSION_RATIO,
+            compression_lookback=thresholds.VOLATILITY_COMPRESSION_LOOKBACK,
+            minimum_candle_range_ratio=thresholds.VOLATILITY_MINIMUM_CANDLE_RANGE_RATIO,
         ),
         htf_bias_validator=HigherTimeframeBiasValidator(),
         liquidity_sweep_validator=LiquiditySweepValidator(),
         structure_shift_validator=StructureShiftValidator(),
         volume_confirmation_validator=VolumeConfirmationValidator(),
         entry_zone_validator=EntryZoneValidator(),
-        momentum_filter=MomentumFilter(),
-        volatility_filter=VolatilityFilter(
-            minimum_atr_value=thresholds.VOLATILITY_MINIMUM_ATR_VALUE,
-            minimum_atr_expansion_ratio=thresholds.VOLATILITY_MINIMUM_ATR_EXPANSION_RATIO,
-            compression_lookback=thresholds.VOLATILITY_COMPRESSION_LOOKBACK,
-            minimum_candle_range_ratio=thresholds.VOLATILITY_MINIMUM_CANDLE_RANGE_RATIO,
-        ),
         session_filter=SessionFilter(),
         btc_alignment_validator=BTCAlignmentValidator(),
         fake_breakout_filter=FakeBreakoutFilter(
@@ -247,9 +240,6 @@ def build_strategy_engine() -> InstitutionalSMCStrategyEngine:
             maximum_opposite_wick_ratio=thresholds.CANDLE_MAXIMUM_OPPOSITE_WICK_RATIO,
             bullish_close_location_minimum=thresholds.CANDLE_QUALITY_BULLISH_CLOSE_LOCATION_MINIMUM,
             bearish_close_location_maximum=thresholds.CANDLE_QUALITY_BEARISH_CLOSE_LOCATION_MAXIMUM,
-        ),
-        atr_validator=ATRValidator(
-            minimum_atr_expansion_ratio=thresholds.MARKET_REGIME_MINIMUM_ATR_EXPANSION_RATIO
         ),
         risk_management_calculator=risk_management_calculator,
         risk_management_validator=RiskManagementValidator(),
@@ -277,7 +267,6 @@ def build_preview_analyzer() -> PreviewAnalyzer:
         "ENTRY_ZONE": thresholds.SCORE_ENTRY_ZONE,
         "PREMIUM_DISCOUNT": thresholds.SCORE_PREMIUM_DISCOUNT,
         "RETEST_CONFIRMATION": thresholds.SCORE_RETEST_CONFIRMATION,
-        "ATR": thresholds.SCORE_ATR,
         "SESSION_FILTER": thresholds.SCORE_SESSION,
         "BTC_ALIGNMENT": thresholds.SCORE_BTC_ALIGNMENT,
         "FAKE_BREAKOUT_FILTER": thresholds.SCORE_FAKE_BREAKOUT,
@@ -338,6 +327,8 @@ def build_preview_analyzer() -> PreviewAnalyzer:
             adx_rejection_maximum=thresholds.ADX_REJECTION_MAX,
             ema_flat_threshold=thresholds.EMA_FLAT_THRESHOLD,
             minimum_atr_expansion_ratio=thresholds.MARKET_REGIME_MINIMUM_ATR_EXPANSION_RATIO,
+            compression_lookback=thresholds.VOLATILITY_COMPRESSION_LOOKBACK,
+            minimum_candle_range_ratio=thresholds.VOLATILITY_MINIMUM_CANDLE_RANGE_RATIO,
         ),
         htf_bias_validator=HigherTimeframeBiasValidator(),
         liquidity_sweep_validator=LiquiditySweepValidator(),
@@ -346,9 +337,6 @@ def build_preview_analyzer() -> PreviewAnalyzer:
         entry_zone_validator=EntryZoneValidator(),
         premium_discount_validator=PremiumDiscountValidator(),
         retest_confirmation_validator=RetestConfirmationValidator(),
-        atr_validator=ATRValidator(
-            minimum_atr_expansion_ratio=thresholds.MARKET_REGIME_MINIMUM_ATR_EXPANSION_RATIO
-        ),
         session_filter=SessionFilter(),
         btc_alignment_validator=BTCAlignmentValidator(),
         fake_breakout_filter=FakeBreakoutFilter(
@@ -360,7 +348,7 @@ def build_preview_analyzer() -> PreviewAnalyzer:
     )
 
 
-def build_scanner_service(*, on_event=None, on_cycle_result=None) -> ScannerService:
+def build_scanner_service(*, on_event=None, on_cycle_result=None, on_pair_result=None) -> ScannerService:
     """
     Construct a fully wired ScannerService using centralized Settings
     and thresholds.
@@ -373,6 +361,12 @@ def build_scanner_service(*, on_event=None, on_cycle_result=None) -> ScannerServ
     `on_event`, when provided, is passed straight through to
     ScannerService as its optional runtime-event observer (e.g. for a
     dashboard WebSocket broadcast). It never affects strategy behaviour.
+
+    `on_pair_result`, when provided, is passed through to PairScanner and
+    invoked the instant each individual pair's scan finishes -- not
+    batched at cycle-end -- so a dashboard observer can reflect each
+    coin's result in real time as it lands, independent of how long
+    other pairs in the same cycle take. Never affects strategy behaviour.
     """
     settings = get_settings()
 
@@ -388,12 +382,51 @@ def build_scanner_service(*, on_event=None, on_cycle_result=None) -> ScannerServ
         duplicate_guard=duplicate_guard,
         semaphore=semaphore,
         preview_analyzer=preview_analyzer,
+        on_pair_result=on_pair_result,
     )
+
+    pair_discovery_service = None
+    configured_pair_provider = get_configured_pairs
+    if settings.dynamic_pair_discovery_enabled:
+        discovery_market_data_provider = BinanceFuturesMarketDataProvider(
+            base_url=settings.exchange_base_url,
+            request_timeout_seconds=settings.request_timeout_seconds,
+        )
+
+        async def _on_pair_list_refreshed(updated: bool, current_pairs: list) -> None:
+            if on_event is None:
+                return
+            from datetime import datetime, timezone
+
+            from app.scanner.scanner_events import ScannerEvent, ScannerEventType
+
+            await on_event(
+                ScannerEvent(
+                    event=ScannerEventType.PAIR_LIST_REFRESHED,
+                    timestamp_utc=datetime.now(timezone.utc),
+                    data={"updated": updated, "pair_count": len(current_pairs)},
+                )
+            )
+
+        pair_discovery_service = DynamicPairDiscoveryService(
+            market_data_provider=discovery_market_data_provider,
+            minimum_open_interest_usdt=settings.pair_discovery_minimum_open_interest_usdt,
+            minimum_turnover_24h_usdt=settings.pair_discovery_minimum_turnover_24h_usdt,
+            refresh_interval_seconds=settings.pair_discovery_interval_seconds,
+            maximum_pairs=settings.pair_discovery_maximum_pairs,
+            on_refresh=_on_pair_list_refreshed,
+        )
+        set_pair_source(pair_discovery_service.get_current_pairs)
+        configured_pair_provider = pair_discovery_service.get_current_pairs
+    else:
+        set_pair_source(None)
+
     scheduler = MultiPairScanScheduler(
         pair_scanner=pair_scanner,
-        configured_pair_provider=get_configured_pairs,
+        configured_pair_provider=configured_pair_provider,
         scanner_interval_seconds=settings.scanner_interval_seconds,
         maximum_concurrent_scans=settings.max_concurrent_scans,
+        retry_count_provider=lambda: strategy_engine._market_data_provider.total_retry_count,
     )
     candidate_buffer = ValidSignalCandidateBuffer(
         maximum_size=settings.candidate_buffer_maximum_size
@@ -447,6 +480,7 @@ def build_scanner_service(*, on_event=None, on_cycle_result=None) -> ScannerServ
         signal_storage_service=signal_storage_service,
         storage_failure_is_fatal=settings.storage_failure_is_fatal,
         notification_service=notification_service,
+        pair_discovery_service=pair_discovery_service,
         on_event=on_event,
         on_cycle_result=on_cycle_result,
     )

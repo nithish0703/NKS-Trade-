@@ -1,6 +1,6 @@
 """
 Tests for the dashboard FastAPI routes, using dependency overrides so no
-real database, scanner, or Bybit network calls occur.
+real database, scanner, or Binance network calls occur.
 """
 
 from datetime import datetime, timezone
@@ -17,7 +17,7 @@ from app.config.settings import get_settings
 @pytest.fixture(autouse=True)
 def _disable_dashboard_scanner(monkeypatch):
     # The dashboard API's lifespan starts a real background scanner (with
-    # real Bybit network calls) whenever DASHBOARD_API_ENABLED is true.
+    # real Binance network calls) whenever DASHBOARD_API_ENABLED is true.
     # Unit tests must never make real network calls, so force it off
     # here, regardless of the developer's local .env.
     monkeypatch.setenv("DASHBOARD_API_ENABLED", "false")
