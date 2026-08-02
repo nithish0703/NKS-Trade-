@@ -47,9 +47,12 @@ from app.scanner.scanner_events import ScannerEvent, ScannerEventType
 from app.storage.analytics_repository import AnalyticsRepository
 from app.storage.signal_repository import (
     DASHBOARD_STATUS_ACTIVE,
+    DASHBOARD_STATUS_CLOSED_LOSS,
+    DASHBOARD_STATUS_CLOSED_WIN,
     DASHBOARD_STATUS_NEW,
     SignalNotFoundError,
     SignalRepository,
+    SignalWithStatus,
 )
 
 # Dashboard-only scan-progress weights. These mirror the exact layer
@@ -182,6 +185,28 @@ def build_pair_scan_updated_events(cycle_result: ScanCycleResult) -> list[Scanne
     return [build_pair_scan_updated_event(pair_result) for pair_result in cycle_result.pair_results]
 
 
+def build_trade_outcome_updated_event(closed_result: SignalWithStatus) -> ScannerEvent:
+    """
+    Build a single TRADE_OUTCOME_UPDATED ScannerEvent for a signal
+    TradeOutcomeMonitor just closed out (WIN or LOSS), for dashboard
+    WebSocket visibility only. Carries only fields already exposed by
+    the REST active-signals/summary responses; never candles, secrets,
+    tokens, or chat IDs. Never affects strategy, storage, or
+    notification behaviour -- a pure, read-only projection.
+    """
+    signal = closed_result.signal
+    return ScannerEvent(
+        event=ScannerEventType.TRADE_OUTCOME_UPDATED,
+        timestamp_utc=datetime.now(timezone.utc),
+        data={
+            "trade_id": signal.trade_id,
+            "coin": signal.coin,
+            "direction": signal.direction.value,
+            "outcome": closed_result.dashboard_status,
+        },
+    )
+
+
 def _distance_to_take_profit_percentage(
     *, direction: Direction, current_price: Optional[float], take_profit: float
 ) -> Optional[float]:
@@ -235,15 +260,26 @@ class DashboardService:
         cycle_result = await self._runtime_store.get_latest_cycle_result()
         last_scan_time_utc = cycle_result.completed_at_utc if cycle_result is not None else None
 
-        # No trade-outcome tracking exists yet: wins/losses/win_rate and
-        # open_signals are honestly reported as zero/None rather than
-        # inferred from current price or fabricated.
+        # Wins/losses/open_signals are real counts from TradeOutcomeMonitor,
+        # which closes an ACTIVE (dashboard "Trade" button) signal out as
+        # CLOSED_WIN/CLOSED_LOSS once its take_profit/stop_loss is
+        # touched by the live price. A signal that was never activated,
+        # or is activated but not yet closed, contributes to neither
+        # count. win_rate is None (never 0) until at least one signal
+        # has closed, so an empty "0%" is never shown as if it were a
+        # measured result.
+        wins = await self._signal_repository.count_by_dashboard_status(DASHBOARD_STATUS_CLOSED_WIN)
+        losses = await self._signal_repository.count_by_dashboard_status(DASHBOARD_STATUS_CLOSED_LOSS)
+        open_signals = await self._signal_repository.count_by_dashboard_status(DASHBOARD_STATUS_ACTIVE)
+        closed_total = wins + losses
+        win_rate = (wins / closed_total * 100) if closed_total > 0 else None
+
         return DashboardSummary(
             total_signals=total_signals,
-            wins=0,
-            losses=0,
-            open_signals=0,
-            win_rate=None,
+            wins=wins,
+            losses=losses,
+            open_signals=open_signals,
+            win_rate=win_rate,
             average_rr=average_rr,
             premium_count=premium_count,
             strong_count=strong_count,

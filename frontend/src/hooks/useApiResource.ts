@@ -18,29 +18,16 @@ export function useApiResource<T>(fetcher: () => Promise<T>, intervalMs?: number
   const [error, setError] = useState<string | null>(null);
   const fetcherRef = useRef(fetcher);
   fetcherRef.current = fetcher;
-  // Tracks whether we've ever received data, via ref (not state) so
-  // `load` itself doesn't need to depend on it and can stay a stable
-  // callback for the effect below.
-  const hasLoadedOnceRef = useRef(false);
 
   const load = useCallback(() => {
     let cancelled = false;
-    // Only show the loading skeleton for the very first fetch. Interval
-    // polls and WebSocket-triggered refreshes happen silently in the
-    // background so already-rendered data doesn't flash/blink every
-    // time a scan cycle completes -- the table swaps to the new data
-    // only once it arrives, instead of disappearing behind a skeleton
-    // first.
-    if (!hasLoadedOnceRef.current) {
-      setLoading(true);
-    }
+    setLoading(true);
     fetcherRef
       .current()
       .then((result) => {
         if (!cancelled) {
           setData(result);
           setError(null);
-          hasLoadedOnceRef.current = true;
         }
       })
       .catch((err: unknown) => {

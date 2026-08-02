@@ -15,6 +15,13 @@ from app.storage.models import SignalRecord
 
 DASHBOARD_STATUS_NEW = "NEW"
 DASHBOARD_STATUS_ACTIVE = "ACTIVE"
+# Set only by TradeOutcomeMonitor, once an ACTIVE signal's take_profit
+# or stop_loss price is touched. A closed signal is excluded from both
+# get_active_signals (dashboard_status != ACTIVE) and get_premium/
+# strong_signals (dashboard_status != NEW), so it naturally drops out
+# of every "still open" dashboard list once closed.
+DASHBOARD_STATUS_CLOSED_WIN = "CLOSED_WIN"
+DASHBOARD_STATUS_CLOSED_LOSS = "CLOSED_LOSS"
 
 
 def _as_utc(value: datetime) -> datetime:
@@ -224,6 +231,64 @@ class SignalRepository:
                 raise DatabaseOperationError(f"Failed to mark signal active: {exc}") from exc
 
             return SignalWithStatus(signal=self._to_signal(record), dashboard_status=record.dashboard_status)
+
+    async def close_signal(
+        self, trade_id: str, *, outcome: str, exit_price: float, closed_at_utc: datetime
+    ) -> SignalWithStatus:
+        """
+        Record a trade outcome for a signal previously marked ACTIVE:
+        sets dashboard_status to CLOSED_WIN or CLOSED_LOSS and stores
+        exit_price/closed_at_utc. Called only by TradeOutcomeMonitor.
+
+        Purely a dashboard/analytics state transition: never modifies
+        any of the signal's original trading fields (entry_price,
+        stop_loss, take_profit, etc.), never touches strategy, scoring,
+        risk, or notification logic, and never calls an exchange.
+
+        Raises:
+            SignalNotFoundError: If no signal with `trade_id` exists.
+            ValueError: If `outcome` is not CLOSED_WIN or CLOSED_LOSS.
+        """
+        if outcome not in (DASHBOARD_STATUS_CLOSED_WIN, DASHBOARD_STATUS_CLOSED_LOSS):
+            raise ValueError(
+                f"outcome must be '{DASHBOARD_STATUS_CLOSED_WIN}' or "
+                f"'{DASHBOARD_STATUS_CLOSED_LOSS}', got '{outcome}'."
+            )
+
+        async with self._database_manager.session_scope() as session:
+            try:
+                result = await session.execute(
+                    select(SignalRecord).where(SignalRecord.trade_id == trade_id)
+                )
+            except SQLAlchemyError as exc:
+                raise DatabaseOperationError(f"Failed to look up signal for closing: {exc}") from exc
+
+            record = result.scalars().first()
+            if record is None:
+                raise SignalNotFoundError(f"No signal found with trade_id='{trade_id}'.")
+
+            record.dashboard_status = outcome
+            record.outcome = outcome
+            record.exit_price = exit_price
+            record.closed_at_utc = closed_at_utc
+            try:
+                await session.commit()
+            except SQLAlchemyError as exc:
+                await session.rollback()
+                raise DatabaseOperationError(f"Failed to close signal: {exc}") from exc
+
+            return SignalWithStatus(signal=self._to_signal(record), dashboard_status=record.dashboard_status)
+
+    async def count_by_dashboard_status(self, dashboard_status: str) -> int:
+        """Count signals currently in a given dashboard_status (e.g. ACTIVE, CLOSED_WIN)."""
+        async with self._database_manager.session_scope() as session:
+            try:
+                result = await session.execute(
+                    select(SignalRecord).where(SignalRecord.dashboard_status == dashboard_status)
+                )
+            except SQLAlchemyError as exc:
+                raise DatabaseOperationError(f"Failed to count signals by dashboard_status: {exc}") from exc
+            return len(result.scalars().all())
 
     async def count(self) -> int:
         async with self._database_manager.session_scope() as session:

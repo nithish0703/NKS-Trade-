@@ -117,8 +117,11 @@ def _build_service(
     telegram_enabled=False,
     websocket_enabled=False,
 ):
+    repository = signal_repository or MagicMock()
+    if not isinstance(repository.count_by_dashboard_status, AsyncMock):
+        repository.count_by_dashboard_status = AsyncMock(return_value=0)
     return DashboardService(
-        signal_repository=signal_repository or MagicMock(),
+        signal_repository=repository,
         analytics_repository=analytics_repository,
         runtime_store=runtime_store or DashboardRuntimeStore(),
         market_data_provider=market_data_provider or MagicMock(),
@@ -162,10 +165,11 @@ class TestSummary:
         assert summary.strong_count == 0
         assert summary.average_rr is None
 
-    async def test_wins_losses_unavailable_state(self):
+    async def test_wins_losses_zero_when_no_signal_has_closed_yet(self):
         repository = MagicMock()
         repository.count = AsyncMock(return_value=0)
         repository.list_recent = AsyncMock(return_value=[])
+        repository.count_by_dashboard_status = AsyncMock(return_value=0)
         service = _build_service(signal_repository=repository)
 
         summary = await service.get_summary()
@@ -174,6 +178,39 @@ class TestSummary:
         assert summary.losses == 0
         assert summary.win_rate is None
         assert summary.open_signals == 0
+
+    async def test_wins_losses_reflect_real_closed_signal_counts(self):
+        from app.storage.signal_repository import (
+            DASHBOARD_STATUS_ACTIVE,
+            DASHBOARD_STATUS_CLOSED_LOSS,
+            DASHBOARD_STATUS_CLOSED_WIN,
+        )
+
+        repository = MagicMock()
+        repository.count = AsyncMock(return_value=10)
+        repository.list_recent = AsyncMock(return_value=[])
+
+        counts = {
+            DASHBOARD_STATUS_CLOSED_WIN: 3,
+            DASHBOARD_STATUS_CLOSED_LOSS: 1,
+            DASHBOARD_STATUS_ACTIVE: 2,
+        }
+
+        async def _count_by_dashboard_status(dashboard_status):
+            return counts[dashboard_status]
+
+        repository.count_by_dashboard_status = AsyncMock(side_effect=_count_by_dashboard_status)
+        service = _build_service(signal_repository=repository)
+
+        summary = await service.get_summary()
+
+        assert summary.wins == 3
+        assert summary.losses == 1
+        assert summary.open_signals == 2
+        # win_rate is wins / (wins + losses) * 100 -- open (still-ACTIVE)
+        # signals never enter this ratio since their outcome isn't
+        # known yet.
+        assert summary.win_rate == pytest.approx(75.0)
 
     async def test_average_rr_computed_across_premium_and_strong(self):
         repository = MagicMock()

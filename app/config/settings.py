@@ -14,6 +14,7 @@ from app.config.thresholds import (
     PAIR_DISCOVERY_MINIMUM_OPEN_INTEREST_USDT,
     PAIR_DISCOVERY_MINIMUM_TURNOVER_24H_USDT,
     SCANNER_INTERVAL_SECONDS,
+    TRADE_OUTCOME_MONITOR_INTERVAL_SECONDS,
 )
 
 # Default publishable-signal confidence cutoff (STRONG classification's
@@ -155,6 +156,20 @@ class Settings(BaseSettings):
     )
     dashboard_websocket_enabled: bool = Field(
         default=False, alias="DASHBOARD_WEBSOCKET_ENABLED"
+    )
+
+    # Trade outcome monitor: periodically re-checks every ACTIVE
+    # (dashboard "Trade" button) signal's current price against its
+    # take_profit/stop_loss and records a WIN/LOSS outcome once one is
+    # touched. Runs only alongside the dashboard API (see
+    # dashboard_api_enabled above); has no effect on strategy, scoring,
+    # risk, storage, or notification behaviour.
+    trade_outcome_monitor_enabled: bool = Field(
+        default=True, alias="TRADE_OUTCOME_MONITOR_ENABLED"
+    )
+    trade_outcome_monitor_interval_seconds: int = Field(
+        default=TRADE_OUTCOME_MONITOR_INTERVAL_SECONDS,
+        alias="TRADE_OUTCOME_MONITOR_INTERVAL_SECONDS",
     )
 
     @property

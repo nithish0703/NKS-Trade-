@@ -26,6 +26,11 @@ ATR_STOP_LOSS_MULTIPLIER: Final[float] = 1.5
 # Scanner
 SCANNER_INTERVAL_SECONDS: Final[int] = 300
 
+# Trade outcome monitor: how often ACTIVE (dashboard "Trade" button)
+# signals are re-checked against the latest exchange ticker price to
+# see if take_profit or stop_loss has been touched.
+TRADE_OUTCOME_MONITOR_INTERVAL_SECONDS: Final[int] = 60
+
 # Dynamic Liquidity + Open Interest coin-discovery configuration.
 # The refresh interval defaults to 15 minutes. Binance Futures' public
 # 24hr ticker endpoint returns turnover for every USDT-M perpetual in a
