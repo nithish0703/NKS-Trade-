@@ -147,6 +147,7 @@ class DashboardHealth(BaseModel):
     telegram_enabled: bool
     websocket_enabled: bool
     server_time_utc: datetime
+    started_at_utc: datetime
 
 
 class SignalDetails(BaseModel):
