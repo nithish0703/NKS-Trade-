@@ -118,13 +118,26 @@ def _build_service(
     websocket_enabled=False,
 ):
     repository = signal_repository or MagicMock()
-    if not isinstance(repository.count_by_dashboard_status, AsyncMock):
+    try:
+        repository_already_stubbed = isinstance(repository.count_by_dashboard_status, AsyncMock)
+    except AttributeError:
+        repository_already_stubbed = False
+    if not repository_already_stubbed:
         repository.count_by_dashboard_status = AsyncMock(return_value=0)
+
+    provider = market_data_provider or MagicMock()
+    try:
+        provider_already_stubbed = isinstance(provider.fetch_all_ticker_prices, AsyncMock)
+    except AttributeError:
+        provider_already_stubbed = False
+    if not provider_already_stubbed:
+        provider.fetch_all_ticker_prices = AsyncMock(return_value={})
+
     return DashboardService(
         signal_repository=repository,
         analytics_repository=analytics_repository,
         runtime_store=runtime_store or DashboardRuntimeStore(),
-        market_data_provider=market_data_provider or MagicMock(),
+        market_data_provider=provider,
         telegram_enabled=telegram_enabled,
         websocket_enabled=websocket_enabled,
     )

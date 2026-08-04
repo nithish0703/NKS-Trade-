@@ -836,6 +836,54 @@ class BinanceFuturesMarketDataProvider(MarketDataProvider):
             )
         return snapshots
 
+    async def fetch_all_ticker_prices(self) -> dict[str, float]:
+        """
+        Fetch the latest traded price for every symbol from Binance's
+        public bulk price-ticker endpoint (calling it with no `symbol`
+        query parameter returns every instrument in one response), for
+        cheap dashboard-only "live price" display.
+
+        Never raises: on any request, response, or validation failure
+        this returns an empty dict. Individually malformed rows, or
+        rows for a non-USDT-perpetual instrument, are skipped rather
+        than failing the whole batch.
+        """
+        try:
+            response = await self._client.get(TICKER_PRICE_ENDPOINT)
+        except httpx.HTTPError:
+            return {}
+
+        if response.status_code != 200:
+            return {}
+
+        try:
+            payload = response.json()
+        except ValueError:
+            return {}
+
+        if not isinstance(payload, list):
+            return {}
+
+        prices: dict[str, float] = {}
+        for row in payload:
+            if not isinstance(row, dict):
+                continue
+            binance_symbol = row.get("symbol")
+            if not isinstance(binance_symbol, str):
+                continue
+            symbol = _from_binance_symbol(binance_symbol)
+            if symbol is None:
+                continue
+            try:
+                validated_symbol = validate_pair_symbol_format(symbol)
+            except ValueError:
+                continue
+            price = _to_optional_float(row.get("price"))
+            if price is None:
+                continue
+            prices[validated_symbol] = price
+        return prices
+
     async def _fetch_open_interest_usdt_for_symbols(
         self, candidates: list[tuple[str, float, Optional[float]]]
     ) -> dict[str, float]:
