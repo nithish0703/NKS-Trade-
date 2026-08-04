@@ -49,6 +49,62 @@ export function formatIstClock(date: Date): string {
   return `${time} IST`;
 }
 
+export function formatRelativeTime(value: string | null | undefined, now: Date): string {
+  if (!value) {
+    return "never";
+  }
+  const then = new Date(value);
+  if (Number.isNaN(then.getTime())) {
+    return "never";
+  }
+
+  const diffSeconds = Math.max(0, Math.round((now.getTime() - then.getTime()) / 1000));
+
+  if (diffSeconds < 5) {
+    return "just now";
+  }
+  if (diffSeconds < 60) {
+    return `${diffSeconds}s ago`;
+  }
+  const diffMinutes = Math.floor(diffSeconds / 60);
+  if (diffMinutes < 60) {
+    return `${diffMinutes}m ago`;
+  }
+  const diffHours = Math.floor(diffMinutes / 60);
+  if (diffHours < 24) {
+    return `${diffHours}h ago`;
+  }
+  const diffDays = Math.floor(diffHours / 24);
+  return `${diffDays}d ago`;
+}
+
+export function formatUptime(startedAtUtc: string | null | undefined, now: Date): string {
+  if (!startedAtUtc) {
+    return "—";
+  }
+  const startedAt = new Date(startedAtUtc);
+  if (Number.isNaN(startedAt.getTime())) {
+    return "—";
+  }
+
+  const totalSeconds = Math.max(0, Math.round((now.getTime() - startedAt.getTime()) / 1000));
+  const days = Math.floor(totalSeconds / 86400);
+  const hours = Math.floor((totalSeconds % 86400) / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  if (days > 0) {
+    return `${days}d ${hours}h`;
+  }
+  if (hours > 0) {
+    return `${hours}h ${minutes}m`;
+  }
+  if (minutes > 0) {
+    return `${minutes}m ${seconds}s`;
+  }
+  return `${seconds}s`;
+}
+
 export function formatIstTime(value: string | null | undefined): string {
   if (!value) {
     return "—";

@@ -31,6 +31,15 @@ class DashboardRuntimeStore:
         self._max_recent_events = max_recent_events
         self._scanner_running = False
         self._last_updated_utc: Optional[datetime] = None
+        # Captured once, at construction, which happens exactly once per
+        # process lifetime (in app.api.main's lifespan) -- this is the
+        # API process's actual start time, used for the dashboard's
+        # "server started at" / uptime display.
+        self._started_at_utc = datetime.now(timezone.utc)
+
+    @property
+    def started_at_utc(self) -> datetime:
+        return self._started_at_utc
 
     async def record_cycle_result(self, cycle_result: ScanCycleResult) -> None:
         async with self._lock:

@@ -292,6 +292,12 @@ class DashboardService:
     async def get_scanning_coins(self) -> list[ScanningCoin]:
         pair_results = await self._runtime_store.get_latest_pair_results()
         configured_pairs = get_configured_pairs()
+        # Single bulk call for every symbol's live price, rather than one
+        # request per coin -- dashboard-display only, never used by the
+        # strategy pipeline. Falls back to price=None per-coin (rendered
+        # as "--") if the exchange call fails; never blocks the rest of
+        # the scanning-coins response.
+        price_by_symbol = await self._market_data_provider.fetch_all_ticker_prices()
 
         items: list[ScanningCoin] = []
         for symbol in configured_pairs:
@@ -300,6 +306,7 @@ class DashboardService:
                 items.append(
                     ScanningCoin(
                         coin=symbol,
+                        price=price_by_symbol.get(symbol),
                         direction=None,
                         score=None,
                         status="SCANNING",
@@ -321,11 +328,11 @@ class DashboardService:
                     )
                 )
                 continue
-            items.append(self._to_scanning_coin(pair_result))
+            items.append(self._to_scanning_coin(pair_result, price=price_by_symbol.get(symbol)))
         return items
 
     @staticmethod
-    def _to_scanning_coin(pair_result: PairScanResult) -> ScanningCoin:
+    def _to_scanning_coin(pair_result: PairScanResult, *, price: Optional[float] = None) -> ScanningCoin:
         pipeline_result = pair_result.pipeline_result
         direction = pipeline_result.expected_direction if pipeline_result is not None else None
 
@@ -364,6 +371,7 @@ class DashboardService:
 
         return ScanningCoin(
             coin=pair_result.symbol,
+            price=price,
             direction=direction,
             score=score,
             status=status,
@@ -574,6 +582,7 @@ class DashboardService:
             telegram_enabled=self._telegram_enabled,
             websocket_enabled=self._websocket_enabled,
             server_time_utc=datetime.now(timezone.utc),
+            started_at_utc=self._runtime_store.started_at_utc,
         )
 
     async def get_signal_details(self, trade_id: str) -> Optional[SignalDetails]:

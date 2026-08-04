@@ -25,6 +25,10 @@ export function DashboardPage() {
   const activeSignals = useApiResource(dashboardApi.getActiveSignals, REST_RECONCILE_INTERVAL_MS);
   const premiumSignals = useApiResource(dashboardApi.getPremiumSignals, REST_RECONCILE_INTERVAL_MS);
   const strongSignals = useApiResource(dashboardApi.getStrongSignals, REST_RECONCILE_INTERVAL_MS);
+  // started_at_utc never changes while the process is alive, so this
+  // only needs to be fetched once per page load, not on the same 15s
+  // poll as the rest of the dashboard's live data.
+  const health = useApiResource(dashboardApi.getHealth, undefined);
 
   const handleSocketEvent = useCallback(() => {
     // Any scanner event can affect multiple cards; refresh the affected
@@ -91,7 +95,11 @@ export function DashboardPage() {
 
   return (
     <div className="min-h-screen bg-gray-50 pb-10">
-      <DashboardHeader isConnected={isConnected} />
+      <DashboardHeader
+        isConnected={isConnected}
+        lastScanTimeUtc={summary.data?.last_scan_time_utc}
+        serverStartedAtUtc={health.data?.started_at_utc}
+      />
 
       <main className="mx-auto max-w-[1400px] space-y-6 px-4 sm:px-6">
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">

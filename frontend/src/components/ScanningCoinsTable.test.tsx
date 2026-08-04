@@ -1,11 +1,12 @@
-import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { act, fireEvent, render, screen } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
 import { ScanningCoinsTable, scanningCoinsSummary } from "./ScanningCoinsTable";
 import type { ScanningCoin } from "../types/dashboard";
 
 function coin(overrides: Partial<ScanningCoin> = {}): ScanningCoin {
   return {
     coin: "BTC-USDT",
+    price: 65432.1,
     direction: "BUY",
     score: 96,
     status: "READY",
@@ -61,9 +62,10 @@ describe("ScanningCoinsTable", () => {
     expect(screen.getByText("Status")).toBeInTheDocument();
   });
 
-  it("renders the Coin, Direction, Score (%), and Status headings only", () => {
+  it("renders the Coin, Live Price, Direction, Score (%), and Status headings only", () => {
     render(<ScanningCoinsTable coins={[coin()]} />);
     expect(screen.getByText("Coin")).toBeInTheDocument();
+    expect(screen.getByText("Live Price")).toBeInTheDocument();
     expect(screen.getByText("Direction")).toBeInTheDocument();
     expect(screen.getByText("Score (%)")).toBeInTheDocument();
     expect(screen.getByText("Status")).toBeInTheDocument();
@@ -247,41 +249,134 @@ describe("ScanningCoinsTable", () => {
     expect(screen.queryByText("0%")).not.toBeInTheDocument();
   });
 
-  it("orders coins by score descending, highest first", () => {
+  it("orders coins by live score, highest first", () => {
     render(
       <ScanningCoinsTable
         coins={[
-          coin({ coin: "LOW-USDT", preview_progress_percentage: 10 }),
-          coin({ coin: "HIGH-USDT", preview_progress_percentage: 90 }),
-          coin({ coin: "MID-USDT", preview_progress_percentage: 50 }),
+          coin({ coin: "SOL-USDT", preview_progress_percentage: 10 }),
+          coin({ coin: "BTC-USDT", preview_progress_percentage: 90 }),
+          coin({ coin: "ETH-USDT", preview_progress_percentage: 50 }),
         ]}
       />,
     );
     const rows = screen.getAllByRole("row").slice(1); // skip header row
     const coinNames = rows.map((row) => row.textContent);
-    expect(coinNames[0]).toContain("HIGH-USDT");
-    expect(coinNames[1]).toContain("MID-USDT");
-    expect(coinNames[2]).toContain("LOW-USDT");
+    expect(coinNames[0]).toContain("BTC-USDT");
+    expect(coinNames[1]).toContain("ETH-USDT");
+    expect(coinNames[2]).toContain("SOL-USDT");
   });
 
-  it("places coins with a null score last", () => {
+  it("breaks tied scores alphabetically for a deterministic order", () => {
     render(
       <ScanningCoinsTable
         coins={[
-          coin({ coin: "SCORED-USDT", preview_progress_percentage: 10 }),
-          coin({
-            coin: "SCANNING-USDT",
-            preview_progress_percentage: null,
-            preview_progress_raw_score: null,
-            preview_progress_max_score: null,
-          }),
+          coin({ coin: "SOL-USDT", preview_progress_percentage: 50 }),
+          coin({ coin: "BTC-USDT", preview_progress_percentage: 50 }),
         ]}
       />,
     );
     const rows = screen.getAllByRole("row").slice(1);
     const coinNames = rows.map((row) => row.textContent);
-    expect(coinNames[0]).toContain("SCORED-USDT");
-    expect(coinNames[1]).toContain("SCANNING-USDT");
+    expect(coinNames[0]).toContain("BTC-USDT");
+    expect(coinNames[1]).toContain("SOL-USDT");
+  });
+
+  it("sinks coins with no score yet to the bottom instead of the top", () => {
+    render(
+      <ScanningCoinsTable
+        coins={[
+          coin({ coin: "NEW-USDT", status: "SCANNING", preview_progress_percentage: null }),
+          coin({ coin: "BTC-USDT", preview_progress_percentage: 5 }),
+        ]}
+      />,
+    );
+    const rows = screen.getAllByRole("row").slice(1);
+    const coinNames = rows.map((row) => row.textContent);
+    expect(coinNames[0]).toContain("BTC-USDT");
+    expect(coinNames[1]).toContain("NEW-USDT");
+  });
+
+  it("does not reshuffle row order between renders that happen inside the same stabilization window", () => {
+    // Regression test for a screen-blinking bug: resorting on every
+    // render caused every row to reshuffle position on each
+    // WebSocket-driven score update (which can fire many times per
+    // scan cycle), making the whole table appear to flicker. The
+    // ranking is only recomputed on a timer (see
+    // SORT_STABILIZATION_INTERVAL_MS in the component), so scores can
+    // update in place many times without moving any row.
+    const { rerender } = render(
+      <ScanningCoinsTable
+        coins={[
+          coin({ coin: "AAA-USDT", preview_progress_percentage: 10 }),
+          coin({ coin: "BBB-USDT", preview_progress_percentage: 20 }),
+        ]}
+      />,
+    );
+    let rows = screen.getAllByRole("row").slice(1);
+    expect(rows.map((row) => row.textContent)[0]).toContain("BBB-USDT");
+
+    // AAA-USDT's score jumps far above BBB-USDT's, but no time has
+    // passed -- the row order must not change mid-window.
+    rerender(
+      <ScanningCoinsTable
+        coins={[
+          coin({ coin: "AAA-USDT", preview_progress_percentage: 95 }),
+          coin({ coin: "BBB-USDT", preview_progress_percentage: 20 }),
+        ]}
+      />,
+    );
+    rows = screen.getAllByRole("row").slice(1);
+    expect(rows.map((row) => row.textContent)[0]).toContain("BBB-USDT");
+  });
+
+  it("re-ranks rows once the stabilization interval elapses", () => {
+    vi.useFakeTimers();
+    try {
+      const { rerender } = render(
+        <ScanningCoinsTable
+          coins={[
+            coin({ coin: "AAA-USDT", preview_progress_percentage: 10 }),
+            coin({ coin: "BBB-USDT", preview_progress_percentage: 20 }),
+          ]}
+        />,
+      );
+      let rows = screen.getAllByRole("row").slice(1);
+      expect(rows.map((row) => row.textContent)[0]).toContain("BBB-USDT");
+
+      rerender(
+        <ScanningCoinsTable
+          coins={[
+            coin({ coin: "AAA-USDT", preview_progress_percentage: 95 }),
+            coin({ coin: "BBB-USDT", preview_progress_percentage: 20 }),
+          ]}
+        />,
+      );
+      act(() => {
+        vi.advanceTimersByTime(5000);
+      });
+      rows = screen.getAllByRole("row").slice(1);
+      expect(rows.map((row) => row.textContent)[0]).toContain("AAA-USDT");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("appends a newly discovered coin at the end instead of forcing an immediate resort", () => {
+    const { rerender } = render(
+      <ScanningCoinsTable coins={[coin({ coin: "BTC-USDT", preview_progress_percentage: 50 })]} />,
+    );
+    rerender(
+      <ScanningCoinsTable
+        coins={[
+          coin({ coin: "BTC-USDT", preview_progress_percentage: 50 }),
+          coin({ coin: "ETH-USDT", preview_progress_percentage: 99 }),
+        ]}
+      />,
+    );
+    const rows = screen.getAllByRole("row").slice(1);
+    const coinNames = rows.map((row) => row.textContent);
+    expect(coinNames[0]).toContain("BTC-USDT");
+    expect(coinNames[1]).toContain("ETH-USDT");
   });
 
   it("shows the dashboard-preview-only tooltip notice on the score cell", () => {
@@ -290,6 +385,31 @@ describe("ScanningCoinsTable", () => {
     expect(scoreCell?.getAttribute("title")).toContain(
       "Dashboard preview only. This is not final trade confidence.",
     );
+  });
+
+  describe("live price column", () => {
+    it("renders the formatted live price for a coin", () => {
+      render(<ScanningCoinsTable coins={[coin({ price: 65432.1 })]} />);
+      expect(screen.getByText("65,432.1")).toBeInTheDocument();
+    });
+
+    it("shows a dash when the live price is unavailable", () => {
+      render(<ScanningCoinsTable coins={[coin({ price: null })]} />);
+      expect(screen.getByText("—")).toBeInTheDocument();
+    });
+
+    it("renders a different price per row, independent of scan status", () => {
+      render(
+        <ScanningCoinsTable
+          coins={[
+            coin({ coin: "BTC-USDT", price: 65000, status: "READY" }),
+            coin({ coin: "ETH-USDT", price: 3200, status: "SCANNING" }),
+          ]}
+        />,
+      );
+      expect(screen.getByText("65,000")).toBeInTheDocument();
+      expect(screen.getByText("3,200")).toBeInTheDocument();
+    });
   });
 
   describe("search", () => {

@@ -12,6 +12,7 @@ vi.mock("../services/dashboard.api", () => ({
     getActiveSignals: vi.fn(),
     getPremiumSignals: vi.fn(),
     getStrongSignals: vi.fn(),
+    getHealth: vi.fn(),
     activateSignal: vi.fn(),
   },
 }));
@@ -62,6 +63,16 @@ function mockAllEndpoints(overrides: Partial<Record<string, unknown>> = {}) {
   vi.mocked(dashboardApi.getActiveSignals).mockResolvedValue((overrides.activeSignals as never) ?? []);
   vi.mocked(dashboardApi.getPremiumSignals).mockResolvedValue((overrides.premiumSignals as never) ?? []);
   vi.mocked(dashboardApi.getStrongSignals).mockResolvedValue((overrides.strongSignals as never) ?? []);
+  vi.mocked(dashboardApi.getHealth).mockResolvedValue(
+    (overrides.health as never) ?? {
+      scanner_running: false,
+      database_reachable: true,
+      telegram_enabled: false,
+      websocket_enabled: false,
+      server_time_utc: "2026-01-01T10:00:00Z",
+      started_at_utc: "2026-01-01T09:00:00Z",
+    },
+  );
   vi.mocked(dashboardApi.activateSignal).mockResolvedValue(
     (overrides.activateSignal as never) ?? {
       trade_id: "SMC-1",
@@ -312,6 +323,7 @@ describe("DashboardPage", () => {
     vi.mocked(dashboardApi.getScanningCoins).mockResolvedValue([
       {
         coin: "BTC-USDT",
+        price: 65000,
         direction: null,
         score: null,
         status: "REJECTED",
