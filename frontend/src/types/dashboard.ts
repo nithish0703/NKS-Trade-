@@ -123,6 +123,7 @@ export interface DashboardHealth {
   telegram_enabled: boolean;
   websocket_enabled: boolean;
   server_time_utc: string;
+  started_at_utc: string;
 }
 
 export interface SignalDetails {

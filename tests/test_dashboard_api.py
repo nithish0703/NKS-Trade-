@@ -76,6 +76,7 @@ def app_with_mocks():
             telegram_enabled=False,
             websocket_enabled=False,
             server_time_utc=UTC_NOW,
+            started_at_utc=UTC_NOW,
         )
     )
     dashboard_service.get_signal_details = AsyncMock(return_value=None)

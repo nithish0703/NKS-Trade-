@@ -920,6 +920,38 @@ class TestSinglePairScanUpdatedEvent:
         assert single_event.data == batch_event.data
 
 
+class TestRuntimeStoreServerStartedAt:
+    async def test_captures_a_utc_timestamp_at_construction(self):
+        before = datetime.now(timezone.utc)
+        runtime_store = DashboardRuntimeStore()
+        after = datetime.now(timezone.utc)
+        assert before <= runtime_store.started_at_utc <= after
+
+    async def test_is_timezone_aware_utc(self):
+        runtime_store = DashboardRuntimeStore()
+        assert runtime_store.started_at_utc.tzinfo is not None
+        assert runtime_store.started_at_utc.utcoffset() == timedelta(0)
+
+    async def test_does_not_change_after_recording_cycle_results(self):
+        runtime_store = DashboardRuntimeStore()
+        started_at = runtime_store.started_at_utc
+
+        cycle_result = ScanCycleResult(
+            cycle_id="c1", started_at_utc=UTC_NOW, completed_at_utc=UTC_NOW, duration_ms=1.0,
+            configured_pairs=[], attempted_pairs=[], valid_results=[], rejected_results=[],
+            duplicate_results=[], error_results=[], skipped_results=[], pair_results=[],
+            total_pairs=0, valid_count=0, rejected_count=0, duplicate_count=0,
+            error_count=0, skipped_count=0,
+        )
+        await runtime_store.record_cycle_result(cycle_result)
+        assert runtime_store.started_at_utc == started_at
+
+    async def test_two_independent_stores_get_independent_start_times(self):
+        store_one = DashboardRuntimeStore()
+        store_two = DashboardRuntimeStore()
+        assert store_one.started_at_utc <= store_two.started_at_utc
+
+
 class TestRecordPairResult:
     async def test_scanning_coins_reflects_a_pair_result_recorded_before_any_full_cycle(self):
         # Real-time per-pair delivery: record_pair_result must make a
@@ -1284,3 +1316,25 @@ class TestHealth:
 
         health = await service.get_health()
         assert health.database_reachable is False
+
+    async def test_health_reports_server_started_at(self):
+        runtime_store = DashboardRuntimeStore()
+        service = _build_service(runtime_store=runtime_store)
+
+        health = await service.get_health()
+        assert health.started_at_utc == runtime_store.started_at_utc
+
+    async def test_server_started_at_is_before_or_equal_to_current_server_time(self):
+        runtime_store = DashboardRuntimeStore()
+        service = _build_service(runtime_store=runtime_store)
+
+        health = await service.get_health()
+        assert health.started_at_utc <= health.server_time_utc
+
+    async def test_server_started_at_is_stable_across_repeated_calls(self):
+        runtime_store = DashboardRuntimeStore()
+        service = _build_service(runtime_store=runtime_store)
+
+        first = await service.get_health()
+        second = await service.get_health()
+        assert first.started_at_utc == second.started_at_utc

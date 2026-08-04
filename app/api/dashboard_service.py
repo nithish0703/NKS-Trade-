@@ -574,6 +574,7 @@ class DashboardService:
             telegram_enabled=self._telegram_enabled,
             websocket_enabled=self._websocket_enabled,
             server_time_utc=datetime.now(timezone.utc),
+            started_at_utc=self._runtime_store.started_at_utc,
         )
 
     async def get_signal_details(self, trade_id: str) -> Optional[SignalDetails]:
