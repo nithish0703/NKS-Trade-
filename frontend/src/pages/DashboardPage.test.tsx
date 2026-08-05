@@ -11,7 +11,6 @@ vi.mock("../services/dashboard.api", () => ({
     getScanningCoins: vi.fn(),
     getActiveSignals: vi.fn(),
     getPremiumSignals: vi.fn(),
-    getStrongSignals: vi.fn(),
     getHealth: vi.fn(),
     activateSignal: vi.fn(),
   },
@@ -41,8 +40,7 @@ const emptySummary = {
   open_signals: 0,
   win_rate: null,
   average_rr: null,
-  premium_count: 0,
-  strong_count: 0,
+  confirmed_count: 0,
   scanner_running: false,
   last_scan_time_utc: null,
   server_time_utc: "2026-01-01T10:00:00Z",
@@ -62,7 +60,6 @@ function mockAllEndpoints(overrides: Partial<Record<string, unknown>> = {}) {
   vi.mocked(dashboardApi.getScanningCoins).mockResolvedValue((overrides.scanningCoins as never) ?? []);
   vi.mocked(dashboardApi.getActiveSignals).mockResolvedValue((overrides.activeSignals as never) ?? []);
   vi.mocked(dashboardApi.getPremiumSignals).mockResolvedValue((overrides.premiumSignals as never) ?? []);
-  vi.mocked(dashboardApi.getStrongSignals).mockResolvedValue((overrides.strongSignals as never) ?? []);
   vi.mocked(dashboardApi.getHealth).mockResolvedValue(
     (overrides.health as never) ?? {
       scanner_running: false,
@@ -83,8 +80,7 @@ function mockAllEndpoints(overrides: Partial<Record<string, unknown>> = {}) {
       take_profit: 118200,
       stop_loss: 116250,
       distance_to_take_profit_percentage: null,
-      confidence_score: 96,
-      signal_type: "PREMIUM",
+      status: "CONFIRMED",
       detection_time_utc: "2026-01-01T10:00:00Z",
       dashboard_status: "ACTIVE",
     },
@@ -114,7 +110,7 @@ describe("DashboardPage", () => {
   });
 
   it("shows summary data once loaded", async () => {
-    mockAllEndpoints({ summary: { ...emptySummary, total_signals: 324, premium_count: 5 } });
+    mockAllEndpoints({ summary: { ...emptySummary, total_signals: 324, confirmed_count: 5 } });
     render(<DashboardPage />);
 
     await waitFor(() => expect(screen.getByText("324")).toBeInTheDocument());
@@ -127,11 +123,10 @@ describe("DashboardPage", () => {
           trade_id: "SMC-1",
           coin: "BTC-USDT",
           direction: "BUY",
-          signal_type: "PREMIUM",
+          status: "CONFIRMED",
           entry_price: 116980,
           take_profit: 118200,
           stop_loss: 116250,
-          confidence_score: 96,
           detection_time_utc: "2026-01-01T10:00:00Z",
         },
       ],
@@ -146,12 +141,11 @@ describe("DashboardPage", () => {
       trade_id: "SMC-1",
       coin: "BTC-USDT",
       direction: "BUY",
-      signal_type: "PREMIUM",
+      status: "CONFIRMED",
       entry_price: 116980,
       stop_loss: 116250,
       take_profit: 118200,
       risk_reward_ratio: 2.5,
-      confidence_score: 96,
       market_regime: "TRENDING",
       higher_timeframe_bias: "BULLISH",
       liquidity_type: "EQUAL_HIGH",
@@ -175,11 +169,10 @@ describe("DashboardPage", () => {
           trade_id: "SMC-1",
           coin: "BTC-USDT",
           direction: "BUY",
-          signal_type: "PREMIUM",
+          status: "CONFIRMED",
           entry_price: 116980,
           take_profit: 118200,
           stop_loss: 116250,
-          confidence_score: 96,
           detection_time_utc: "2026-01-01T10:00:00Z",
         },
       ],
@@ -217,11 +210,10 @@ describe("DashboardPage", () => {
           trade_id: "SMC-1",
           coin: "BTC-USDT",
           direction: "BUY",
-          signal_type: "PREMIUM",
+          status: "CONFIRMED",
           entry_price: 116980,
           take_profit: 118200,
           stop_loss: 116250,
-          confidence_score: 96,
           detection_time_utc: "2026-01-01T10:00:00Z",
         },
       ],
@@ -243,11 +235,10 @@ describe("DashboardPage", () => {
       trade_id: "SMC-1",
       coin: "BTC-USDT",
       direction: "BUY",
-      signal_type: "PREMIUM",
+      status: "CONFIRMED",
       entry_price: 116980,
       take_profit: 118200,
       stop_loss: 116250,
-      confidence_score: 96,
       detection_time_utc: "2026-01-01T10:00:00Z",
     };
     mockAllEndpoints({ premiumSignals: [premiumSignal] });
@@ -271,8 +262,7 @@ describe("DashboardPage", () => {
         take_profit: 118200,
         stop_loss: 116250,
         distance_to_take_profit_percentage: null,
-        confidence_score: 96,
-        signal_type: "PREMIUM",
+        status: "CONFIRMED",
         detection_time_utc: "2026-01-01T10:00:00Z",
         dashboard_status: "ACTIVE",
       },

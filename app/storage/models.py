@@ -14,7 +14,7 @@ class Base(DeclarativeBase):
 
 
 class SignalRecord(Base):
-    """Persisted, publishable PREMIUM/STRONG institutional trade signal."""
+    """Persisted, CONFIRMED institutional trade signal (binary decision only, no score)."""
 
     __tablename__ = "signals"
 
@@ -27,8 +27,7 @@ class SignalRecord(Base):
     stop_loss: Mapped[float] = mapped_column(Float, nullable=False)
     take_profit: Mapped[float] = mapped_column(Float, nullable=False)
     risk_reward_ratio: Mapped[float] = mapped_column(Float, nullable=False)
-    confidence_score: Mapped[float] = mapped_column(Float, nullable=False)
-    signal_type: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, index=True, default="CONFIRMED")
     market_regime: Mapped[str] = mapped_column(String(32), nullable=False)
     higher_timeframe_bias: Mapped[str] = mapped_column(String(16), nullable=False)
     liquidity_type: Mapped[str] = mapped_column(String(32), nullable=False)

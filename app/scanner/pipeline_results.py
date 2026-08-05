@@ -135,15 +135,6 @@ class StrategyPipelineResult(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def _valid_requires_publishable_confidence(self) -> "StrategyPipelineResult":
-        if self.status == PipelineStatus.VALID:
-            if self.confidence_result is None or not self.confidence_result.publishable:
-                raise ValueError(
-                    "A VALID pipeline result requires a publishable ConfidenceScoreResult."
-                )
-        return self
-
-    @model_validator(mode="after")
     def _valid_requires_all_mandatory_stages_passed(self) -> "StrategyPipelineResult":
         if self.status == PipelineStatus.VALID:
             for stage in self.stages:

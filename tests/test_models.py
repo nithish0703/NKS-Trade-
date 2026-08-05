@@ -8,7 +8,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.models.candle import Candle
-from app.models.signal import Direction, MarketRegime, Signal, SignalType
+from app.models.signal import Direction, MarketRegime, Signal, SignalStatus
 from app.models.trade_zone import TradeZone, ZoneStatus, ZoneType
 from app.models.validation_result import ValidationResult
 
@@ -39,8 +39,7 @@ def _make_signal(**overrides) -> Signal:
         "stop_loss": 95.0,
         "take_profit": 110.0,
         "risk_reward_ratio": 2.0,
-        "confidence_score": 85.0,
-        "signal_type": SignalType.STRONG,
+        "status": SignalStatus.CONFIRMED,
         "market_regime": MarketRegime.TRENDING,
         "higher_timeframe_bias": "BULLISH",
         "liquidity_type": "EQUAL_HIGHS",
@@ -173,9 +172,9 @@ class TestSignal:
                 take_profit=110.0,
             )
 
-    def test_confidence_score_above_100_rejected(self):
+    def test_rejected_status_not_constructible(self):
         with pytest.raises(ValidationError):
-            _make_signal(confidence_score=101.0)
+            _make_signal(status=SignalStatus.REJECTED)
 
     def test_naive_non_utc_detection_time_rejected(self):
         with pytest.raises(ValidationError):

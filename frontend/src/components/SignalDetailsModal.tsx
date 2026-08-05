@@ -1,6 +1,7 @@
 import { X } from "lucide-react";
 import type { SignalDetails } from "../types/dashboard";
 import { DirectionBadge } from "./DirectionBadge";
+import { SignalStatusBadge } from "./SignalStatusBadge";
 import { formatPriceOrDash, formatUtcTime } from "../utils/format";
 
 interface SignalDetailsModalProps {
@@ -12,8 +13,6 @@ interface SignalDetailsModalProps {
   trading: boolean;
   tradeError: string | null;
 }
-
-const TRADABLE_SIGNAL_TYPES = new Set(["PREMIUM", "STRONG"]);
 
 function Row({ label, value }: { label: string; value: React.ReactNode }) {
   return (
@@ -34,7 +33,7 @@ export function SignalDetailsModal({
   tradeError,
 }: SignalDetailsModalProps) {
   const isAlreadyActive = details?.dashboard_status === "ACTIVE";
-  const canTrade = details !== null && TRADABLE_SIGNAL_TYPES.has(details.signal_type);
+  const canTrade = details !== null;
 
   return (
     <div
@@ -84,12 +83,11 @@ export function SignalDetailsModal({
             <Row label="Trade ID" value={details.trade_id} />
             <Row label="Coin" value={details.coin} />
             <Row label="Direction" value={<DirectionBadge direction={details.direction} />} />
-            <Row label="Signal Type" value={details.signal_type} />
+            <Row label="Status" value={<SignalStatusBadge status={details.status} />} />
             <Row label="Entry" value={formatPriceOrDash(details.entry_price)} />
             <Row label="Dynamic Stop Loss" value={formatPriceOrDash(details.stop_loss)} />
             <Row label="Take Profit" value={formatPriceOrDash(details.take_profit)} />
             <Row label="Risk Reward" value={`1:${details.risk_reward_ratio.toFixed(2)}`} />
-            <Row label="Confidence" value={`${details.confidence_score.toFixed(1)}%`} />
             <Row label="Market Regime" value={details.market_regime} />
             <Row label="Higher Timeframe Bias" value={details.higher_timeframe_bias} />
             <Row label="Liquidity Type" value={details.liquidity_type} />

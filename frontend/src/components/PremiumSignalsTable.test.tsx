@@ -8,11 +8,10 @@ function signal(overrides: Partial<PremiumSignal> = {}): PremiumSignal {
     trade_id: "SMC-1",
     coin: "BTC-USDT",
     direction: "BUY",
-    signal_type: "PREMIUM",
+    status: "CONFIRMED",
     entry_price: 116980,
     take_profit: 118200,
     stop_loss: 116250,
-    confidence_score: 96,
     detection_time_utc: "2026-01-01T10:00:00Z",
     ...overrides,
   };
@@ -41,7 +40,16 @@ describe("PremiumSignalsTable", () => {
   it("never renders a MEDIUM tier label", () => {
     render(<PremiumSignalsTable signals={[signal()]} onView={vi.fn()} />);
     expect(screen.queryByText("MEDIUM")).not.toBeInTheDocument();
-    expect(screen.queryByText("PREMIUM")).not.toBeInTheDocument();
+  });
+
+  it("shows a Premium only placeholder when status is null", () => {
+    render(<PremiumSignalsTable signals={[signal({ status: null })]} onView={vi.fn()} />);
+    expect(screen.getByText("Premium only")).toBeInTheDocument();
+  });
+
+  it("shows a CONFIRMED status badge", () => {
+    render(<PremiumSignalsTable signals={[signal({ status: "CONFIRMED" })]} onView={vi.fn()} />);
+    expect(screen.getByText("CONFIRMED")).toBeInTheDocument();
   });
 
   it("shows the signal detection time in IST", () => {

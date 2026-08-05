@@ -2,6 +2,7 @@ import type { ActiveSignal } from "../types/dashboard";
 import { DirectionBadge } from "./DirectionBadge";
 import { CircularProgress } from "./CircularProgress";
 import { SignalField } from "./SignalField";
+import { SignalStatusBadge } from "./SignalStatusBadge";
 import { EmptyState } from "./EmptyState";
 import { formatPercentageOrDash, formatPriceOrDash } from "../utils/format";
 
@@ -67,6 +68,10 @@ export function ActiveSignalsTable({ signals }: ActiveSignalsTableProps) {
                   value={formatPriceOrDash(signal.stop_loss)}
                   valueClassName={isSingleSignal ? "text-red-600 text-lg" : "text-red-600"}
                 />
+                <div className="flex flex-col">
+                  <span className="text-[11px] uppercase tracking-wide text-slate-400">Status</span>
+                  <SignalStatusBadge status={signal.status} />
+                </div>
               </div>
 
               <div className="flex items-center gap-3">

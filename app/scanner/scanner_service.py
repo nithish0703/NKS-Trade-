@@ -166,7 +166,7 @@ class ScannerService:
                         "trade_id": signal.trade_id,
                         "coin": signal.coin,
                         "direction": signal.direction.value,
-                        "signal_type": signal.signal_type.value,
+                        "status": signal.status.value,
                     },
                 )
             elif duplicate:

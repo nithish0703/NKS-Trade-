@@ -221,7 +221,7 @@ def _parse_signals_args(argv: list[str]) -> tuple[Optional[str], int]:
 
 
 async def _run_signals(symbol: Optional[str], limit: int) -> None:
-    """List recently stored PREMIUM/STRONG signals from local SQLite storage."""
+    """List recently stored CONFIRMED signals from local SQLite storage."""
     from app.config.settings import get_settings
 
     settings = get_settings()
@@ -238,8 +238,7 @@ async def _run_signals(symbol: Optional[str], limit: int) -> None:
             print(f"Stop Loss: {stored_signal.stop_loss}")
             print(f"Take Profit: {stored_signal.take_profit}")
             print(f"RR: {stored_signal.risk_reward_ratio}")
-            print(f"Confidence: {stored_signal.confidence_score}")
-            print(f"Signal Type: {stored_signal.signal_type.value}")
+            print(f"Status: {stored_signal.status.value}")
             print(f"Detection Time: {stored_signal.detection_time_utc.isoformat()}")
             print("-")
     finally:

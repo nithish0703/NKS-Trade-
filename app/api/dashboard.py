@@ -4,6 +4,7 @@ Dashboard summary and card-data REST endpoints.
 
 from fastapi import APIRouter, Depends, HTTPException
 
+from app.api.access_tier import AccessTier, get_access_tier
 from app.api.dashboard_service import DashboardService
 from app.api.dependencies import get_dashboard_service
 from app.api.schemas import (
@@ -13,7 +14,6 @@ from app.api.schemas import (
     PremiumSignal,
     RejectionItem,
     ScanningCoin,
-    StrongSignal,
 )
 
 router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
@@ -36,36 +36,32 @@ async def get_scanning_coins(
 @router.get("/active-signals", response_model=list[ActiveSignal])
 async def get_active_signals(
     service: DashboardService = Depends(get_dashboard_service),
+    tier: AccessTier = Depends(get_access_tier),
 ) -> list[ActiveSignal]:
-    return await service.get_active_signals()
+    return await service.get_active_signals(tier=tier)
 
 
 @router.get("/premium-signals", response_model=list[PremiumSignal])
 async def get_premium_signals(
     service: DashboardService = Depends(get_dashboard_service),
+    tier: AccessTier = Depends(get_access_tier),
 ) -> list[PremiumSignal]:
-    return await service.get_premium_signals()
-
-
-@router.get("/strong-signals", response_model=list[StrongSignal])
-async def get_strong_signals(
-    service: DashboardService = Depends(get_dashboard_service),
-) -> list[StrongSignal]:
-    return await service.get_strong_signals()
+    return await service.get_premium_signals(tier=tier)
 
 
 @router.post("/signals/{trade_id}/activate", response_model=ActiveSignal)
 async def activate_signal(
     trade_id: str,
     service: DashboardService = Depends(get_dashboard_service),
+    tier: AccessTier = Depends(get_access_tier),
 ) -> ActiveSignal:
     """
-    Mark a stored PREMIUM/STRONG signal as ACTIVE (dashboard-only state
-    transition, moving it from Premium/Strong into Active Signals).
-    Never places an order, calls an exchange, or affects strategy,
-    scoring, risk, or Telegram behaviour.
+    Mark a stored CONFIRMED signal as ACTIVE (dashboard-only state
+    transition, moving it from Premium into Active Signals). Never
+    places an order, calls an exchange, or affects strategy, risk, or
+    Telegram behaviour.
     """
-    result = await service.activate_signal(trade_id)
+    result = await service.activate_signal(trade_id, tier=tier)
     if result is None:
         raise HTTPException(status_code=404, detail="Signal not found.")
     return result

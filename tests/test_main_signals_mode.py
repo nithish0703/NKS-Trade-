@@ -9,7 +9,7 @@ import pytest
 import pytest_asyncio
 
 import main
-from app.models.signal import Direction, MarketRegime, Signal, SignalType
+from app.models.signal import Direction, MarketRegime, Signal, SignalStatus
 from app.storage.database import DatabaseManager
 from app.storage.signal_repository import SignalRepository
 
@@ -18,7 +18,7 @@ pytestmark = pytest.mark.asyncio
 UTC_NOW = datetime(2026, 1, 1, 10, 0, tzinfo=timezone.utc)
 
 
-def _signal(trade_id="SMC-1", coin="BTC-USDT", signal_type=SignalType.PREMIUM) -> Signal:
+def _signal(trade_id="SMC-1", coin="BTC-USDT") -> Signal:
     return Signal(
         trade_id=trade_id,
         coin=coin,
@@ -27,8 +27,7 @@ def _signal(trade_id="SMC-1", coin="BTC-USDT", signal_type=SignalType.PREMIUM) -
         stop_loss=95.0,
         take_profit=110.0,
         risk_reward_ratio=3.0,
-        confidence_score=90.0,
-        signal_type=signal_type,
+        status=SignalStatus.CONFIRMED,
         market_regime=MarketRegime.TRENDING,
         higher_timeframe_bias="BULLISH",
         liquidity_type="EQUAL_HIGH",
@@ -109,8 +108,7 @@ class TestSignalsMode:
         assert "Stop Loss:" in output
         assert "Take Profit:" in output
         assert "RR:" in output
-        assert "Confidence:" in output
-        assert "Signal Type:" in output
+        assert "Status:" in output
         assert "Detection Time:" in output
 
     async def test_no_secrets_printed(self, seeded_database_url, capsys):

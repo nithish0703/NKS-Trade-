@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Optional
 
+from app.api.access_tier import AccessTier
 from app.api.runtime_store import DashboardRuntimeStore
 from app.api.schemas import (
     ActiveSignal,
@@ -19,12 +20,10 @@ from app.api.schemas import (
     ScanningCoin,
     ScannerStatusItem,
     SignalDetails,
-    StrongSignal,
 )
 from app.config.pairs import get_configured_pairs
 from app.config.timeframes import ENTRY_TIMEFRAME
 from app.config.thresholds import (
-    PREMIUM_SIGNAL_MIN_SCORE,
     SCORE_BTC_ALIGNMENT,
     SCORE_ENTRY_ZONE,
     SCORE_FAKE_BREAKOUT,
@@ -37,10 +36,9 @@ from app.config.thresholds import (
     SCORE_SESSION,
     SCORE_STRUCTURE_SHIFT,
     SCORE_VOLUME_CONFIRMATION,
-    STRONG_SIGNAL_MIN_SCORE,
 )
 from app.data.provider_base import MarketDataProvider
-from app.models.signal import Direction, Signal, SignalType
+from app.models.signal import Direction, Signal
 from app.scanner.pipeline_results import PipelineStageResult, PipelineStatus
 from app.scanner.scan_results import PairScanResult, PairScanStatus, ScanCycleResult
 from app.scanner.scanner_events import ScannerEvent, ScannerEventType
@@ -243,19 +241,14 @@ class DashboardService:
 
     async def get_summary(self) -> DashboardSummary:
         total_signals = await self._signal_repository.count()
-        premium_signals = await self._signal_repository.list_recent(
-            limit=100000, signal_type=SignalType.PREMIUM.value
-        )
-        strong_signals = await self._signal_repository.list_recent(
-            limit=100000, signal_type=SignalType.STRONG.value
-        )
-        premium_count = len(premium_signals)
-        strong_count = len(strong_signals)
+        confirmed_signals = await self._signal_repository.list_recent(limit=100000)
+        confirmed_count = len(confirmed_signals)
 
-        all_signals = premium_signals + strong_signals
         average_rr: Optional[float] = None
-        if all_signals:
-            average_rr = sum(signal.risk_reward_ratio for signal in all_signals) / len(all_signals)
+        if confirmed_signals:
+            average_rr = sum(signal.risk_reward_ratio for signal in confirmed_signals) / len(
+                confirmed_signals
+            )
 
         cycle_result = await self._runtime_store.get_latest_cycle_result()
         last_scan_time_utc = cycle_result.completed_at_utc if cycle_result is not None else None
@@ -281,8 +274,7 @@ class DashboardService:
             open_signals=open_signals,
             win_rate=win_rate,
             average_rr=average_rr,
-            premium_count=premium_count,
-            strong_count=strong_count,
+            confirmed_count=confirmed_count,
             scanner_running=self._runtime_store.scanner_running,
             last_scan_time_utc=last_scan_time_utc,
             server_time_utc=datetime.now(timezone.utc),
@@ -394,17 +386,17 @@ class DashboardService:
             chart_trend=chart_trend,
         )
 
-    async def get_active_signals(self, limit: int = 50) -> list[ActiveSignal]:
+    async def get_active_signals(
+        self, limit: int = 50, *, tier: AccessTier = AccessTier.FREE
+    ) -> list[ActiveSignal]:
         # Active Signals shows only signals the user has explicitly moved
         # here via the dashboard "Trade" action (dashboard_status ==
         # ACTIVE). This is a pure UI state transition, never a real
         # order/position: no exchange call is made to activate a signal.
-        active_signals: list[Signal] = []
-        for signal_type in (SignalType.PREMIUM, SignalType.STRONG):
-            results = await self._signal_repository.list_recent_with_status(
-                limit=limit, signal_type=signal_type.value, dashboard_status=DASHBOARD_STATUS_ACTIVE
-            )
-            active_signals.extend(result.signal for result in results)
+        results = await self._signal_repository.list_recent_with_status(
+            limit=limit, dashboard_status=DASHBOARD_STATUS_ACTIVE
+        )
+        active_signals = [result.signal for result in results]
         active_signals.sort(key=lambda signal: signal.created_at_utc, reverse=True)
         active_signals = active_signals[:limit]
 
@@ -426,70 +418,49 @@ class DashboardService:
                     take_profit=signal.take_profit,
                     stop_loss=signal.stop_loss,
                     distance_to_take_profit_percentage=distance,
-                    confidence_score=signal.confidence_score,
-                    signal_type=signal.signal_type.value,
+                    status=signal.status.value if tier == AccessTier.PREMIUM else None,
                     detection_time_utc=signal.detection_time_utc,
                     dashboard_status=DASHBOARD_STATUS_ACTIVE,
                 )
             )
         return items
 
-    async def get_premium_signals(self, limit: int = 50) -> list[PremiumSignal]:
+    async def get_premium_signals(
+        self, limit: int = 50, *, tier: AccessTier = AccessTier.FREE
+    ) -> list[PremiumSignal]:
         # Once a signal is activated (moved to Active Signals via the
-        # dashboard "Trade" action), it is excluded from Premium/Strong
-        # so it appears in exactly one list at a time.
+        # dashboard "Trade" action), it is excluded from this list so it
+        # appears in exactly one list at a time.
         results = await self._signal_repository.list_recent_with_status(
-            limit=limit, signal_type=SignalType.PREMIUM.value, dashboard_status=DASHBOARD_STATUS_NEW
+            limit=limit, dashboard_status=DASHBOARD_STATUS_NEW
         )
-        signals = [r.signal for r in results if r.signal.confidence_score >= PREMIUM_SIGNAL_MIN_SCORE]
         return [
             PremiumSignal(
-                trade_id=signal.trade_id,
-                coin=signal.coin,
-                direction=signal.direction.value,
-                signal_type=signal.signal_type.value,
-                entry_price=signal.entry_price,
-                take_profit=signal.take_profit,
-                stop_loss=signal.stop_loss,
-                confidence_score=signal.confidence_score,
-                detection_time_utc=signal.detection_time_utc,
+                trade_id=r.signal.trade_id,
+                coin=r.signal.coin,
+                direction=r.signal.direction.value,
+                status=r.signal.status.value if tier == AccessTier.PREMIUM else None,
+                entry_price=r.signal.entry_price,
+                take_profit=r.signal.take_profit,
+                stop_loss=r.signal.stop_loss,
+                detection_time_utc=r.signal.detection_time_utc,
             )
-            for signal in signals
-        ]
-
-    async def get_strong_signals(self, limit: int = 50) -> list[StrongSignal]:
-        results = await self._signal_repository.list_recent_with_status(
-            limit=limit, signal_type=SignalType.STRONG.value, dashboard_status=DASHBOARD_STATUS_NEW
-        )
-        signals = [
-            r.signal
             for r in results
-            if STRONG_SIGNAL_MIN_SCORE <= r.signal.confidence_score < PREMIUM_SIGNAL_MIN_SCORE
-        ]
-        return [
-            StrongSignal(
-                trade_id=signal.trade_id,
-                coin=signal.coin,
-                direction=signal.direction.value,
-                confidence_score=signal.confidence_score,
-                higher_timeframe_bias=signal.higher_timeframe_bias,
-                normalized_score=signal.confidence_score,
-                detection_time_utc=signal.detection_time_utc,
-            )
-            for signal in signals
         ]
 
-    async def activate_signal(self, trade_id: str) -> Optional[ActiveSignal]:
+    async def activate_signal(
+        self, trade_id: str, *, tier: AccessTier = AccessTier.FREE
+    ) -> Optional[ActiveSignal]:
         """
-        Mark a stored PREMIUM/STRONG signal as ACTIVE (dashboard-only
-        state transition). Returns the resulting ActiveSignal, or None
-        if no signal exists with `trade_id`.
+        Mark a stored CONFIRMED signal as ACTIVE (dashboard-only state
+        transition). Returns the resulting ActiveSignal, or None if no
+        signal exists with `trade_id`.
 
         This never places an order, never calls any exchange API, never
-        recalculates confidence/risk, and never touches Telegram. It
-        only updates the signal's dashboard_status so it is included in
-        get_active_signals and excluded from get_premium_signals /
-        get_strong_signals from this point on.
+        recalculates risk, and never touches Telegram. It only updates
+        the signal's dashboard_status so it is included in
+        get_active_signals and excluded from get_premium_signals from
+        this point on.
         """
         try:
             result = await self._signal_repository.mark_active(trade_id)
@@ -512,8 +483,7 @@ class DashboardService:
             take_profit=signal.take_profit,
             stop_loss=signal.stop_loss,
             distance_to_take_profit_percentage=distance,
-            confidence_score=signal.confidence_score,
-            signal_type=signal.signal_type.value,
+            status=signal.status.value if tier == AccessTier.PREMIUM else None,
             detection_time_utc=signal.detection_time_utc,
             dashboard_status=DASHBOARD_STATUS_ACTIVE,
         )
@@ -585,7 +555,9 @@ class DashboardService:
             started_at_utc=self._runtime_store.started_at_utc,
         )
 
-    async def get_signal_details(self, trade_id: str) -> Optional[SignalDetails]:
+    async def get_signal_details(
+        self, trade_id: str, *, tier: AccessTier = AccessTier.FREE
+    ) -> Optional[SignalDetails]:
         result = await self._signal_repository.get_by_trade_id_with_status(trade_id)
         if result is None:
             return None
@@ -594,12 +566,11 @@ class DashboardService:
             trade_id=signal.trade_id,
             coin=signal.coin,
             direction=signal.direction.value,
-            signal_type=signal.signal_type.value,
+            status=signal.status.value if tier == AccessTier.PREMIUM else None,
             entry_price=signal.entry_price,
             stop_loss=signal.stop_loss,
             take_profit=signal.take_profit,
             risk_reward_ratio=signal.risk_reward_ratio,
-            confidence_score=signal.confidence_score,
             market_regime=signal.market_regime.value,
             higher_timeframe_bias=signal.higher_timeframe_bias,
             liquidity_type=signal.liquidity_type,

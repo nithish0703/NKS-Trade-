@@ -1,5 +1,5 @@
 """
-In-memory buffer holding new VALID Premium/Strong scanner candidates,
+In-memory buffer holding new VALID (CONFIRMED) scanner candidates,
 pending later signal building and persistence (not implemented here).
 """
 
@@ -10,8 +10,9 @@ from app.scanner.scan_results import PairScanResult, PairScanStatus
 
 class ValidSignalCandidateBuffer:
     """
-    Temporarily holds new VALID (publishable, non-duplicate) scanner
-    results in insertion order, bounded by a maximum size.
+    Temporarily holds new VALID (every required condition met,
+    non-duplicate) scanner results in insertion order, bounded by a
+    maximum size.
 
     Does not publish, persist, or send any notification.
     """
@@ -26,9 +27,7 @@ class ValidSignalCandidateBuffer:
     async def add(self, result: PairScanResult) -> None:
         if result.status != PairScanStatus.VALID:
             return
-        if result.pipeline_result is None or not result.pipeline_result.confidence_result:
-            return
-        if not result.pipeline_result.confidence_result.publishable:
+        if result.pipeline_result is None:
             return
         if result.duplicate:
             return

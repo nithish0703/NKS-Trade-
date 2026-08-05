@@ -230,20 +230,24 @@ class TestRunCycle:
         }
         assert len(detection_times) == 1
 
-    async def test_valid_results_ranked_by_confidence_score_descending(self):
+    async def test_valid_results_ranked_alphabetically_by_symbol(self):
+        # VALID results carry no score of any kind any more (the signal
+        # decision is binary CONFIRMED/REJECTED), so ranking is now a
+        # stable, deterministic alphabetical ordering by symbol -- purely
+        # a display-order convenience, never a priority/quality ordering.
         pair_scanner = _build_pair_scanner(
             results_by_symbol={
-                "BTC-USDT": _pair_result("BTC-USDT", status=PairScanStatus.VALID, normalized_score=80.0),
-                "ETH-USDT": _pair_result("ETH-USDT", status=PairScanStatus.VALID, normalized_score=99.0),
-                "SOL-USDT": _pair_result("SOL-USDT", status=PairScanStatus.VALID, normalized_score=90.0),
+                "BTC-USDT": _pair_result("BTC-USDT", status=PairScanStatus.VALID),
+                "ETH-USDT": _pair_result("ETH-USDT", status=PairScanStatus.VALID),
+                "SOL-USDT": _pair_result("SOL-USDT", status=PairScanStatus.VALID),
             }
         )
         scheduler = _build_scheduler(
-            pair_scanner=pair_scanner, pairs=("BTC-USDT", "ETH-USDT", "SOL-USDT")
+            pair_scanner=pair_scanner, pairs=("SOL-USDT", "ETH-USDT", "BTC-USDT")
         )
         cycle_result = await _run_cycle(scheduler)
         ranked_symbols = [r.symbol for r in cycle_result.valid_results]
-        assert ranked_symbols == ["ETH-USDT", "SOL-USDT", "BTC-USDT"]
+        assert ranked_symbols == ["BTC-USDT", "ETH-USDT", "SOL-USDT"]
 
     async def test_ranking_never_drops_a_qualifying_coin(self):
         # Every coin that passed (VALID) must still be present in the

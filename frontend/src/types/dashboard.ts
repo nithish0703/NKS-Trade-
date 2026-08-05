@@ -1,7 +1,5 @@
 export type Direction = "BUY" | "SELL";
 
-export type SignalTypeTier = "PREMIUM" | "STRONG";
-
 export type ScanningCoinStatus = "READY" | "SCANNING" | "REJECTED" | "ERROR" | "DUPLICATE";
 
 export interface ComparisonPercentages {
@@ -19,8 +17,7 @@ export interface DashboardSummary {
   open_signals: number;
   win_rate: number | null;
   average_rr: number | null;
-  premium_count: number;
-  strong_count: number;
+  confirmed_count: number;
   scanner_running: boolean;
   last_scan_time_utc: string | null;
   server_time_utc: string;
@@ -67,8 +64,10 @@ export interface ActiveSignal {
   take_profit: number;
   stop_loss: number;
   distance_to_take_profit_percentage: number | null;
-  confidence_score: number;
-  signal_type: SignalTypeTier;
+  // Binary signal status (CONFIRMED/REJECTED). Present only for Premium
+  // access tier callers; null for Free. No score, percentage, or
+  // confidence value is ever included anywhere on this model.
+  status: string | null;
   detection_time_utc: string;
   // Dashboard-only lifecycle status; always "ACTIVE" here. Never a real
   // exchange position.
@@ -79,21 +78,12 @@ export interface PremiumSignal {
   trade_id: string;
   coin: string;
   direction: Direction;
-  signal_type: SignalTypeTier;
+  // Binary signal status (CONFIRMED/REJECTED). Present only for Premium
+  // access tier callers; null for Free.
+  status: string | null;
   entry_price: number;
   take_profit: number;
   stop_loss: number;
-  confidence_score: number;
-  detection_time_utc: string;
-}
-
-export interface StrongSignal {
-  trade_id: string;
-  coin: string;
-  direction: Direction;
-  confidence_score: number;
-  higher_timeframe_bias: string;
-  normalized_score: number;
   detection_time_utc: string;
 }
 
@@ -134,12 +124,13 @@ export interface SignalDetails {
   trade_id: string;
   coin: string;
   direction: Direction;
-  signal_type: SignalTypeTier;
+  // Binary signal status (CONFIRMED/REJECTED). Present only for Premium
+  // access tier callers; null for Free.
+  status: string | null;
   entry_price: number;
   stop_loss: number;
   take_profit: number;
   risk_reward_ratio: number;
-  confidence_score: number;
   market_regime: string;
   higher_timeframe_bias: string;
   liquidity_type: string;

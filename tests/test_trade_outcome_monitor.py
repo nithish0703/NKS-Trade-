@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.models.signal import Direction, MarketRegime, Signal, SignalType
+from app.models.signal import Direction, MarketRegime, Signal, SignalStatus
 from app.monitoring.trade_outcome_monitor import TradeOutcomeMonitor, evaluate_outcome
 from app.storage.signal_repository import (
     DASHBOARD_STATUS_ACTIVE,
@@ -31,8 +31,7 @@ def _signal(*, trade_id="SMC-1", coin="BTC-USDT", direction=Direction.BUY) -> Si
         stop_loss=95.0 if direction == Direction.BUY else 105.0,
         take_profit=110.0 if direction == Direction.BUY else 90.0,
         risk_reward_ratio=3.0,
-        confidence_score=95.0,
-        signal_type=SignalType.PREMIUM,
+        status=SignalStatus.CONFIRMED,
         market_regime=MarketRegime.TRENDING,
         higher_timeframe_bias="BULLISH",
         liquidity_type="EQUAL_HIGH",
