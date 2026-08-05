@@ -106,34 +106,6 @@ class TestValidSignalCandidateBuffer:
         await buffer.add(result)
         assert await buffer.size() == 0
 
-    async def test_medium_result_refused(self):
-        buffer = ValidSignalCandidateBuffer(maximum_size=10)
-        # A non-publishable MEDIUM-equivalent pipeline result can never carry a
-        # VALID StrategyPipelineResult status (enforced by that model itself),
-        # so this asserts the buffer's own defensive publishable check using a
-        # PairScanResult built directly, bypassing StrategyPipelineResult's
-        # own construction-time validation.
-        pipeline_result = MagicMock(spec=StrategyPipelineResult)
-        pipeline_result.status = PipelineStatus.VALID
-        pipeline_result.confidence_result = _confidence(
-            classification=ConfidenceClassification.MEDIUM, publishable=False
-        )
-        result = PairScanResult.model_construct(
-            symbol="BTC-USDT",
-            status=PairScanStatus.VALID,
-            pipeline_result=pipeline_result,
-            duplicate_key=None,
-            duplicate=False,
-            started_at_utc=UTC_NOW,
-            completed_at_utc=UTC_NOW,
-            duration_ms=1.0,
-            reason=None,
-            error_type=None,
-            metadata=None,
-        )
-        await buffer.add(result)
-        assert await buffer.size() == 0
-
     async def test_insertion_order_preserved(self):
         buffer = ValidSignalCandidateBuffer(maximum_size=10)
         first = _pair_result(symbol="BTC-USDT")

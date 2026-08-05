@@ -65,16 +65,12 @@ class PairScanResult(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def _valid_requires_publishable_pipeline_result(self) -> "PairScanResult":
+    def _valid_requires_all_required_conditions_met(self) -> "PairScanResult":
         if self.status == PairScanStatus.VALID:
-            if (
-                self.pipeline_result is None
-                or self.pipeline_result.status != PipelineStatus.VALID
-                or self.pipeline_result.confidence_result is None
-                or not self.pipeline_result.confidence_result.publishable
-            ):
+            if self.pipeline_result is None or self.pipeline_result.status != PipelineStatus.VALID:
                 raise ValueError(
-                    "A VALID PairScanResult requires a valid, publishable pipeline result."
+                    "A VALID PairScanResult requires a pipeline result with every "
+                    "required condition met."
                 )
         return self
 

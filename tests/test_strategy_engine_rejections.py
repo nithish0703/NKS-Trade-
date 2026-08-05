@@ -406,7 +406,34 @@ class TestStrategyEngineRejections:
         assert result.failed_layer == "RISK_MANAGEMENT"
 
     @pytest.mark.asyncio
-    async def test_non_publishable_confidence_rejects(self):
+    async def test_mandatory_layers_not_passed_rejects(self):
+        # Stage 14 now gates the final CONFIRMED/REJECTED outcome on
+        # mandatory_layers_passed, not on classification/publishable
+        # (those remain computed for audit/diagnostic purposes only).
+        confidence_calculator = MagicMock()
+        confidence_calculator.calculate = MagicMock(
+            return_value=ConfidenceScoreResult(
+                raw_score=85.0,
+                maximum_raw_score=115,
+                normalized_score=70.83,
+                classification=ConfidenceClassification.MEDIUM,
+                publishable=False,
+                mandatory_layers_passed=False,
+                layer_scores=[],
+                failed_mandatory_layers=["MARKET_REGIME"],
+                reason="MANDATORY_LAYER_FAILED",
+            )
+        )
+        engine = _build_engine(confidence_calculator=confidence_calculator)
+        result = await _analyze(engine)
+        assert result.status == PipelineStatus.REJECTED
+        assert result.failed_layer == "CONFIDENCE_SCORING"
+
+    @pytest.mark.asyncio
+    async def test_non_publishable_but_mandatory_layers_passed_confirms(self):
+        # A non-publishable (e.g. MEDIUM classification) confidence result
+        # no longer rejects the setup on its own, as long as every
+        # hard-mandatory layer passed.
         confidence_calculator = MagicMock()
         confidence_calculator.calculate = MagicMock(
             return_value=ConfidenceScoreResult(
@@ -423,8 +450,7 @@ class TestStrategyEngineRejections:
         )
         engine = _build_engine(confidence_calculator=confidence_calculator)
         result = await _analyze(engine)
-        assert result.status == PipelineStatus.REJECTED
-        assert result.failed_layer == "CONFIDENCE_SCORING"
+        assert result.status == PipelineStatus.VALID
 
     @pytest.mark.asyncio
     async def test_downstream_dependencies_not_called_after_failure(self):

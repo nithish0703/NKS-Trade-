@@ -14,9 +14,6 @@ from app.scanner.pipeline_results import PipelineStatus, StrategyPipelineResult
 from app.scanner.preview_analyzer import PreviewAnalysisResult, PreviewAnalyzer
 from app.scanner.scan_results import PairScanResult, PairScanStatus
 from app.scanner.strategy_engine import InstitutionalSMCStrategyEngine
-from app.scoring.results import ConfidenceClassification
-
-_PUBLISHABLE_CLASSIFICATIONS = (ConfidenceClassification.PREMIUM, ConfidenceClassification.STRONG)
 
 
 def _now_ms() -> float:
@@ -177,22 +174,11 @@ class PairScanner:
                 preview_result=self._safe_preview(symbol, pipeline_result),
             )
 
-        confidence_result = pipeline_result.confidence_result
-        is_publishable = (
-            confidence_result is not None
-            and confidence_result.publishable
-            and confidence_result.classification in _PUBLISHABLE_CLASSIFICATIONS
-        )
-        if not is_publishable:
-            return self._finalize(
-                symbol=symbol,
-                status=PairScanStatus.REJECTED,
-                pipeline_result=pipeline_result,
-                started_at_utc=started_at_utc,
-                start_ms=start_ms,
-                reason="Pipeline result is not a publishable PREMIUM/STRONG setup.",
-            )
-
+        # pipeline_result.status is already exactly VALID/REJECTED/ERROR
+        # as decided by the strategy engine itself (every required
+        # condition satisfied for VALID); having fallen through the two
+        # checks above, status is guaranteed VALID here, so no separate
+        # score/tier re-check is needed.
         try:
             duplicate, setup_key = await self._duplicate_guard.check_and_register(
                 pipeline_result, detection_time_utc

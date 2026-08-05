@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.models.signal import Direction, MarketRegime, Signal, SignalType
+from app.models.signal import Direction, MarketRegime, Signal, SignalStatus
 from app.scanner.pipeline_results import PipelineStatus, StrategyPipelineResult
 from app.scanner.scan_results import PairScanResult, PairScanStatus, ScanCycleResult
 from app.scanner.signal_builder import SignalBuildError
@@ -29,8 +29,7 @@ def _signal(trade_id="SMC-1") -> Signal:
         stop_loss=95.0,
         take_profit=110.0,
         risk_reward_ratio=3.0,
-        confidence_score=90.0,
-        signal_type=SignalType.PREMIUM,
+        status=SignalStatus.CONFIRMED,
         market_regime=MarketRegime.TRENDING,
         higher_timeframe_bias="BULLISH",
         liquidity_type="EQUAL_HIGH",

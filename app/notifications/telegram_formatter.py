@@ -13,14 +13,14 @@ _TRUNCATION_SUFFIX = "..."
 class TelegramSignalFormatter:
     """
     Builds a deterministic, concise HTML-formatted Telegram message for a
-    final PREMIUM/STRONG Signal. Never includes secrets, raw metadata, or
-    guaranteed-outcome language.
+    final CONFIRMED Signal. Never includes secrets, raw metadata,
+    guaranteed-outcome language, or any score/confidence/percentage.
     """
 
     def format_signal(self, signal: Signal) -> str:
         direction_emoji = "\U0001F4C8" if signal.direction.value == "BUY" else "\U0001F4C9"
 
-        header = f"<b>NKS {html.escape(signal.signal_type.value)} SIGNAL</b>"
+        header = f"<b>NKS {html.escape(signal.status.value)} SIGNAL</b>"
         divider = "─" * 20
 
         lines = [
@@ -28,7 +28,6 @@ class TelegramSignalFormatter:
             divider,
             f"\U0001F4B0 Coin: <b>{html.escape(signal.coin)}</b>",
             f"{direction_emoji} Direction: <b>{html.escape(signal.direction.value)}</b>",
-            f"\U0001F3AF Confidence: <b>{signal.confidence_score:.1f}%</b> ({html.escape(signal.signal_type.value)})",
             "",
             f"\U000027A1 Entry: <b>{self._format_price(signal.entry_price)}</b>",
             f"\U0001F6D1 Stop Loss: <b>{self._format_price(signal.stop_loss)}</b>",

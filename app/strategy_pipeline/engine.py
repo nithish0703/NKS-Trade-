@@ -53,21 +53,21 @@ from app.scanner.pipeline_exceptions import (
     PipelineStageError,
 )
 from app.scanner.pipeline_results import PipelineStageResult, PipelineStatus, StrategyPipelineResult
-from app.scoring.results import ConfidenceScoreResult
 
 from app.strategy_pipeline.bos import evaluate_bos
 from app.strategy_pipeline.htf_bias import HtfBiasDirection, evaluate_htf_bias
 from app.strategy_pipeline.ifvg import evaluate_ifvg
 from app.strategy_pipeline.liquidity_sweep import validate_liquidity_sweep
 from app.strategy_pipeline.order_flow import evaluate_order_flow
-from app.strategy_pipeline.scoring import PIPELINE_MAXIMUM_RAW_SCORE, calculate_pipeline_score
+from app.strategy_pipeline.scoring import calculate_pipeline_decision
 
 _REQUIRED_TIMEFRAMES = (ENTRY_TIMEFRAME, HTF_SECONDARY, HTF_PRIMARY)
-_LEGACY_MAXIMUM_RAW_SCORE = 115.0
 
 # (stage_order, layer_name). All 5 stages are hard-mandatory: failure at
 # any stage rejects the pipeline immediately, matching the diagram's
-# sequential arrows -- there is no soft-scoring stage in this pipeline.
+# sequential arrows -- there is no soft-scoring stage in this pipeline,
+# and no scoring/classification stage either: the final decision is
+# purely binary CONFIRMED/REJECTED.
 _STAGE_DEFINITIONS: tuple[tuple[int, str], ...] = (
     (1, "HTF_BIAS"),
     (2, "LIQUIDITY_SWEEP"),
@@ -75,7 +75,6 @@ _STAGE_DEFINITIONS: tuple[tuple[int, str], ...] = (
     (4, "IFVG"),
     (5, "ORDER_FLOW"),
     (6, "RISK_MANAGEMENT"),
-    (7, "CONFIDENCE_SCORING"),
 )
 _MANDATORY_STAGES = frozenset(name for _, name in _STAGE_DEFINITIONS)
 
@@ -88,33 +87,6 @@ _OPEN_INTEREST_LIMIT = 48
 
 def _now_ms() -> float:
     return time.perf_counter() * 1000.0
-
-
-def _to_confidence_score_result(pipeline_score) -> ConfidenceScoreResult:
-    """
-    Adapt a strategy_pipeline PipelineScoreResult (0-100 raw scale) into
-    a legacy-shaped ConfidenceScoreResult (0-115 raw scale), so
-    downstream code that only ever reads `.normalized_score`,
-    `.classification`, `.publishable`, and `.reason` (dashboard,
-    candidate buffer, signal builder, scan scheduler ranking) keeps
-    working unmodified against either engine's output. `raw_score` and
-    `maximum_raw_score` are rescaled proportionally; nothing here
-    recalculates or reinterprets the pipeline's own pass/fail decision.
-    """
-    rescaled_raw_score = round(
-        (pipeline_score.raw_score / PIPELINE_MAXIMUM_RAW_SCORE) * _LEGACY_MAXIMUM_RAW_SCORE, 2
-    )
-    return ConfidenceScoreResult(
-        raw_score=rescaled_raw_score,
-        maximum_raw_score=_LEGACY_MAXIMUM_RAW_SCORE,
-        normalized_score=pipeline_score.normalized_score,
-        classification=pipeline_score.classification,
-        publishable=pipeline_score.publishable,
-        mandatory_layers_passed=pipeline_score.all_stages_passed,
-        layer_scores=[],
-        failed_mandatory_layers=list(pipeline_score.failed_stages),
-        reason=pipeline_score.reason,
-    )
 
 
 class PipelineStrategyEngine:
@@ -427,26 +399,22 @@ class PipelineStrategyEngine:
         if not risk_plan.valid:
             return self._build_rejected_result(context, expected_direction, stages, "RISK_MANAGEMENT", risk_validation)
 
-        # Stage 7: CONFIDENCE_SCORING
-        start = _now_ms()
-        pipeline_score = calculate_pipeline_score(stage_results)
-        confidence_result = _to_confidence_score_result(pipeline_score)
-        confidence_validation = ValidationResult(
-            passed=confidence_result.publishable, layer_name="CONFIDENCE_SCORING", reason=confidence_result.reason
-        )
-        stages.append(self._stage(7, "CONFIDENCE_SCORING", confidence_validation, start))
-        context = context.with_updates(confidence_result=confidence_result)
-        if not confidence_result.publishable:
-            return self._build_rejected_result(
-                context, expected_direction, stages, "CONFIDENCE_SCORING", confidence_validation
-            )
+        # Final binary decision: every stage above already rejected
+        # immediately on its own failure, so by construction every
+        # stage_results entry is passed=True here. This aggregation is
+        # kept as an explicit audit record ("all required conditions
+        # were satisfied") rather than inlining a bare True -- it never
+        # computes or exposes a score, percentage, or confidence tier.
+        pipeline_decision = calculate_pipeline_decision(stage_results)
 
         return StrategyPipelineResult(
             symbol=symbol,
             expected_direction=expected_direction,
             detection_time_utc=context.detection_time_utc,
-            status=PipelineStatus.VALID,
-            passed=True,
+            status=PipelineStatus.VALID if pipeline_decision.confirmed else PipelineStatus.REJECTED,
+            passed=pipeline_decision.confirmed,
+            failed_layer=None if pipeline_decision.confirmed else "PIPELINE_DECISION",
+            rejection_reason=None if pipeline_decision.confirmed else pipeline_decision.reason,
             market_context=context,
             stages=stages,
             liquidity_detection_result=liquidity_detection_result,
@@ -454,7 +422,6 @@ class PipelineStrategyEngine:
             selected_structure_break=bos_result.structure_break,
             selected_entry_zone=entry_zone,
             risk_plan=risk_plan,
-            confidence_result=confidence_result,
         )
 
     @staticmethod

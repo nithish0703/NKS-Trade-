@@ -1,6 +1,6 @@
 import type { PremiumSignal } from "../types/dashboard";
 import { DirectionBadge } from "./DirectionBadge";
-import { ConfidenceBadge } from "./ConfidenceBadge";
+import { SignalStatusBadge } from "./SignalStatusBadge";
 import { SignalField } from "./SignalField";
 import { EmptyState } from "./EmptyState";
 import { formatIstTime, formatPriceOrDash } from "../utils/format";
@@ -38,8 +38,8 @@ export function PremiumSignalsTable({ signals, onView }: PremiumSignalsTableProp
             <SignalField label="TP" value={formatPriceOrDash(signal.take_profit)} valueClassName="text-emerald-600" />
             <SignalField label="SL" value={formatPriceOrDash(signal.stop_loss)} valueClassName="text-red-600" />
             <div className="flex flex-col">
-              <span className="text-[11px] uppercase tracking-wide text-slate-400">Confidence</span>
-              <ConfidenceBadge score={signal.confidence_score} tier="PREMIUM" />
+              <span className="text-[11px] uppercase tracking-wide text-slate-400">Status</span>
+              <SignalStatusBadge status={signal.status} />
             </div>
           </div>
 

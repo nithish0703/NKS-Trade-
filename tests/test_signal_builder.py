@@ -7,7 +7,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from app.models.signal import Direction, SignalType
+from app.models.signal import Direction, SignalStatus
 from app.risk.results import (
     CorrelationResult,
     CorrelationStatus,
@@ -217,7 +217,7 @@ class TestSignalBuilderSuccess:
         )
         signal = builder.build(pair_result)
         assert signal.direction == Direction.BUY
-        assert signal.signal_type == SignalType.PREMIUM
+        assert signal.status == SignalStatus.CONFIRMED
 
     def test_valid_strong_sell_signal(self):
         builder = InstitutionalSignalBuilder()
@@ -232,7 +232,7 @@ class TestSignalBuilderSuccess:
         )
         signal = builder.build(pair_result)
         assert signal.direction == Direction.SELL
-        assert signal.signal_type == SignalType.STRONG
+        assert signal.status == SignalStatus.CONFIRMED
 
     def test_exact_field_mapping(self):
         builder = InstitutionalSignalBuilder()
@@ -245,7 +245,7 @@ class TestSignalBuilderSuccess:
         assert signal.stop_loss == pipeline_result.risk_plan.stop_loss_result.selected_stop_loss
         assert signal.take_profit == pipeline_result.risk_plan.take_profit_result.selected_take_profit
         assert signal.risk_reward_ratio == pipeline_result.risk_plan.risk_reward_ratio
-        assert signal.confidence_score == pipeline_result.confidence_result.normalized_score
+        assert signal.status == SignalStatus.CONFIRMED
         assert signal.higher_timeframe_bias == "BULLISH"
         assert signal.liquidity_type == "EQUAL_HIGH"
         assert signal.entry_zone_type == "ORDER_BLOCK"
@@ -349,36 +349,6 @@ class TestSignalBuilderFailures:
             completed_at_utc=UTC_NOW,
             duration_ms=1.0,
             reason="not trending",
-        )
-        with pytest.raises(SignalBuildError):
-            builder.build(pair_result)
-
-    def test_medium_result_fails(self):
-        builder = InstitutionalSignalBuilder()
-        pipeline_result = _valid_pipeline_result()
-        # A MEDIUM/non-publishable confidence result can never legitimately
-        # carry status=VALID (enforced by StrategyPipelineResult itself), so
-        # this simulates it via model_construct to assert the builder's own
-        # defensive classification check.
-        broken = pipeline_result.model_copy(
-            update={
-                "confidence_result": _confidence(
-                    classification=ConfidenceClassification.MEDIUM, publishable=False
-                )
-            }
-        )
-        pair_result = PairScanResult.model_construct(
-            symbol=broken.symbol,
-            status=PairScanStatus.VALID,
-            pipeline_result=broken,
-            duplicate_key=None,
-            duplicate=False,
-            started_at_utc=UTC_NOW,
-            completed_at_utc=UTC_NOW,
-            duration_ms=1.0,
-            reason=None,
-            error_type=None,
-            metadata=None,
         )
         with pytest.raises(SignalBuildError):
             builder.build(pair_result)

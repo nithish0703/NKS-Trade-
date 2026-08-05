@@ -610,16 +610,23 @@ class InstitutionalSMCStrategyEngine:
                 original_exception=exc,
             ) from exc
 
+        # The binary CONFIRMED/REJECTED decision depends only on every
+        # hard-mandatory stage having passed (mandatory_layers_passed),
+        # never on the numeric score/classification -- a setup that
+        # only cleared MEDIUM-level score, or failed a soft-scoring
+        # layer, still reaches CONFIRMED as long as every required
+        # (hard-mandatory) condition passed. The score itself is
+        # retained only as internal diagnostic/audit detail; no field
+        # anywhere presents it as the signal's confidence or rating.
         confidence_stage_result = ValidationResult(
-            passed=confidence_result.publishable,
+            passed=confidence_result.mandatory_layers_passed,
             layer_name="CONFIDENCE_SCORING",
             reason=confidence_result.reason,
-            score=confidence_result.normalized_score,
         )
         stages.append(self._stage(14, "CONFIDENCE_SCORING", confidence_stage_result, start))
         context = context.with_updates(confidence_result=confidence_result)
 
-        if not confidence_result.publishable:
+        if not confidence_result.mandatory_layers_passed:
             return self._build_rejected_result(
                 context, expected_direction, stages, "CONFIDENCE_SCORING", confidence_stage_result
             )

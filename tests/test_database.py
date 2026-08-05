@@ -70,12 +70,12 @@ class TestDatabaseManager:
                 await session.execute(
                     text(
                         "INSERT INTO signals (trade_id, setup_key, coin, direction, entry_price, "
-                        "stop_loss, take_profit, risk_reward_ratio, confidence_score, signal_type, "
+                        "stop_loss, take_profit, risk_reward_ratio, status, "
                         "market_regime, higher_timeframe_bias, liquidity_type, entry_zone_type, "
                         "structure_confirmation, volume_confirmation, atr_status, trading_session, "
                         "btc_market_alignment, detection_time_utc, institutional_reason, "
                         "liquidity_sweep_id, structure_break_id, entry_zone_id, retest_id, created_at_utc) "
-                        "VALUES ('t1', 's1', 'BTC-USDT', 'BUY', 100.0, 95.0, 110.0, 3.0, 90.0, 'PREMIUM', "
+                        "VALUES ('t1', 's1', 'BTC-USDT', 'BUY', 100.0, 95.0, 110.0, 3.0, 'CONFIRMED', "
                         "'TRENDING', 'BULLISH', 'EQUAL_HIGH', 'ORDER_BLOCK', 'BOS', 1, 'EXPANDING', "
                         "'LONDON', 1, '2026-01-01T10:00:00+00:00', 'reason', 'sw1', 'br1', 'zo1', 're1', "
                         "'2026-01-01T10:00:00+00:00')"

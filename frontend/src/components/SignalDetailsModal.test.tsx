@@ -9,12 +9,11 @@ function details(overrides: Partial<SignalDetails> = {}): SignalDetails {
     trade_id: "SMC-1",
     coin: "BTC-USDT",
     direction: "BUY",
-    signal_type: "PREMIUM",
+    status: "CONFIRMED",
     entry_price: 116980,
     stop_loss: 116250,
     take_profit: 118200,
     risk_reward_ratio: 2.5,
-    confidence_score: 96,
     market_regime: "TRENDING",
     higher_timeframe_bias: "BULLISH",
     liquidity_type: "EQUAL_HIGH",
@@ -51,27 +50,21 @@ describe("SignalDetailsModal", () => {
     renderModal();
     expect(screen.getByText("SMC-1")).toBeInTheDocument();
     expect(screen.getByText("BTC-USDT")).toBeInTheDocument();
-    expect(screen.getByText("PREMIUM")).toBeInTheDocument();
+    expect(screen.getByText("CONFIRMED")).toBeInTheDocument();
     expect(screen.getByText("1:2.50")).toBeInTheDocument();
-    expect(screen.getByText("96.0%")).toBeInTheDocument();
     expect(screen.getByText("TRENDING")).toBeInTheDocument();
     expect(screen.getByText("BULLISH")).toBeInTheDocument();
     expect(screen.getByText("Confirmed setup facts only.")).toBeInTheDocument();
   });
 
-  it("shows a Trade button for a PREMIUM signal", () => {
-    renderModal({ details: details({ signal_type: "PREMIUM" }) });
+  it("shows a Trade button for a signal not yet active", () => {
+    renderModal({ details: details({ dashboard_status: "NEW" }) });
     expect(screen.getByRole("button", { name: "Trade" })).toBeInTheDocument();
   });
 
-  it("shows a Trade button for a STRONG signal", () => {
-    renderModal({ details: details({ signal_type: "STRONG" }) });
-    expect(screen.getByRole("button", { name: "Trade" })).toBeInTheDocument();
-  });
-
-  it("does not show a Trade button for a non-PREMIUM/STRONG signal type", () => {
-    renderModal({ details: details({ signal_type: "MEDIUM" as never }) });
-    expect(screen.queryByRole("button", { name: "Trade" })).not.toBeInTheDocument();
+  it("shows a Premium only placeholder when status is null", () => {
+    renderModal({ details: details({ status: null }) });
+    expect(screen.getByText("Premium only")).toBeInTheDocument();
   });
 
   it("still shows the Close button alongside Trade", () => {

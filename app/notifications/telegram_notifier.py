@@ -1,19 +1,17 @@
 """
-Sends a Telegram notification for a final PREMIUM/STRONG Signal to
-every configured chat ID.
+Sends a Telegram notification for a final CONFIRMED Signal to every
+configured chat ID.
 """
 
-from app.models.signal import Signal, SignalType
+from app.models.signal import Signal, SignalStatus
 from app.notifications.results import NotificationStatus, TelegramNotificationResult
 from app.notifications.telegram_client import TelegramBotClient
 from app.notifications.telegram_formatter import TelegramSignalFormatter
 
-_PUBLISHABLE_SIGNAL_TYPES = (SignalType.PREMIUM, SignalType.STRONG)
-
 
 class TelegramSignalNotifier:
     """
-    Formats and sends exactly one Telegram message per PREMIUM/STRONG
+    Formats and sends exactly one Telegram message per CONFIRMED
     Signal to every configured chat ID (one delivery attempt, and one
     returned result, per chat). Performs no persistence and no
     duplicate-suppression of its own (that responsibility belongs to
@@ -45,12 +43,12 @@ class TelegramSignalNotifier:
                 )
             ]
 
-        if signal.signal_type not in _PUBLISHABLE_SIGNAL_TYPES:
+        if signal.status != SignalStatus.CONFIRMED:
             return [
                 TelegramNotificationResult(
                     trade_id=signal.trade_id,
                     status=NotificationStatus.SKIPPED,
-                    reason=f"Signal type {signal.signal_type.value} is not publishable.",
+                    reason=f"Signal status {signal.status.value} is not CONFIRMED.",
                 )
             ]
 

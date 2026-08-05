@@ -2,20 +2,12 @@
 Builds structured signal objects from validated setups.
 """
 
-from app.models.signal import Direction, MarketRegime, Signal, SignalType
+from app.models.signal import Direction, MarketRegime, Signal, SignalStatus
 from app.risk.results import RiskPlanStatus
 from app.scanner.pipeline_results import PipelineStatus, StrategyPipelineResult
 from app.scanner.scan_results import PairScanResult, PairScanStatus
-from app.scoring.results import ConfidenceClassification
 from app.utils.identifiers import make_setup_key, make_trade_id
 from app.validators.session_filter import SessionFilter
-
-_PUBLISHABLE_CLASSIFICATIONS = (ConfidenceClassification.PREMIUM, ConfidenceClassification.STRONG)
-
-_CLASSIFICATION_TO_SIGNAL_TYPE = {
-    ConfidenceClassification.PREMIUM: SignalType.PREMIUM,
-    ConfidenceClassification.STRONG: SignalType.STRONG,
-}
 
 
 class SignalBuildError(Exception):
@@ -25,11 +17,14 @@ class SignalBuildError(Exception):
 class InstitutionalSignalBuilder:
     """
     Builds a final, immutable Signal from a VALID PairScanResult,
-    reusing only already-computed pipeline/risk/confidence results.
+    reusing only already-computed pipeline/risk results.
 
-    Never recalculates market structure, indicators, liquidity, zones,
-    risk management, or confidence scoring, and never builds a signal
-    from a MEDIUM, rejected, duplicate, or errored scanner result.
+    A Signal is built whenever every required strategy condition
+    (all hard-mandatory pipeline stages) has passed -- there is no
+    intermediate score or confidence tier gating this. Never
+    recalculates market structure, indicators, liquidity, zones, or
+    risk management, and never builds a signal from a rejected,
+    duplicate, or errored scanner result.
     """
 
     def __init__(self) -> None:
@@ -48,7 +43,6 @@ class InstitutionalSignalBuilder:
 
         self._validate_pipeline_result(pipeline_result)
 
-        confidence_result = pipeline_result.confidence_result
         risk_plan = pipeline_result.risk_plan
         sweep = pipeline_result.liquidity_sweep
         zone = pipeline_result.selected_entry_zone
@@ -99,8 +93,7 @@ class InstitutionalSignalBuilder:
             stop_loss=stop_loss,
             take_profit=take_profit,
             risk_reward_ratio=risk_reward_ratio,
-            confidence_score=confidence_result.normalized_score,
-            signal_type=_CLASSIFICATION_TO_SIGNAL_TYPE[confidence_result.classification],
+            status=SignalStatus.CONFIRMED,
             market_regime=MarketRegime.TRENDING,
             higher_timeframe_bias=pipeline_result.htf_bias_result.final_bias.value,
             liquidity_type=sweep.liquidity_level.liquidity_type.value,
@@ -124,12 +117,6 @@ class InstitutionalSignalBuilder:
     def _validate_pipeline_result(pipeline_result: StrategyPipelineResult) -> None:
         if pipeline_result.status != PipelineStatus.VALID:
             raise SignalBuildError("Pipeline result status must be VALID.")
-
-        confidence_result = pipeline_result.confidence_result
-        if confidence_result is None or not confidence_result.publishable:
-            raise SignalBuildError("Pipeline confidence result must be publishable.")
-        if confidence_result.classification not in _PUBLISHABLE_CLASSIFICATIONS:
-            raise SignalBuildError("Pipeline confidence classification must be PREMIUM or STRONG.")
 
         risk_plan = pipeline_result.risk_plan
         if risk_plan is None or risk_plan.status != RiskPlanStatus.VALID:

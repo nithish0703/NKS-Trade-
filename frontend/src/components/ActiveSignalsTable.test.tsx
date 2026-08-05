@@ -13,8 +13,7 @@ function signal(overrides: Partial<ActiveSignal> = {}): ActiveSignal {
     take_profit: 118200,
     stop_loss: 116250,
     distance_to_take_profit_percentage: 0.64,
-    confidence_score: 96,
-    signal_type: "PREMIUM",
+    status: "CONFIRMED",
     detection_time_utc: "2026-01-01T10:00:00Z",
     dashboard_status: "ACTIVE",
     ...overrides,
@@ -42,5 +41,15 @@ describe("ActiveSignalsTable", () => {
     render(<ActiveSignalsTable signals={[signal({ current_price: null, distance_to_take_profit_percentage: null })]} />);
     const dashes = screen.getAllByText("—");
     expect(dashes.length).toBeGreaterThan(0);
+  });
+
+  it("shows a Premium only placeholder when status is null", () => {
+    render(<ActiveSignalsTable signals={[signal({ status: null })]} />);
+    expect(screen.getByText("Premium only")).toBeInTheDocument();
+  });
+
+  it("shows a CONFIRMED status badge", () => {
+    render(<ActiveSignalsTable signals={[signal({ status: "CONFIRMED" })]} />);
+    expect(screen.getByText("CONFIRMED")).toBeInTheDocument();
   });
 });

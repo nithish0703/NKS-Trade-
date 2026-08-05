@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy import desc, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
-from app.models.signal import Direction, MarketRegime, Signal, SignalType
+from app.models.signal import Direction, MarketRegime, Signal, SignalStatus
 from app.storage.database import DatabaseManager, DatabaseOperationError
 from app.storage.models import SignalRecord
 
@@ -72,12 +72,12 @@ class SignalRepository:
 
     async def save(self, signal: Signal) -> Signal:
         """
-        Insert a PREMIUM/STRONG signal. Raises DuplicateSignalStorageError
+        Insert a CONFIRMED signal. Raises DuplicateSignalStorageError
         if a record with the same trade_id or setup_key already exists;
         never silently inserts a duplicate.
         """
-        if signal.signal_type not in (SignalType.PREMIUM, SignalType.STRONG):
-            raise ValueError("Only PREMIUM or STRONG signals may be persisted.")
+        if signal.status != SignalStatus.CONFIRMED:
+            raise ValueError("Only CONFIRMED signals may be persisted.")
 
         record = self._to_record(signal)
 
@@ -148,7 +148,6 @@ class SignalRepository:
         self,
         limit: int = 100,
         symbol: Optional[str] = None,
-        signal_type: Optional[str] = None,
     ) -> list[Signal]:
         if limit <= 0:
             raise ValueError("limit must be positive.")
@@ -156,8 +155,6 @@ class SignalRepository:
         query = select(SignalRecord).order_by(desc(SignalRecord.created_at_utc)).limit(limit)
         if symbol is not None:
             query = query.where(SignalRecord.coin == symbol)
-        if signal_type is not None:
-            query = query.where(SignalRecord.signal_type == signal_type)
 
         async with self._database_manager.session_scope() as session:
             try:
@@ -171,7 +168,6 @@ class SignalRepository:
         self,
         limit: int = 100,
         symbol: Optional[str] = None,
-        signal_type: Optional[str] = None,
         dashboard_status: Optional[str] = None,
     ) -> list[SignalWithStatus]:
         """
@@ -185,8 +181,6 @@ class SignalRepository:
         query = select(SignalRecord).order_by(desc(SignalRecord.created_at_utc)).limit(limit)
         if symbol is not None:
             query = query.where(SignalRecord.coin == symbol)
-        if signal_type is not None:
-            query = query.where(SignalRecord.signal_type == signal_type)
         if dashboard_status is not None:
             query = query.where(SignalRecord.dashboard_status == dashboard_status)
 
@@ -309,8 +303,7 @@ class SignalRepository:
             stop_loss=signal.stop_loss,
             take_profit=signal.take_profit,
             risk_reward_ratio=signal.risk_reward_ratio,
-            confidence_score=signal.confidence_score,
-            signal_type=signal.signal_type.value,
+            status=signal.status.value,
             market_regime=signal.market_regime.value,
             higher_timeframe_bias=signal.higher_timeframe_bias,
             liquidity_type=signal.liquidity_type,
@@ -339,8 +332,7 @@ class SignalRepository:
             stop_loss=record.stop_loss,
             take_profit=record.take_profit,
             risk_reward_ratio=record.risk_reward_ratio,
-            confidence_score=record.confidence_score,
-            signal_type=SignalType(record.signal_type),
+            status=SignalStatus(record.status),
             market_regime=MarketRegime(record.market_regime),
             higher_timeframe_bias=record.higher_timeframe_bias,
             liquidity_type=record.liquidity_type,
