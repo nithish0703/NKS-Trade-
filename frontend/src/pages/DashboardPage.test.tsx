@@ -323,6 +323,7 @@ describe("DashboardPage", () => {
     vi.mocked(dashboardApi.getScanningCoins).mockResolvedValue([
       {
         coin: "BTC-USDT",
+        price: 65000,
         direction: null,
         score: null,
         status: "REJECTED",

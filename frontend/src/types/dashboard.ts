@@ -29,6 +29,10 @@ export interface DashboardSummary {
 
 export interface ScanningCoin {
   coin: string;
+  // Dashboard-only "live price" display (latest exchange traded
+  // price). Independent of scan status; never used for any trade
+  // decision. Null if the bulk ticker fetch failed for this symbol.
+  price: number | null;
   direction: Direction | null;
   score: number | null;
   status: ScanningCoinStatus;

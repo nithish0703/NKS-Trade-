@@ -85,6 +85,22 @@ class MarketDataProvider(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    async def fetch_all_ticker_prices(self) -> dict[str, float]:
+        """
+        Fetch the latest traded price for every USDT perpetual futures
+        pair in a single call, keyed by internal hyphenated symbol
+        (e.g. "BTC-USDT"). Dashboard-display only: cheaper than calling
+        fetch_ticker_price() once per symbol, and never used by the
+        strategy pipeline, scoring, or risk logic.
+
+        Returns an empty dict (rather than raising) on any request,
+        response, or validation failure, so callers displaying a "live
+        price" column can safely fall back to an unavailable/placeholder
+        state instead of fabricating a price.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
     async def fetch_open_interest_history(
         self, symbol: str, interval: str, limit: int
     ) -> list[OpenInterestPoint]:

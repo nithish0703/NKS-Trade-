@@ -39,6 +39,13 @@ class ScanningCoin(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     coin: str
+    # Dashboard-only "live price" display: the latest exchange traded
+    # price for this symbol, from a single bulk ticker call. Never used
+    # by the strategy pipeline, scoring, or risk logic, and independent
+    # of scan status -- populated even while a coin is still
+    # "SCANNING" (not yet evaluated this cycle). None if the bulk
+    # ticker fetch failed or this symbol wasn't in the response.
+    price: Optional[float] = None
     direction: Optional[str] = None
     score: Optional[float] = None
     status: str

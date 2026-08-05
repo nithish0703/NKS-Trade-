@@ -1,12 +1,38 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Search } from "lucide-react";
 import type { ScanningCoin } from "../types/dashboard";
 import { DirectionBadge } from "./DirectionBadge";
 import { CircularProgress } from "./CircularProgress";
 import { EmptyState } from "./EmptyState";
+import { formatPriceOrDash } from "../utils/format";
 
 interface ScanningCoinsTableProps {
   coins: ScanningCoin[];
+}
+
+// Row order is only recomputed on this cadence, not on every render.
+// WebSocket score updates can fire many times per scan cycle; if the
+// table resorted every time one arrived, rows would keep swapping
+// places and the table would appear to flicker/blink. Freezing the
+// order between ticks lets cell values (price, score, status) keep
+// updating live in place while the ranking itself only resettles
+// every few seconds.
+const SORT_STABILIZATION_INTERVAL_MS = 5000;
+
+function scoreRank(coin: ScanningCoin): number {
+  // Higher preview score ranks first. Coins with no score yet sink
+  // to the bottom instead of jumping to the top.
+  return coin.preview_progress_percentage ?? -1;
+}
+
+function compareByScoreThenCoin(a: ScanningCoin, b: ScanningCoin): number {
+  const scoreDiff = scoreRank(b) - scoreRank(a);
+  if (scoreDiff !== 0) {
+    return scoreDiff;
+  }
+  // Deterministic tie-break so equal scores don't reorder randomly
+  // between stabilization ticks.
+  return a.coin.localeCompare(b.coin);
 }
 
 const PREVIEW_TOOLTIP_NOTICE = "Dashboard preview only. This is not final trade confidence.";
@@ -83,13 +109,35 @@ export function scanningCoinsSummary(coins: ScanningCoin[]): { total: number; sc
 export function ScanningCoinsTable({ coins }: ScanningCoinsTableProps) {
   const [searchTerm, setSearchTerm] = useState("");
 
+  // Snapshot of coin symbols in ranked order, refreshed only on the
+  // stabilization interval below (see SORT_STABILIZATION_INTERVAL_MS).
+  const [orderedKeys, setOrderedKeys] = useState<string[]>(() =>
+    [...coins].sort(compareByScoreThenCoin).map((coin) => coin.coin),
+  );
+  const coinsRef = useRef(coins);
+  coinsRef.current = coins;
+
+  useEffect(() => {
+    const recompute = () => {
+      setOrderedKeys([...coinsRef.current].sort(compareByScoreThenCoin).map((coin) => coin.coin));
+    };
+    const interval = setInterval(recompute, SORT_STABILIZATION_INTERVAL_MS);
+    return () => clearInterval(interval);
+  }, []);
+
   if (coins.length === 0) {
     return <EmptyState message="Waiting for scanner" />;
   }
 
-  const sortedCoins = [...coins].sort(
-    (a, b) => (b.preview_progress_percentage ?? -1) - (a.preview_progress_percentage ?? -1),
-  );
+  const coinByKey = new Map(coins.map((coin) => [coin.coin, coin]));
+  // Coins already placed by the last stabilization tick keep their
+  // slot; a coin the scanner has newly discovered since that tick is
+  // appended at the end rather than forcing an immediate resort, and
+  // one that has dropped out of the feed is simply skipped.
+  const knownKeys = orderedKeys.filter((key) => coinByKey.has(key));
+  const knownKeySet = new Set(knownKeys);
+  const newKeys = coins.map((coin) => coin.coin).filter((key) => !knownKeySet.has(key));
+  const sortedCoins = [...knownKeys, ...newKeys].map((key) => coinByKey.get(key)!);
 
   const filteredCoins = sortedCoins.filter((coin) =>
     coin.coin.toLowerCase().includes(searchTerm.trim().toLowerCase()),
@@ -134,6 +182,7 @@ export function ScanningCoinsTable({ coins }: ScanningCoinsTableProps) {
             <thead className="sticky top-0 z-10 bg-white">
               <tr className="text-xs uppercase tracking-wide text-slate-400">
                 <th className="w-auto pb-2 pr-4 font-medium">Coin</th>
+                <th className="pb-2 pr-6 font-medium">Live Price</th>
                 <th className="pb-2 pr-6 font-medium">Direction</th>
                 <th className="pb-2 pr-6 font-medium">Score (%)</th>
                 <th className="pb-2 font-medium">Status</th>
@@ -145,6 +194,9 @@ export function ScanningCoinsTable({ coins }: ScanningCoinsTableProps) {
                 return (
                   <tr key={coin.coin}>
                     <td className="py-1 pr-4 font-medium text-slate-900">{coin.coin}</td>
+                    <td className="py-1 pr-6 tabular-nums text-slate-700">
+                      {formatPriceOrDash(coin.price)}
+                    </td>
                     <td className="py-1 pr-6">
                       <DirectionBadge direction={coin.preview_direction} />
                     </td>

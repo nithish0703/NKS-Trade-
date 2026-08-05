@@ -28,7 +28,7 @@ export function DashboardPage() {
   // started_at_utc never changes while the process is alive, so this
   // only needs to be fetched once per page load, not on the same 15s
   // poll as the rest of the dashboard's live data.
-  const health = useApiResource(dashboardApi.getHealth, null);
+  const health = useApiResource(dashboardApi.getHealth, undefined);
 
   const handleSocketEvent = useCallback(() => {
     // Any scanner event can affect multiple cards; refresh the affected
