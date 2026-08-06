@@ -24,9 +24,9 @@ class DuplicateSignalGuard:
     same underlying setup from being treated as a new signal repeatedly.
 
     The setup identity is built only from structural fields (symbol,
-    direction, and the IDs of the selected sweep/zone/break/retest) so
-    that confidence-score changes, entry-price fluctuations, or repeated
-    detection over successive scan cycles never alter the key.
+    direction, and the IDs of the selected sweep/zone/break) so that
+    entry-price fluctuations or repeated detection over successive scan
+    cycles never alter the key.
     """
 
     def __init__(self, *, retention_seconds: int, maximum_entries: int) -> None:
@@ -49,21 +49,19 @@ class DuplicateSignalGuard:
         sweep = pipeline_result.liquidity_sweep
         zone = pipeline_result.selected_entry_zone
         structure_break = pipeline_result.selected_structure_break
-        retest = pipeline_result.retest_result
 
-        if sweep is None or zone is None or structure_break is None or retest is None:
+        if sweep is None or zone is None or structure_break is None:
             raise DuplicateGuardError(
-                "A setup key requires the selected sweep, zone, structure break, and retest."
+                "A setup key requires the selected sweep, zone, and structure break."
             )
 
         sweep_id = getattr(sweep, "sweep_id", None)
         zone_id = getattr(zone, "zone_id", None)
         break_id = getattr(structure_break, "break_id", None)
-        retest_id = getattr(retest, "retest_id", None)
 
-        if not sweep_id or not zone_id or not break_id or not retest_id:
+        if not sweep_id or not zone_id or not break_id:
             raise DuplicateGuardError(
-                "A setup key requires sweep_id, zone_id, break_id, and retest_id to be present."
+                "A setup key requires sweep_id, zone_id, and break_id to be present."
             )
 
         key_parts = (
@@ -72,7 +70,6 @@ class DuplicateSignalGuard:
             sweep_id,
             zone_id,
             break_id,
-            retest_id,
         )
         digest_input = "|".join(str(part) for part in key_parts)
         return hashlib.sha256(digest_input.encode("utf-8")).hexdigest()

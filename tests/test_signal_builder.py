@@ -7,7 +7,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from app.models.signal import Direction, SignalType
+from app.models.signal import Direction, SignalStatus
 from app.risk.results import (
     CorrelationResult,
     CorrelationStatus,
@@ -22,9 +22,7 @@ from app.risk.results import (
 from app.scanner.pipeline_results import PipelineStatus, StrategyPipelineResult
 from app.scanner.scan_results import PairScanResult, PairScanStatus
 from app.scanner.signal_builder import InstitutionalSignalBuilder, SignalBuildError
-from app.scoring.results import ConfidenceClassification, ConfidenceScoreResult
 
-# London session (08:00-13:00 UTC) so SessionFilter.detect_session is deterministic.
 UTC_NOW = datetime(2026, 1, 1, 10, 0, tzinfo=timezone.utc)
 
 
@@ -82,20 +80,6 @@ def _real_risk_plan(direction="BUY", entry_price=100.0, stop_loss=95.0, take_pro
     )
 
 
-def _confidence(classification=ConfidenceClassification.PREMIUM, publishable=True):
-    return ConfidenceScoreResult(
-        raw_score=115.0,
-        maximum_raw_score=115,
-        normalized_score=95.8,
-        classification=classification,
-        publishable=publishable,
-        mandatory_layers_passed=True,
-        layer_scores=[],
-        failed_mandatory_layers=[],
-        reason="CONFIDENCE",
-    )
-
-
 def _sweep(sweep_id="sweep-1", liquidity_type="EQUAL_HIGH"):
     from app.liquidity.results import LiquidityType
 
@@ -123,56 +107,14 @@ def _structure_break(break_id="break-1", break_type="BOS"):
     return structure_break
 
 
-def _retest(retest_id="retest-1"):
-    retest = MagicMock()
-    retest.retest_id = retest_id
-    return retest
-
-
-def _htf_bias(final_bias="BULLISH"):
-    from app.market_structure.results import HigherTimeframeBias
-
-    htf = MagicMock()
-    htf.final_bias = HigherTimeframeBias(final_bias)
-    return htf
-
-
-def _dealing_range(position="DISCOUNT"):
-    from app.zones.dealing_range import DealingRangePosition
-
-    dealing_range = MagicMock()
-    dealing_range.position = DealingRangePosition(position)
-    return dealing_range
-
-
-def _volume_validation(passed=True):
-    from app.models.validation_result import ValidationResult
-
-    if passed:
-        return ValidationResult.success(layer_name="VOLUME_CONFIRMATION", reason="volume confirmed")
-    return ValidationResult.failure(layer_name="VOLUME_CONFIRMATION", reason="volume not confirmed")
-
-
-def _btc_alignment(passed=True):
-    from app.models.validation_result import ValidationResult
-
-    if passed:
-        return ValidationResult.success(layer_name="BTC_ALIGNMENT", reason="aligned")
-    return ValidationResult.failure(layer_name="BTC_ALIGNMENT", reason="not aligned")
-
-
 def _valid_pipeline_result(
     *,
     symbol="BTC-USDT",
     direction="BUY",
-    final_bias="BULLISH",
-    classification=ConfidenceClassification.PREMIUM,
-    publishable=True,
     risk_plan=None,
     sweep=None,
     zone=None,
     structure_break=None,
-    retest=None,
 ) -> StrategyPipelineResult:
     return StrategyPipelineResult(
         symbol=symbol,
@@ -181,16 +123,10 @@ def _valid_pipeline_result(
         status=PipelineStatus.VALID,
         passed=True,
         stages=[],
-        htf_bias_result=_htf_bias(final_bias),
         liquidity_sweep=sweep or _sweep(),
         selected_structure_break=structure_break or _structure_break(),
         selected_entry_zone=zone or _zone(),
-        retest_result=retest or _retest(),
-        dealing_range_result=_dealing_range(),
-        volume_validation=_volume_validation(),
-        btc_alignment_result=_btc_alignment(),
         risk_plan=risk_plan or _real_risk_plan(direction=direction),
-        confidence_result=_confidence(classification=classification, publishable=publishable),
     )
 
 
@@ -210,29 +146,22 @@ def _pair_scan_result(pipeline_result=None, status=PairScanStatus.VALID, duplica
 
 
 class TestSignalBuilderSuccess:
-    def test_valid_premium_buy_signal(self):
+    def test_valid_buy_signal(self):
         builder = InstitutionalSignalBuilder()
-        pair_result = _pair_scan_result(
-            _valid_pipeline_result(direction="BUY", classification=ConfidenceClassification.PREMIUM)
-        )
+        pair_result = _pair_scan_result(_valid_pipeline_result(direction="BUY"))
         signal = builder.build(pair_result)
         assert signal.direction == Direction.BUY
-        assert signal.signal_type == SignalType.PREMIUM
+        assert signal.status == SignalStatus.CONFIRMED
 
-    def test_valid_strong_sell_signal(self):
+    def test_valid_sell_signal(self):
         builder = InstitutionalSignalBuilder()
         risk_plan = _real_risk_plan(direction="SELL", entry_price=100.0, stop_loss=105.0, take_profit=90.0, rr=3.0)
         pair_result = _pair_scan_result(
-            _valid_pipeline_result(
-                direction="SELL",
-                final_bias="BEARISH",
-                classification=ConfidenceClassification.STRONG,
-                risk_plan=risk_plan,
-            )
+            _valid_pipeline_result(direction="SELL", risk_plan=risk_plan)
         )
         signal = builder.build(pair_result)
         assert signal.direction == Direction.SELL
-        assert signal.signal_type == SignalType.STRONG
+        assert signal.status == SignalStatus.CONFIRMED
 
     def test_exact_field_mapping(self):
         builder = InstitutionalSignalBuilder()
@@ -245,15 +174,13 @@ class TestSignalBuilderSuccess:
         assert signal.stop_loss == pipeline_result.risk_plan.stop_loss_result.selected_stop_loss
         assert signal.take_profit == pipeline_result.risk_plan.take_profit_result.selected_take_profit
         assert signal.risk_reward_ratio == pipeline_result.risk_plan.risk_reward_ratio
-        assert signal.confidence_score == pipeline_result.confidence_result.normalized_score
-        assert signal.higher_timeframe_bias == "BULLISH"
+        assert signal.status == SignalStatus.CONFIRMED
         assert signal.liquidity_type == "EQUAL_HIGH"
         assert signal.entry_zone_type == "ORDER_BLOCK"
         assert signal.structure_confirmation == "BOS"
         assert signal.liquidity_sweep_id == "sweep-1"
         assert signal.entry_zone_id == "zone-1"
         assert signal.structure_break_id == "break-1"
-        assert signal.retest_id == "retest-1"
 
     def test_deterministic_trade_id(self):
         builder = InstitutionalSignalBuilder()
@@ -331,16 +258,6 @@ class TestSignalBuilderFailures:
 
     def test_invalid_pipeline_status_fails(self):
         builder = InstitutionalSignalBuilder()
-        rejected = StrategyPipelineResult(
-            symbol="BTC-USDT",
-            expected_direction=None,
-            detection_time_utc=UTC_NOW,
-            status=PipelineStatus.REJECTED,
-            passed=False,
-            failed_layer="MARKET_REGIME",
-            rejection_reason="not trending",
-            stages=[],
-        )
         pair_result = PairScanResult(
             symbol="BTC-USDT",
             status=PairScanStatus.REJECTED,
@@ -349,36 +266,6 @@ class TestSignalBuilderFailures:
             completed_at_utc=UTC_NOW,
             duration_ms=1.0,
             reason="not trending",
-        )
-        with pytest.raises(SignalBuildError):
-            builder.build(pair_result)
-
-    def test_medium_result_fails(self):
-        builder = InstitutionalSignalBuilder()
-        pipeline_result = _valid_pipeline_result()
-        # A MEDIUM/non-publishable confidence result can never legitimately
-        # carry status=VALID (enforced by StrategyPipelineResult itself), so
-        # this simulates it via model_construct to assert the builder's own
-        # defensive classification check.
-        broken = pipeline_result.model_copy(
-            update={
-                "confidence_result": _confidence(
-                    classification=ConfidenceClassification.MEDIUM, publishable=False
-                )
-            }
-        )
-        pair_result = PairScanResult.model_construct(
-            symbol=broken.symbol,
-            status=PairScanStatus.VALID,
-            pipeline_result=broken,
-            duplicate_key=None,
-            duplicate=False,
-            started_at_utc=UTC_NOW,
-            completed_at_utc=UTC_NOW,
-            duration_ms=1.0,
-            reason=None,
-            error_type=None,
-            metadata=None,
         )
         with pytest.raises(SignalBuildError):
             builder.build(pair_result)
@@ -455,10 +342,10 @@ class TestSignalBuilderFailures:
         with pytest.raises(SignalBuildError):
             builder.build(pair_result)
 
-    def test_missing_retest_fails(self):
+    def test_missing_structure_break_fails(self):
         builder = InstitutionalSignalBuilder()
         pipeline_result = _valid_pipeline_result()
-        broken = pipeline_result.model_copy(update={"retest_result": None})
+        broken = pipeline_result.model_copy(update={"selected_structure_break": None})
         pair_result = PairScanResult.model_construct(
             symbol=broken.symbol,
             status=PairScanStatus.VALID,

@@ -3,7 +3,7 @@ Tests for the (removed) warm-up-tracker wiring in
 app.scanner.engine_factory.build_scanner_service.
 
 Dynamic pair discovery no longer gates newly discovered symbols behind a
-warm-up fetch: PairScanner.scan_pair() -> InstitutionalSMCStrategyEngine
+warm-up fetch: PairScanner.scan_pair() -> PipelineStrategyEngine
 .analyze_symbol() already independently fetches its own candle/market
 data for every symbol on every scan cycle regardless of warm-up state,
 so the warm-up pre-fetch only added delay (missed entries for brand-new

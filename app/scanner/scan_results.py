@@ -9,7 +9,6 @@ from typing import Any, Optional
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 from app.scanner.pipeline_results import StrategyPipelineResult, PipelineStatus
-from app.scanner.preview_analyzer import PreviewAnalysisResult
 
 
 def _is_utc(value: datetime) -> bool:
@@ -42,7 +41,6 @@ class PairScanResult(BaseModel):
     reason: Optional[str] = None
     error_type: Optional[str] = None
     metadata: Optional[dict[str, Any]] = None
-    preview_result: Optional[PreviewAnalysisResult] = None
 
     @field_validator("started_at_utc", "completed_at_utc")
     @classmethod
@@ -65,16 +63,12 @@ class PairScanResult(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def _valid_requires_publishable_pipeline_result(self) -> "PairScanResult":
+    def _valid_requires_all_required_conditions_met(self) -> "PairScanResult":
         if self.status == PairScanStatus.VALID:
-            if (
-                self.pipeline_result is None
-                or self.pipeline_result.status != PipelineStatus.VALID
-                or self.pipeline_result.confidence_result is None
-                or not self.pipeline_result.confidence_result.publishable
-            ):
+            if self.pipeline_result is None or self.pipeline_result.status != PipelineStatus.VALID:
                 raise ValueError(
-                    "A VALID PairScanResult requires a valid, publishable pipeline result."
+                    "A VALID PairScanResult requires a pipeline result with every "
+                    "required condition met."
                 )
         return self
 

@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 import pytest_asyncio
 
-from app.models.signal import Direction, MarketRegime, Signal, SignalType
+from app.models.signal import Direction, Signal, SignalStatus
 from app.storage.database import DatabaseManager
 from app.storage.signal_repository import (
     DASHBOARD_STATUS_ACTIVE,
@@ -27,7 +27,6 @@ def _signal(
     trade_id="SMC-BTC-USDT-BUY-abc123",
     setup_key="setup-key-1",
     coin="BTC-USDT",
-    signal_type=SignalType.PREMIUM,
     detection_time_utc=UTC_NOW,
     created_at_utc=UTC_NOW,
 ) -> Signal:
@@ -39,24 +38,16 @@ def _signal(
         stop_loss=95.0,
         take_profit=110.0,
         risk_reward_ratio=3.0,
-        confidence_score=90.0,
-        signal_type=signal_type,
-        market_regime=MarketRegime.TRENDING,
-        higher_timeframe_bias="BULLISH",
+        status=SignalStatus.CONFIRMED,
         liquidity_type="EQUAL_HIGH",
         entry_zone_type="ORDER_BLOCK",
         structure_confirmation="BOS",
-        volume_confirmation=True,
-        atr_status="EXPANDING",
-        trading_session="LONDON",
-        btc_market_alignment=True,
         detection_time_utc=detection_time_utc,
         institutional_reason="Confirmed setup facts only.",
         setup_key=setup_key,
         liquidity_sweep_id="sweep-1",
         structure_break_id="break-1",
         entry_zone_id="zone-1",
-        retest_id="retest-1",
         created_at_utc=created_at_utc,
     )
 
@@ -71,45 +62,32 @@ async def repository(tmp_path):
 
 
 class TestSignalRepositorySave:
-    async def test_save_premium_signal(self, repository):
-        signal = _signal(signal_type=SignalType.PREMIUM)
+    async def test_save_confirmed_signal(self, repository):
+        signal = _signal()
         saved = await repository.save(signal)
         assert saved.trade_id == signal.trade_id
 
-    async def test_save_strong_signal(self, repository):
-        signal = _signal(signal_type=SignalType.STRONG, trade_id="SMC-STRONG", setup_key="setup-strong")
-        saved = await repository.save(signal)
-        assert saved.signal_type == SignalType.STRONG
-
-    async def test_reject_medium_signal(self, repository):
-        # A Signal model itself refuses MEDIUM/IGNORE at construction, so this
+    async def test_reject_non_confirmed_signal(self, repository):
+        # A Signal model itself refuses REJECTED at construction, so this
         # confirms the repository's own defensive check via model_construct.
         signal = Signal.model_construct(
-            trade_id="SMC-MEDIUM",
+            trade_id="SMC-REJECTED",
             coin="BTC-USDT",
             direction=Direction.BUY,
             entry_price=100.0,
             stop_loss=95.0,
             take_profit=110.0,
             risk_reward_ratio=3.0,
-            confidence_score=75.0,
-            signal_type=SignalType.MEDIUM,
-            market_regime=MarketRegime.TRENDING,
-            higher_timeframe_bias="BULLISH",
+            status=SignalStatus.REJECTED,
             liquidity_type="EQUAL_HIGH",
             entry_zone_type="ORDER_BLOCK",
             structure_confirmation="BOS",
-            volume_confirmation=True,
-            atr_status="EXPANDING",
-            trading_session="LONDON",
-            btc_market_alignment=True,
             detection_time_utc=UTC_NOW,
             institutional_reason="reason",
-            setup_key="setup-medium",
+            setup_key="setup-rejected",
             liquidity_sweep_id="sweep-1",
             structure_break_id="break-1",
             entry_zone_id="zone-1",
-            retest_id="retest-1",
             created_at_utc=UTC_NOW,
         )
         with pytest.raises(ValueError):
@@ -179,15 +157,6 @@ class TestSignalRepositoryRetrieval:
         assert len(results) == 1
         assert results[0].coin == "ETH-USDT"
 
-    async def test_filter_by_signal_type(self, repository):
-        premium_signal = _signal(trade_id="SMC-P", setup_key="setup-p", signal_type=SignalType.PREMIUM)
-        strong_signal = _signal(trade_id="SMC-S", setup_key="setup-s", signal_type=SignalType.STRONG)
-        await repository.save(premium_signal)
-        await repository.save(strong_signal)
-        results = await repository.list_recent(limit=10, signal_type="STRONG")
-        assert len(results) == 1
-        assert results[0].signal_type == SignalType.STRONG
-
     async def test_positive_limit_validation(self, repository):
         with pytest.raises(ValueError):
             await repository.list_recent(limit=0)
@@ -239,8 +208,7 @@ class TestDashboardStatus:
         assert result.signal.stop_loss == signal.stop_loss
         assert result.signal.take_profit == signal.take_profit
         assert result.signal.risk_reward_ratio == signal.risk_reward_ratio
-        assert result.signal.confidence_score == signal.confidence_score
-        assert result.signal.signal_type == signal.signal_type
+        assert result.signal.status == signal.status
         assert result.signal.institutional_reason == signal.institutional_reason
         assert result.signal.detection_time_utc == signal.detection_time_utc
 

@@ -11,12 +11,8 @@ from app.models.candle import Candle
 from app.scanner.duplicate_guard import DuplicateGuardError, DuplicateSignalGuard
 from app.scanner.pipeline_exceptions import StrategyPipelineError
 from app.scanner.pipeline_results import PipelineStatus, StrategyPipelineResult
-from app.scanner.preview_analyzer import PreviewAnalysisResult, PreviewAnalyzer
 from app.scanner.scan_results import PairScanResult, PairScanStatus
-from app.scanner.strategy_engine import InstitutionalSMCStrategyEngine
-from app.scoring.results import ConfidenceClassification
-
-_PUBLISHABLE_CLASSIFICATIONS = (ConfidenceClassification.PREMIUM, ConfidenceClassification.STRONG)
+from app.strategy_pipeline.engine import PipelineStrategyEngine
 
 
 def _now_ms() -> float:
@@ -47,17 +43,15 @@ class PairScanner:
     def __init__(
         self,
         *,
-        strategy_engine: InstitutionalSMCStrategyEngine,
+        strategy_engine: PipelineStrategyEngine,
         duplicate_guard: DuplicateSignalGuard,
         semaphore: asyncio.Semaphore,
-        preview_analyzer: Optional[PreviewAnalyzer] = None,
         on_pair_result: Optional[Callable[[PairScanResult], Awaitable[None]]] = None,
         logger: Optional[logging.Logger] = None,
     ) -> None:
         self._strategy_engine = strategy_engine
         self._duplicate_guard = duplicate_guard
         self._semaphore = semaphore
-        self._preview_analyzer = preview_analyzer
         self._on_pair_result = on_pair_result
         self._logger = logger or logging.getLogger(__name__)
 
@@ -162,7 +156,6 @@ class PairScanner:
                 started_at_utc=started_at_utc,
                 start_ms=start_ms,
                 reason=pipeline_result.rejection_reason,
-                preview_result=self._safe_preview(symbol, pipeline_result),
             )
 
         if pipeline_result.status == PipelineStatus.ERROR:
@@ -174,25 +167,13 @@ class PairScanner:
                 start_ms=start_ms,
                 reason=pipeline_result.rejection_reason or "Pipeline reported an ERROR status.",
                 error_type="PipelineError",
-                preview_result=self._safe_preview(symbol, pipeline_result),
             )
 
-        confidence_result = pipeline_result.confidence_result
-        is_publishable = (
-            confidence_result is not None
-            and confidence_result.publishable
-            and confidence_result.classification in _PUBLISHABLE_CLASSIFICATIONS
-        )
-        if not is_publishable:
-            return self._finalize(
-                symbol=symbol,
-                status=PairScanStatus.REJECTED,
-                pipeline_result=pipeline_result,
-                started_at_utc=started_at_utc,
-                start_ms=start_ms,
-                reason="Pipeline result is not a publishable PREMIUM/STRONG setup.",
-            )
-
+        # pipeline_result.status is already exactly VALID/REJECTED/ERROR
+        # as decided by the strategy engine itself (every required
+        # condition satisfied for VALID); having fallen through the two
+        # checks above, status is guaranteed VALID here, so no separate
+        # score/tier re-check is needed.
         try:
             duplicate, setup_key = await self._duplicate_guard.check_and_register(
                 pipeline_result, detection_time_utc
@@ -247,25 +228,6 @@ class PairScanner:
             error_type=error_type,
         )
 
-    def _safe_preview(
-        self, symbol: str, pipeline_result: StrategyPipelineResult
-    ) -> Optional[PreviewAnalysisResult]:
-        """
-        Independently compute a dashboard-only preview analysis for a
-        REJECTED pipeline result, reusing the MarketContext the real
-        (fail-fast) pipeline already built -- no extra network or
-        database calls. Never raises: any preview failure is logged and
-        treated as "no preview available" rather than affecting the
-        real REJECTED PairScanResult in any way.
-        """
-        if self._preview_analyzer is None or pipeline_result.market_context is None:
-            return None
-        try:
-            return self._preview_analyzer.analyze(pipeline_result.market_context)
-        except Exception as exc:  # noqa: BLE001 - a preview failure must never affect the real scan
-            self._logger.warning("Preview analysis failed for %s: %s", symbol, exc)
-            return None
-
     @staticmethod
     def _finalize(
         *,
@@ -278,7 +240,6 @@ class PairScanner:
         duplicate: bool = False,
         reason: Optional[str] = None,
         error_type: Optional[str] = None,
-        preview_result: Optional[PreviewAnalysisResult] = None,
     ) -> PairScanResult:
         completed_at_utc = datetime.now(timezone.utc)
         duration_ms = max(0.0, _now_ms() - start_ms)
@@ -293,5 +254,4 @@ class PairScanner:
             duration_ms=duration_ms,
             reason=reason,
             error_type=error_type,
-            preview_result=preview_result,
         )

@@ -7,7 +7,6 @@ import type {
   RejectionItem,
   ScannerStatusResponse,
   ScanningCoin,
-  StrongSignal,
 } from "../types/dashboard";
 
 export const dashboardApi = {
@@ -24,9 +23,6 @@ export const dashboardApi = {
 
   getPremiumSignals: (): Promise<PremiumSignal[]> =>
     apiGet<PremiumSignal[]>("/api/dashboard/premium-signals"),
-
-  getStrongSignals: (): Promise<StrongSignal[]> =>
-    apiGet<StrongSignal[]>("/api/dashboard/strong-signals"),
 
   getRecentRejections: (): Promise<RejectionItem[]> =>
     apiGet<RejectionItem[]>("/api/dashboard/recent-rejections"),

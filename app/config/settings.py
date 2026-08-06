@@ -17,10 +17,6 @@ from app.config.thresholds import (
     TRADE_OUTCOME_MONITOR_INTERVAL_SECONDS,
 )
 
-# Default publishable-signal confidence cutoff (STRONG classification's
-# lower bound). Kept as a plain literal here, rather than imported from
-# app.config.thresholds, so app.scoring.classification (which needs the
-# same value) has no import-time dependency on Settings construction.
 _DEFAULT_MIN_PUBLISHABLE_CONFIDENCE_SCORE = 80.0
 
 load_dotenv()

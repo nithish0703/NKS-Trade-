@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.models.signal import Direction, MarketRegime, Signal, SignalType
+from app.models.signal import Direction, Signal, SignalStatus
 from app.notifications.notification_service import SignalNotificationService
 from app.notifications.results import NotificationStatus, TelegramNotificationResult
 from app.storage.signal_service import SignalStorageResult
@@ -17,7 +17,7 @@ pytestmark = pytest.mark.asyncio
 UTC_NOW = datetime(2026, 1, 1, 10, 0, tzinfo=timezone.utc)
 
 
-def _signal(signal_type=SignalType.PREMIUM, trade_id="SMC-1") -> Signal:
+def _signal(trade_id="SMC-1") -> Signal:
     return Signal(
         trade_id=trade_id,
         coin="BTC-USDT",
@@ -26,24 +26,16 @@ def _signal(signal_type=SignalType.PREMIUM, trade_id="SMC-1") -> Signal:
         stop_loss=95.0,
         take_profit=110.0,
         risk_reward_ratio=3.0,
-        confidence_score=95.8,
-        signal_type=signal_type,
-        market_regime=MarketRegime.TRENDING,
-        higher_timeframe_bias="BULLISH",
+        status=SignalStatus.CONFIRMED,
         liquidity_type="EQUAL_HIGH",
         entry_zone_type="ORDER_BLOCK",
         structure_confirmation="BOS",
-        volume_confirmation=True,
-        atr_status="EXPANDING",
-        trading_session="LONDON",
-        btc_market_alignment=True,
         detection_time_utc=UTC_NOW,
         institutional_reason="Confirmed setup facts only.",
         setup_key=f"setup-{trade_id}",
         liquidity_sweep_id="sweep-1",
         structure_break_id="break-1",
         entry_zone_id="zone-1",
-        retest_id="retest-1",
         created_at_utc=UTC_NOW,
     )
 
@@ -74,18 +66,10 @@ def _build_service(send_result=None):
 
 
 class TestProcessStorageResult:
-    async def test_newly_stored_premium_sends(self):
+    async def test_newly_stored_confirmed_sends(self):
         service, telegram_notifier = _build_service()
         results = await service.process_storage_result(
-            _storage_result(signal=_signal(signal_type=SignalType.PREMIUM))
-        )
-        assert results[0].status == NotificationStatus.SENT
-        telegram_notifier.notify.assert_awaited_once()
-
-    async def test_newly_stored_strong_sends(self):
-        service, telegram_notifier = _build_service()
-        results = await service.process_storage_result(
-            _storage_result(signal=_signal(signal_type=SignalType.STRONG))
+            _storage_result(signal=_signal())
         )
         assert results[0].status == NotificationStatus.SENT
         telegram_notifier.notify.assert_awaited_once()

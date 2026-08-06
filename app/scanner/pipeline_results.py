@@ -11,7 +11,6 @@ from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 from app.models.market_context import MarketContext
 from app.models.validation_result import ValidationResult
 from app.risk.results import RiskPlan, RiskPlanStatus
-from app.scoring.results import ConfidenceClassification, ConfidenceScoreResult
 
 
 class PipelineStatus(str, Enum):
@@ -84,23 +83,11 @@ class StrategyPipelineResult(BaseModel):
     rejection_reason: Optional[str] = None
     market_context: Optional[MarketContext] = None
     stages: list[PipelineStageResult]
-    market_regime_result: Optional[ValidationResult] = None
-    htf_bias_result: Optional[Any] = None
     liquidity_detection_result: Optional[Any] = None
     liquidity_sweep: Optional[Any] = None
-    structure_shift_result: Optional[Any] = None
     selected_structure_break: Optional[Any] = None
-    volume_validation: Optional[ValidationResult] = None
-    zone_detection_result: Optional[Any] = None
     selected_entry_zone: Optional[Any] = None
-    dealing_range_result: Optional[Any] = None
-    retest_result: Optional[Any] = None
-    session_result: Optional[ValidationResult] = None
-    btc_alignment_result: Optional[ValidationResult] = None
-    fake_breakout_result: Optional[ValidationResult] = None
-    candle_quality_result: Optional[ValidationResult] = None
     risk_plan: Optional[RiskPlan] = None
-    confidence_result: Optional[ConfidenceScoreResult] = None
     metadata: Optional[dict[str, Any]] = None
 
     @field_validator("detection_time_utc")
@@ -132,15 +119,6 @@ class StrategyPipelineResult(BaseModel):
         if self.status == PipelineStatus.VALID:
             if self.risk_plan is None or self.risk_plan.status != RiskPlanStatus.VALID:
                 raise ValueError("A VALID pipeline result requires a valid RiskPlan.")
-        return self
-
-    @model_validator(mode="after")
-    def _valid_requires_publishable_confidence(self) -> "StrategyPipelineResult":
-        if self.status == PipelineStatus.VALID:
-            if self.confidence_result is None or not self.confidence_result.publishable:
-                raise ValueError(
-                    "A VALID pipeline result requires a publishable ConfidenceScoreResult."
-                )
         return self
 
     @model_validator(mode="after")

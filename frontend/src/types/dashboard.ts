@@ -1,7 +1,5 @@
 export type Direction = "BUY" | "SELL";
 
-export type SignalTypeTier = "PREMIUM" | "STRONG";
-
 export type ScanningCoinStatus = "READY" | "SCANNING" | "REJECTED" | "ERROR" | "DUPLICATE";
 
 export interface ComparisonPercentages {
@@ -19,8 +17,7 @@ export interface DashboardSummary {
   open_signals: number;
   win_rate: number | null;
   average_rr: number | null;
-  premium_count: number;
-  strong_count: number;
+  confirmed_count: number;
   scanner_running: boolean;
   last_scan_time_utc: string | null;
   server_time_utc: string;
@@ -34,28 +31,21 @@ export interface ScanningCoin {
   // decision. Null if the bulk ticker fetch failed for this symbol.
   price: number | null;
   direction: Direction | null;
+  // Ranking-only score: how many pipeline stages this coin cleared so
+  // far this cycle. Used only to order the Scanning Coins table; never
+  // used to generate a signal (that decision is purely binary
+  // CONFIRMED/REJECTED).
   score: number | null;
   status: ScanningCoinStatus;
   failed_layer: string | null;
   reason: string | null;
   updated_at_utc: string | null;
-  // Dashboard-only scan-progress visibility (never the final confidence
-  // score, never used to publish/store/notify a signal).
+  // Dashboard-only scan-progress visibility (a stage-pass count, never
+  // a confidence score; never used to publish/store/notify a signal).
   validation_progress_raw_score: number | null;
   validation_progress_max_score: number | null;
   validation_progress_percentage: number | null;
   last_executed_layer: string | null;
-  // Dashboard-only, non-trading scan PREVIEW: independently
-  // re-evaluated past the point the real fail-fast pipeline stopped.
-  // Never a signal, never persisted, never notified, never final
-  // trade confidence.
-  preview_direction: Direction | null;
-  preview_progress_raw_score: number | null;
-  preview_progress_max_score: number | null;
-  preview_progress_percentage: number | null;
-  preview_completed_layers: string[] | null;
-  preview_failed_layers: string[] | null;
-  preview_data_availability: Record<string, string> | null;
 }
 
 export interface ActiveSignal {
@@ -67,8 +57,10 @@ export interface ActiveSignal {
   take_profit: number;
   stop_loss: number;
   distance_to_take_profit_percentage: number | null;
-  confidence_score: number;
-  signal_type: SignalTypeTier;
+  // Binary signal status (CONFIRMED/REJECTED). Present only for Premium
+  // access tier callers; null for Free. No score, percentage, or
+  // confidence value is ever included anywhere on this model.
+  status: string | null;
   detection_time_utc: string;
   // Dashboard-only lifecycle status; always "ACTIVE" here. Never a real
   // exchange position.
@@ -79,21 +71,12 @@ export interface PremiumSignal {
   trade_id: string;
   coin: string;
   direction: Direction;
-  signal_type: SignalTypeTier;
+  // Binary signal status (CONFIRMED/REJECTED). Present only for Premium
+  // access tier callers; null for Free.
+  status: string | null;
   entry_price: number;
   take_profit: number;
   stop_loss: number;
-  confidence_score: number;
-  detection_time_utc: string;
-}
-
-export interface StrongSignal {
-  trade_id: string;
-  coin: string;
-  direction: Direction;
-  confidence_score: number;
-  higher_timeframe_bias: string;
-  normalized_score: number;
   detection_time_utc: string;
 }
 
@@ -134,21 +117,16 @@ export interface SignalDetails {
   trade_id: string;
   coin: string;
   direction: Direction;
-  signal_type: SignalTypeTier;
+  // Binary signal status (CONFIRMED/REJECTED). Present only for Premium
+  // access tier callers; null for Free.
+  status: string | null;
   entry_price: number;
   stop_loss: number;
   take_profit: number;
   risk_reward_ratio: number;
-  confidence_score: number;
-  market_regime: string;
-  higher_timeframe_bias: string;
   liquidity_type: string;
   entry_zone_type: string;
   structure_confirmation: string;
-  volume_confirmation: boolean;
-  atr_status: string;
-  trading_session: string;
-  btc_market_alignment: boolean;
   detection_time_utc: string;
   institutional_reason: string;
   // Dashboard-only lifecycle status ("NEW" or "ACTIVE"). Drives the

@@ -18,28 +18,31 @@ class Direction(str, Enum):
     SELL = "SELL"
 
 
-class SignalType(str, Enum):
-    """Classification tier assigned to a signal by the scoring engine."""
+class SignalStatus(str, Enum):
+    """
+    Binary outcome of the strategy pipeline for a candidate setup.
 
-    PREMIUM = "PREMIUM"
-    STRONG = "STRONG"
-    MEDIUM = "MEDIUM"
-    IGNORE = "IGNORE"
+    A Signal only ever exists with status=CONFIRMED: every required
+    strategy condition passed. A REJECTED outcome never produces a
+    Signal at all (it is represented purely as a rejected pipeline
+    result, never persisted as a Signal) -- there is no intermediate
+    score or confidence tier between these two outcomes.
+    """
 
-
-class MarketRegime(str, Enum):
-    """Broad classification of the current market regime."""
-
-    TRENDING = "TRENDING"
-    RANGING = "RANGING"
-    LOW_VOLATILITY = "LOW_VOLATILITY"
-    UNKNOWN = "UNKNOWN"
+    CONFIRMED = "CONFIRMED"
+    REJECTED = "REJECTED"
 
 
 class Signal(BaseModel):
     """
     Fully-formed institutional trade signal produced by the signal
-    builder after all validation layers have passed.
+    builder after every required strategy condition has passed.
+
+    Carries no numeric score, percentage, or confidence tier of any
+    kind: `status` is always CONFIRMED for a persisted Signal. Ranking
+    scores computed elsewhere (e.g. for the dashboard's Scanning Coins
+    panel) are never part of this model and never influence whether a
+    Signal is produced.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -51,17 +54,10 @@ class Signal(BaseModel):
     stop_loss: float
     take_profit: float
     risk_reward_ratio: float
-    confidence_score: float
-    signal_type: SignalType
-    market_regime: MarketRegime
-    higher_timeframe_bias: str
+    status: SignalStatus
     liquidity_type: str
     entry_zone_type: str
     structure_confirmation: str
-    volume_confirmation: bool
-    atr_status: str
-    trading_session: str
-    btc_market_alignment: bool
     detection_time_utc: datetime
     institutional_reason: str
 
@@ -69,7 +65,6 @@ class Signal(BaseModel):
     liquidity_sweep_id: str
     structure_break_id: str
     entry_zone_id: str
-    retest_id: str
     created_at_utc: datetime
 
     @field_validator("entry_price", "stop_loss", "take_profit")
@@ -77,13 +72,6 @@ class Signal(BaseModel):
     def _must_be_positive(cls, value: float) -> float:
         if value <= 0:
             raise ValueError("entry_price, stop_loss and take_profit must be positive.")
-        return value
-
-    @field_validator("confidence_score")
-    @classmethod
-    def _confidence_score_in_range(cls, value: float) -> float:
-        if value < 0 or value > 100:
-            raise ValueError("confidence_score must be between 0 and 100.")
         return value
 
     @field_validator("risk_reward_ratio")
@@ -103,9 +91,9 @@ class Signal(BaseModel):
         return value
 
     @model_validator(mode="after")
-    def _publishable_signal_type_required(self) -> "Signal":
-        if self.signal_type not in (SignalType.PREMIUM, SignalType.STRONG):
-            raise ValueError("A Signal's signal_type must be PREMIUM or STRONG.")
+    def _signal_status_must_be_confirmed(self) -> "Signal":
+        if self.status != SignalStatus.CONFIRMED:
+            raise ValueError("A Signal's status must be CONFIRMED.")
         return self
 
     @model_validator(mode="after")

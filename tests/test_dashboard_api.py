@@ -34,7 +34,6 @@ from app.api.schemas import (
     RejectionItem,
     ScanningCoin,
     SignalDetails,
-    StrongSignal,
 )
 
 UTC_NOW = datetime(2026, 1, 1, 10, 0, tzinfo=timezone.utc)
@@ -48,8 +47,7 @@ def _summary(**overrides) -> DashboardSummary:
         open_signals=0,
         win_rate=None,
         average_rr=None,
-        premium_count=0,
-        strong_count=0,
+        confirmed_count=0,
         scanner_running=False,
         last_scan_time_utc=None,
         server_time_utc=UTC_NOW,
@@ -67,7 +65,6 @@ def app_with_mocks():
     dashboard_service.get_scanning_coins = AsyncMock(return_value=[])
     dashboard_service.get_active_signals = AsyncMock(return_value=[])
     dashboard_service.get_premium_signals = AsyncMock(return_value=[])
-    dashboard_service.get_strong_signals = AsyncMock(return_value=[])
     dashboard_service.get_recent_rejections = AsyncMock(return_value=[])
     dashboard_service.get_health = AsyncMock(
         return_value=DashboardHealth(
@@ -105,14 +102,14 @@ class TestDashboardSummaryEndpoint:
     def test_summary_returns_service_data(self, app_with_mocks):
         app, dashboard_service, _ = app_with_mocks
         dashboard_service.get_summary = AsyncMock(
-            return_value=_summary(total_signals=10, premium_count=3)
+            return_value=_summary(total_signals=10, confirmed_count=3)
         )
         with TestClient(app) as client:
             response = client.get("/api/dashboard/summary")
         assert response.status_code == 200
         body = response.json()
         assert body["total_signals"] == 10
-        assert body["premium_count"] == 3
+        assert body["confirmed_count"] == 3
 
     def test_null_win_rate_serialized_as_null(self, app_with_mocks):
         app, dashboard_service, _ = app_with_mocks
@@ -152,8 +149,7 @@ class TestActiveSignalsEndpoint:
                     take_profit=110.0,
                     stop_loss=95.0,
                     distance_to_take_profit_percentage=4.76,
-                    confidence_score=95.0,
-                    signal_type="PREMIUM",
+                    status="CONFIRMED",
                     detection_time_utc=UTC_NOW,
                 )
             ]
@@ -177,8 +173,7 @@ class TestActivateSignalEndpoint:
                 take_profit=110.0,
                 stop_loss=95.0,
                 distance_to_take_profit_percentage=None,
-                confidence_score=95.0,
-                signal_type="PREMIUM",
+                status="CONFIRMED",
                 detection_time_utc=UTC_NOW,
                 dashboard_status="ACTIVE",
             )
@@ -188,7 +183,9 @@ class TestActivateSignalEndpoint:
         assert response.status_code == 200
         assert response.json()["trade_id"] == "SMC-1"
         assert response.json()["dashboard_status"] == "ACTIVE"
-        dashboard_service.activate_signal.assert_awaited_once_with("SMC-1")
+        dashboard_service.activate_signal.assert_awaited_once()
+        call_args = dashboard_service.activate_signal.call_args
+        assert call_args.args[0] == "SMC-1" or call_args.kwargs.get("trade_id") == "SMC-1"
 
     def test_activate_signal_not_found_returns_404(self, app_with_mocks):
         app, dashboard_service, _ = app_with_mocks
@@ -204,7 +201,7 @@ class TestActivateSignalEndpoint:
         assert response.status_code == 405
 
 
-class TestPremiumStrongEndpoints:
+class TestPremiumEndpoints:
     def test_premium_signals_endpoint(self, app_with_mocks):
         app, dashboard_service, _ = app_with_mocks
         dashboard_service.get_premium_signals = AsyncMock(
@@ -213,11 +210,10 @@ class TestPremiumStrongEndpoints:
                     trade_id="SMC-1",
                     coin="BTC-USDT",
                     direction="BUY",
-                    signal_type="PREMIUM",
+                    status="CONFIRMED",
                     entry_price=100.0,
                     take_profit=110.0,
                     stop_loss=95.0,
-                    confidence_score=95.0,
                     detection_time_utc=UTC_NOW,
                 )
             ]
@@ -225,37 +221,42 @@ class TestPremiumStrongEndpoints:
         with TestClient(app) as client:
             response = client.get("/api/dashboard/premium-signals")
         assert response.status_code == 200
-        assert response.json()[0]["signal_type"] == "PREMIUM"
+        assert response.json()[0]["status"] == "CONFIRMED"
 
-    def test_strong_signals_endpoint(self, app_with_mocks):
+    def test_strong_signals_route_removed(self, app_with_mocks):
+        # The /strong-signals endpoint no longer exists.
+        app, _, _ = app_with_mocks
+        with TestClient(app) as client:
+            response = client.get("/api/dashboard/strong-signals")
+        assert response.status_code == 404
+
+    def test_premium_signals_tier_gating(self, app_with_mocks):
+        # status is populated only for the premium tier; free (default)
+        # tier calls must receive status=None.
         app, dashboard_service, _ = app_with_mocks
-        dashboard_service.get_strong_signals = AsyncMock(
-            return_value=[
-                StrongSignal(
-                    trade_id="SMC-2",
-                    coin="ETH-USDT",
-                    direction="SELL",
-                    confidence_score=85.0,
-                    higher_timeframe_bias="BEARISH",
-                    normalized_score=85.0,
+
+        async def _get_premium_signals(limit=50, *, tier):
+            from app.api.access_tier import AccessTier
+
+            return [
+                PremiumSignal(
+                    trade_id="SMC-1",
+                    coin="BTC-USDT",
+                    direction="BUY",
+                    status="CONFIRMED" if tier == AccessTier.PREMIUM else None,
+                    entry_price=100.0,
+                    take_profit=110.0,
+                    stop_loss=95.0,
                     detection_time_utc=UTC_NOW,
                 )
             ]
-        )
-        with TestClient(app) as client:
-            response = client.get("/api/dashboard/strong-signals")
-        assert response.status_code == 200
-        assert response.json()[0]["coin"] == "ETH-USDT"
 
-    def test_medium_signals_never_exposed(self, app_with_mocks):
-        # There is no dashboard endpoint that can return MEDIUM signals at
-        # all; confirm neither premium nor strong routes ever surface one.
-        app, dashboard_service, _ = app_with_mocks
+        dashboard_service.get_premium_signals = _get_premium_signals
         with TestClient(app) as client:
-            premium_response = client.get("/api/dashboard/premium-signals")
-            strong_response = client.get("/api/dashboard/strong-signals")
-        for body in (premium_response.json(), strong_response.json()):
-            assert all(item.get("signal_type") != "MEDIUM" for item in body)
+            free_response = client.get("/api/dashboard/premium-signals")
+            premium_response = client.get("/api/dashboard/premium-signals?tier=premium")
+        assert free_response.json()[0]["status"] is None
+        assert premium_response.json()[0]["status"] == "CONFIRMED"
 
 
 class TestRejectionsEndpoint:
@@ -303,12 +304,11 @@ class TestSignalDetailsEndpoint:
                 trade_id="SMC-1",
                 coin="BTC-USDT",
                 direction="BUY",
-                signal_type="PREMIUM",
+                status="CONFIRMED",
                 entry_price=100.0,
                 stop_loss=95.0,
                 take_profit=110.0,
                 risk_reward_ratio=3.0,
-                confidence_score=95.0,
                 market_regime="TRENDING",
                 higher_timeframe_bias="BULLISH",
                 liquidity_type="EQUAL_HIGH",
@@ -341,12 +341,11 @@ class TestSignalDetailsEndpoint:
                 trade_id="SMC-1",
                 coin="BTC-USDT",
                 direction="BUY",
-                signal_type="PREMIUM",
+                status="CONFIRMED",
                 entry_price=100.0,
                 stop_loss=95.0,
                 take_profit=110.0,
                 risk_reward_ratio=3.0,
-                confidence_score=95.0,
                 market_regime="TRENDING",
                 higher_timeframe_bias="BULLISH",
                 liquidity_type="EQUAL_HIGH",
@@ -402,7 +401,7 @@ class TestScannerStatusEndpoint:
 
 class TestSignalsListEndpoint:
     def test_list_signals_endpoint(self, app_with_mocks):
-        from app.models.signal import Direction, MarketRegime, Signal, SignalType
+        from app.models.signal import Direction, Signal, SignalStatus
 
         app, _, signal_repository = app_with_mocks
         signal_repository.list_recent = AsyncMock(
@@ -415,24 +414,16 @@ class TestSignalsListEndpoint:
                     stop_loss=95.0,
                     take_profit=110.0,
                     risk_reward_ratio=3.0,
-                    confidence_score=95.0,
-                    signal_type=SignalType.PREMIUM,
-                    market_regime=MarketRegime.TRENDING,
-                    higher_timeframe_bias="BULLISH",
+                    status=SignalStatus.CONFIRMED,
                     liquidity_type="EQUAL_HIGH",
                     entry_zone_type="ORDER_BLOCK",
                     structure_confirmation="BOS",
-                    volume_confirmation=True,
-                    atr_status="EXPANDING",
-                    trading_session="LONDON",
-                    btc_market_alignment=True,
                     detection_time_utc=UTC_NOW,
                     institutional_reason="reason",
                     setup_key="setup-1",
                     liquidity_sweep_id="sweep-1",
                     structure_break_id="break-1",
                     entry_zone_id="zone-1",
-                    retest_id="retest-1",
                     created_at_utc=UTC_NOW,
                 )
             ]

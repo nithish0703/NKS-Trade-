@@ -5,7 +5,7 @@ SQLAlchemy ORM models for locally persisted signals and analytics.
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import Boolean, DateTime, Float, Integer, String, Text
+from sqlalchemy import DateTime, Float, Integer, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -14,7 +14,7 @@ class Base(DeclarativeBase):
 
 
 class SignalRecord(Base):
-    """Persisted, publishable PREMIUM/STRONG institutional trade signal."""
+    """Persisted, CONFIRMED institutional trade signal (binary decision only, no score)."""
 
     __tablename__ = "signals"
 
@@ -27,23 +27,15 @@ class SignalRecord(Base):
     stop_loss: Mapped[float] = mapped_column(Float, nullable=False)
     take_profit: Mapped[float] = mapped_column(Float, nullable=False)
     risk_reward_ratio: Mapped[float] = mapped_column(Float, nullable=False)
-    confidence_score: Mapped[float] = mapped_column(Float, nullable=False)
-    signal_type: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
-    market_regime: Mapped[str] = mapped_column(String(32), nullable=False)
-    higher_timeframe_bias: Mapped[str] = mapped_column(String(16), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, index=True, default="CONFIRMED")
     liquidity_type: Mapped[str] = mapped_column(String(32), nullable=False)
     entry_zone_type: Mapped[str] = mapped_column(String(32), nullable=False)
     structure_confirmation: Mapped[str] = mapped_column(String(16), nullable=False)
-    volume_confirmation: Mapped[bool] = mapped_column(Boolean, nullable=False)
-    atr_status: Mapped[str] = mapped_column(String(16), nullable=False)
-    trading_session: Mapped[str] = mapped_column(String(32), nullable=False)
-    btc_market_alignment: Mapped[bool] = mapped_column(Boolean, nullable=False)
     detection_time_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     institutional_reason: Mapped[str] = mapped_column(Text, nullable=False)
     liquidity_sweep_id: Mapped[str] = mapped_column(String(128), nullable=False)
     structure_break_id: Mapped[str] = mapped_column(String(128), nullable=False)
     entry_zone_id: Mapped[str] = mapped_column(String(128), nullable=False)
-    retest_id: Mapped[str] = mapped_column(String(128), nullable=False)
     created_at_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     # Dashboard-only lifecycle status ("NEW", "ACTIVE", "CLOSED_WIN", or

@@ -6,7 +6,6 @@ import { DataCard } from "../components/DataCard";
 import { ScanningCoinsTable } from "../components/ScanningCoinsTable";
 import { ActiveSignalsTable } from "../components/ActiveSignalsTable";
 import { PremiumSignalsTable } from "../components/PremiumSignalsTable";
-import { StrongSignalsTable } from "../components/StrongSignalsTable";
 import { SignalDetailsModal } from "../components/SignalDetailsModal";
 import { LoadingSkeleton } from "../components/LoadingSkeleton";
 import { ErrorState } from "../components/ErrorState";
@@ -24,7 +23,6 @@ export function DashboardPage() {
   const scanningCoins = useApiResource(dashboardApi.getScanningCoins, REST_RECONCILE_INTERVAL_MS);
   const activeSignals = useApiResource(dashboardApi.getActiveSignals, REST_RECONCILE_INTERVAL_MS);
   const premiumSignals = useApiResource(dashboardApi.getPremiumSignals, REST_RECONCILE_INTERVAL_MS);
-  const strongSignals = useApiResource(dashboardApi.getStrongSignals, REST_RECONCILE_INTERVAL_MS);
   // started_at_utc never changes while the process is alive, so this
   // only needs to be fetched once per page load, not on the same 15s
   // poll as the rest of the dashboard's live data.
@@ -38,7 +36,6 @@ export function DashboardPage() {
     scanningCoins.refresh();
     activeSignals.refresh();
     premiumSignals.refresh();
-    strongSignals.refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -77,13 +74,12 @@ export function DashboardPage() {
     dashboardApi
       .activateSignal(tradeId)
       .then(() => {
-        // The signal has moved from Premium/Strong into Active Signals on
+        // The signal has moved from Premium into Active Signals on
         // the backend; refresh every affected list so the dashboard
         // reflects the new state immediately, then close the modal.
         summary.refresh();
         activeSignals.refresh();
         premiumSignals.refresh();
-        strongSignals.refresh();
         setSelectedTradeId(null);
       })
       .catch((error: unknown) => {
@@ -176,25 +172,10 @@ export function DashboardPage() {
 
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-5">
           <DataCard
-            title="Strong Signals"
-            icon={<Activity size={16} />}
-            iconClassName="bg-blue-50 text-blue-600"
-            className="lg:col-span-2"
-          >
-            {strongSignals.loading ? (
-              <LoadingSkeleton />
-            ) : strongSignals.error ? (
-              <ErrorState message={strongSignals.error} />
-            ) : (
-              <StrongSignalsTable signals={strongSignals.data ?? []} />
-            )}
-          </DataCard>
-
-          <DataCard
             title="Premium Signals"
             icon={<Gem size={16} />}
             iconClassName="bg-purple-50 text-purple-600"
-            className="lg:col-span-3"
+            className="lg:col-span-5"
           >
             {premiumSignals.loading ? (
               <LoadingSkeleton />

@@ -27,8 +27,7 @@ class DashboardSummary(BaseModel):
     open_signals: int
     win_rate: Optional[float] = None
     average_rr: Optional[float] = None
-    premium_count: int
-    strong_count: int
+    confirmed_count: int
     scanner_running: bool
     last_scan_time_utc: Optional[datetime] = None
     server_time_utc: datetime
@@ -61,20 +60,6 @@ class ScanningCoin(BaseModel):
     validation_progress_percentage: Optional[float] = None
     last_executed_layer: Optional[str] = None
 
-    # Dashboard-only, non-trading scan PREVIEW. Independently
-    # re-evaluated from the same market data, continuing past the point
-    # the real fail-fast pipeline stopped. Never a signal, never
-    # persisted, never notified, never used for risk/trade decisions,
-    # and never a substitute for `direction`/`validation_progress_*`
-    # above (which reflect the real, fail-fast pipeline outcome).
-    preview_direction: Optional[str] = None
-    preview_progress_raw_score: Optional[float] = None
-    preview_progress_max_score: Optional[float] = None
-    preview_progress_percentage: Optional[float] = None
-    preview_completed_layers: Optional[list[str]] = None
-    preview_failed_layers: Optional[list[str]] = None
-    preview_data_availability: Optional[dict[str, str]] = None
-
     # Dashboard-only visual cue: raw price direction of the most recent
     # completed entry-timeframe candle vs. the one before it. A pure
     # chart observation -- never HTF-bias-derived, never a substitute
@@ -94,8 +79,10 @@ class ActiveSignal(BaseModel):
     take_profit: float
     stop_loss: float
     distance_to_take_profit_percentage: Optional[float] = None
-    confidence_score: float
-    signal_type: str
+    # Binary signal status (CONFIRMED/REJECTED). Present only for Premium
+    # access tier callers; omitted (None) for Free. No score, percentage,
+    # or confidence value is ever included anywhere on this model.
+    status: Optional[str] = None
     detection_time_utc: datetime
     # Dashboard-only lifecycle status; always "ACTIVE" for a signal that
     # appears in this list. Never reflects a real exchange position.
@@ -108,23 +95,12 @@ class PremiumSignal(BaseModel):
     trade_id: str
     coin: str
     direction: str
-    signal_type: str
+    # Binary signal status (CONFIRMED/REJECTED). Present only for Premium
+    # access tier callers; omitted (None) for Free.
+    status: Optional[str] = None
     entry_price: float
     take_profit: float
     stop_loss: float
-    confidence_score: float
-    detection_time_utc: datetime
-
-
-class StrongSignal(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
-    trade_id: str
-    coin: str
-    direction: str
-    confidence_score: float
-    higher_timeframe_bias: str
-    normalized_score: float
     detection_time_utc: datetime
 
 
@@ -163,21 +139,16 @@ class SignalDetails(BaseModel):
     trade_id: str
     coin: str
     direction: str
-    signal_type: str
+    # Binary signal status (CONFIRMED/REJECTED). Present only for Premium
+    # access tier callers; omitted (None) for Free.
+    status: Optional[str] = None
     entry_price: float
     stop_loss: float
     take_profit: float
     risk_reward_ratio: float
-    confidence_score: float
-    market_regime: str
-    higher_timeframe_bias: str
     liquidity_type: str
     entry_zone_type: str
     structure_confirmation: str
-    volume_confirmation: bool
-    atr_status: str
-    trading_session: str
-    btc_market_alignment: bool
     detection_time_utc: datetime
     institutional_reason: str
     # Dashboard-only lifecycle status ("NEW" or "ACTIVE"). Drives whether

@@ -4,7 +4,7 @@ Tests for app.notifications.telegram_formatter.TelegramSignalFormatter.
 
 from datetime import datetime, timezone
 
-from app.models.signal import Direction, MarketRegime, Signal, SignalType
+from app.models.signal import Direction, Signal, SignalStatus
 from app.notifications.telegram_formatter import TelegramSignalFormatter
 
 UTC_NOW = datetime(2026, 1, 1, 10, 0, tzinfo=timezone.utc)
@@ -13,7 +13,6 @@ UTC_NOW = datetime(2026, 1, 1, 10, 0, tzinfo=timezone.utc)
 def _signal(
     *,
     direction=Direction.BUY,
-    signal_type=SignalType.PREMIUM,
     entry_price=100.0,
     stop_loss=95.0,
     take_profit=110.0,
@@ -28,47 +27,38 @@ def _signal(
         stop_loss=stop_loss,
         take_profit=take_profit,
         risk_reward_ratio=3.0,
-        confidence_score=95.8,
-        signal_type=signal_type,
-        market_regime=MarketRegime.TRENDING,
-        higher_timeframe_bias="BULLISH" if direction == Direction.BUY else "BEARISH",
+        status=SignalStatus.CONFIRMED,
         liquidity_type="EQUAL_HIGH",
         entry_zone_type="ORDER_BLOCK",
         structure_confirmation="BOS",
-        volume_confirmation=True,
-        atr_status="EXPANDING",
-        trading_session="LONDON",
-        btc_market_alignment=True,
         detection_time_utc=UTC_NOW,
         institutional_reason=institutional_reason,
         setup_key="setup-1",
         liquidity_sweep_id="sweep-1",
         structure_break_id="break-1",
         entry_zone_id="zone-1",
-        retest_id="retest-1",
         created_at_utc=UTC_NOW,
     )
 
 
 class TestFormatSignal:
-    def test_premium_buy_formatting(self):
+    def test_confirmed_buy_formatting(self):
         formatter = TelegramSignalFormatter()
-        message = formatter.format_signal(_signal(signal_type=SignalType.PREMIUM, direction=Direction.BUY))
-        assert "NKS PREMIUM SIGNAL" in message
+        message = formatter.format_signal(_signal(direction=Direction.BUY))
+        assert "NKS CONFIRMED SIGNAL" in message
         assert "Direction: <b>BUY</b>" in message
 
-    def test_strong_sell_formatting(self):
+    def test_confirmed_sell_formatting(self):
         formatter = TelegramSignalFormatter()
         message = formatter.format_signal(
             _signal(
-                signal_type=SignalType.STRONG,
                 direction=Direction.SELL,
                 entry_price=100.0,
                 stop_loss=105.0,
                 take_profit=90.0,
             )
         )
-        assert "NKS STRONG SIGNAL" in message
+        assert "NKS CONFIRMED SIGNAL" in message
         assert "Direction: <b>SELL</b>" in message
 
     def test_exactly_one_take_profit(self):
@@ -93,8 +83,6 @@ class TestFormatSignal:
             "Stop Loss:",
             "Take Profit:",
             "Risk Reward:",
-            "Confidence:",
-            "Session:",
             "Detected:",
         ):
             assert field_label in message
@@ -112,8 +100,15 @@ class TestFormatSignal:
             "Volume:",
             "ATR:",
             "BTC Alignment:",
+            "Session:",
         ):
             assert removed_label not in message
+
+    def test_no_confidence_percentage_included(self):
+        formatter = TelegramSignalFormatter()
+        message = formatter.format_signal(_signal())
+        assert "Confidence:" not in message
+        assert "%" not in message
 
     def test_institutional_reason_not_included(self):
         formatter = TelegramSignalFormatter()

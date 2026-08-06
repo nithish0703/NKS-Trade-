@@ -226,17 +226,15 @@ class MultiPairScanScheduler:
     @staticmethod
     def _rank_valid_results(valid_results: list[PairScanResult]) -> list[PairScanResult]:
         """
-        Rank every VALID result by its final confidence score, highest
-        first, so the cycle's output always carries an explicit final
-        ranking across all filtered coins -- never just the first match
-        or discovery order. Never recalculates the score; only reorders
-        the already-computed results.
+        Order every VALID result by symbol name, so the cycle's output
+        has a stable, deterministic order across all confirmed coins
+        rather than depending on concurrent-task completion order.
+        VALID results carry no score of any kind (the signal decision
+        is binary CONFIRMED/REJECTED) -- there is nothing left to rank
+        setups against each other by, so this is a display-order
+        convenience only, never a priority/quality ordering.
         """
-        return sorted(
-            valid_results,
-            key=lambda r: r.pipeline_result.confidence_result.normalized_score,
-            reverse=True,
-        )
+        return sorted(valid_results, key=lambda r: r.symbol)
 
     @staticmethod
     def _build_task_error_result(
