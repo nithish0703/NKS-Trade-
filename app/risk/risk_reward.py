@@ -4,6 +4,7 @@ Computes risk-reward ratio for a trade setup.
 
 import math
 
+from app.config.thresholds import MIN_RISK_REWARD_RATIO
 from app.models.validation_result import ValidationResult
 
 from app.risk.stop_loss import RiskCalculationError
@@ -58,7 +59,7 @@ def calculate_risk_reward(
 
 
 def validate_minimum_risk_reward(
-    risk_reward_ratio: float, minimum_ratio: float = 1.80
+    risk_reward_ratio: float, minimum_ratio: float = MIN_RISK_REWARD_RATIO
 ) -> ValidationResult:
     """
     Validate that `risk_reward_ratio` meets or exceeds `minimum_ratio`.

@@ -5,6 +5,7 @@ active-trade/averaging guards into a single risk plan.
 
 from typing import Mapping, Optional, Sequence
 
+from app.config.thresholds import MIN_RISK_REWARD_RATIO
 from app.liquidity.results import LiquidityLevel, LiquiditySweepResult
 from app.market_structure.results import SwingPoint
 from app.models.candle import Candle
@@ -26,8 +27,6 @@ from app.risk.results import (
 from app.risk.risk_reward import validate_minimum_risk_reward
 from app.risk.stop_loss import DynamicStopLossCalculator
 from app.risk.take_profit import SingleTakeProfitCalculator
-
-_MINIMUM_RISK_REWARD = 1.80
 
 
 class RiskManagementCalculator:
@@ -131,7 +130,7 @@ class RiskManagementCalculator:
             )
 
         risk_reward_ratio = take_profit_result.risk_reward_ratio
-        rr_validation = validate_minimum_risk_reward(risk_reward_ratio, _MINIMUM_RISK_REWARD)
+        rr_validation = validate_minimum_risk_reward(risk_reward_ratio, MIN_RISK_REWARD_RATIO)
         if not rr_validation.passed:
             return self._invalid_plan(
                 direction,

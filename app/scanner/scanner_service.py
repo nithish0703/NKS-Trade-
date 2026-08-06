@@ -153,10 +153,13 @@ class ScannerService:
                 signal = storage_result.signal
                 stored = storage_result.stored
                 duplicate = storage_result.duplicate
+                reason = getattr(storage_result, "reason", None)
             except AttributeError:
                 continue
 
             if signal is None:
+                if not stored and not duplicate and reason:
+                    self._logger.warning("Signal build/storage skipped: %s", reason)
                 continue
 
             if stored:
