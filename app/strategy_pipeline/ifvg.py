@@ -96,6 +96,27 @@ class IfvgResult(BaseModel):
     bos_zone: Optional[TradeZone] = None
     bos_zone_retest_candle_index: Optional[int] = None
 
+    @property
+    def selected_zone(self) -> Optional[TradeZone]:
+        """
+        The single zone downstream stages (Stage 6 risk management, and
+        the context's `selected_entry_zone`) should use, regardless of
+        which grade passed: `ifvg_zone` for a passing Grade A result,
+        `bos_zone` for a passing Grade B result, None when the stage
+        did not pass at all.
+
+        Callers must read this instead of `ifvg_zone` directly -- a
+        direct read only ever sees Grade A's zone and silently treats
+        every Grade B pass as having no entry zone, which is exactly
+        the bug this property exists to make structurally impossible
+        to reintroduce at a single call site.
+        """
+        if self.entry_grade == "A":
+            return self.ifvg_zone
+        if self.entry_grade == "B":
+            return self.bos_zone
+        return None
+
 
 def _opposite_direction(expected_direction: str) -> str:
     return "SELL" if expected_direction == "BUY" else "BUY"
@@ -116,6 +137,41 @@ def _closes_fully_through(candle: Candle, zone: TradeZone, *, expected_direction
 def _retests_zone(candle: Candle, zone: TradeZone) -> bool:
     """A retest is any later candle whose range overlaps the zone's price band."""
     return candle.low <= zone.upper_price and candle.high >= zone.lower_price
+
+
+def _structure_invalidated_index(
+    candles: Sequence[Candle],
+    structure_break: StructureBreakResult,
+    *,
+    after_index: int,
+    window_end_index: int,
+) -> Optional[int]:
+    """
+    First candle strictly after `after_index` (and at or before
+    `window_end_index`) whose close negates the BOS this entry location
+    depends on: for a bullish break, a close strictly below
+    `structure_break.broken_swing.price`; for a bearish break, a close
+    strictly above it.
+
+    Uses close, not wick, for the same reason `_closes_fully_through`
+    does: a wick alone is noise/liquidity-grab behaviour, not a
+    considered rejection of the level, and this module never treats a
+    mere touch as invalidating a structural premise any more than it
+    treats one as confirming a flip. Stage 3 already confirmed this
+    break; this only detects whether that confirmation was later
+    negated before the entry location itself could confirm -- it never
+    reruns or second-guesses Stage 3's own pass/fail decision.
+    """
+    swing_price = structure_break.broken_swing.price
+    for index in range(after_index + 1, min(len(candles), window_end_index + 1)):
+        candle = candles[index]
+        if structure_break.direction == BreakDirection.BULLISH:
+            if candle.close < swing_price:
+                return index
+        else:
+            if candle.close > swing_price:
+                return index
+    return None
 
 
 def _find_flip_candle_index(
@@ -308,11 +364,23 @@ def evaluate_ifvg(
     the stage fails with a reason naming both outcomes, never a
     generic "not confirmed."
 
-    Never fabricates a flip, a retest, or a BOS-zone retest that hasn't
-    happened, and never rejects a structurally valid trade idea (Stage
-    3 already passed) outright just because the tighter Grade A window
-    expired -- this fallback only concerns entry *location*, never
-    trade *validity*.
+    Both graded paths also check for structure invalidation (see
+    `_structure_invalidated_index`): if price closes back through the
+    BOS's own broken swing level before a path's retest candle, that
+    path's premise -- the break is still structurally intact -- no
+    longer holds, so a retest occurring afterward is never accepted as
+    if nothing had happened. Grade A treats this exactly like its
+    window expiring (falls through to Grade B); Grade B treats it as a
+    final rejection, since there is no further fallback beyond it. A
+    trader must be able to tell "structure invalidated" apart from a
+    plain "window expired" or "no fallback retest" in the failure
+    reason, since they imply different things about the setup.
+
+    Never fabricates a flip, a retest, a BOS-zone retest, or a
+    structure invalidation that hasn't happened, and never rejects a
+    structurally valid trade idea (Stage 3 already passed) outright
+    just because the tighter Grade A window expired -- this fallback
+    only concerns entry *location*, never trade *validity*.
     """
     if not candles:
         return IfvgResult(passed=False, reason="No candles available.")
@@ -326,8 +394,20 @@ def evaluate_ifvg(
     grade_a_result = _evaluate_ifvg_flip_and_retest(
         candles, fair_value_gaps, expected_direction=expected_direction, window_end_index=ifvg_window_end
     )
+    grade_a_invalidated_index: Optional[int] = None
     if grade_a_result.passed:
-        return grade_a_result.model_copy(update={"entry_grade": "A"})
+        grade_a_invalidated_index = _structure_invalidated_index(
+            candles,
+            structure_break,
+            after_index=structure_break.break_candle_index,
+            window_end_index=grade_a_result.retest_candle_index,
+        )
+        if grade_a_invalidated_index is None:
+            return grade_a_result.model_copy(update={"entry_grade": "A"})
+        # Structure was invalidated at or before the retest that would
+        # otherwise confirm Grade A -- treat this exactly like the
+        # window expiring (never accept the retest) and fall through
+        # to Grade B below.
 
     bos_zone = _build_bos_zone(structure_break)
     bos_zone_window_end = structure_break.break_candle_index + BOS_ZONE_RETEST_VALIDITY_WINDOW_CANDLES
@@ -337,18 +417,42 @@ def evaluate_ifvg(
         after_index=structure_break.break_candle_index,
         window_end_index=bos_zone_window_end,
     )
+    bos_zone_invalidated_index: Optional[int] = None
     if bos_zone_retest_index is not None:
+        bos_zone_invalidated_index = _structure_invalidated_index(
+            candles,
+            structure_break,
+            after_index=structure_break.break_candle_index,
+            window_end_index=bos_zone_retest_index,
+        )
+        if bos_zone_invalidated_index is None:
+            return IfvgResult(
+                passed=True,
+                reason=(
+                    f"IFVG flip+retest did not confirm within {IFVG_VALIDITY_WINDOW_CANDLES} candles "
+                    f"of the BOS, but its broken-structure zone was retested within "
+                    f"{BOS_ZONE_RETEST_VALIDITY_WINDOW_CANDLES} candles: a wider fallback entry "
+                    "location exists."
+                ),
+                entry_grade="B",
+                bos_zone=bos_zone,
+                bos_zone_retest_candle_index=bos_zone_retest_index,
+            )
+
+    invalidated_index = (
+        bos_zone_invalidated_index if bos_zone_invalidated_index is not None else grade_a_invalidated_index
+    )
+    if invalidated_index is not None:
+        invalidated_candle = candles[invalidated_index]
         return IfvgResult(
-            passed=True,
+            passed=False,
             reason=(
-                f"IFVG flip+retest did not confirm within {IFVG_VALIDITY_WINDOW_CANDLES} candles "
-                f"of the BOS, but its broken-structure zone was retested within "
-                f"{BOS_ZONE_RETEST_VALIDITY_WINDOW_CANDLES} candles: a wider fallback entry "
-                "location exists."
+                f"structure invalidated at candle {invalidated_candle.timestamp.isoformat()}: "
+                f"price closed back through the broken {structure_break.broken_swing.price:.6g} "
+                "level, negating the break before an entry location could confirm."
             ),
-            entry_grade="B",
-            bos_zone=bos_zone,
-            bos_zone_retest_candle_index=bos_zone_retest_index,
+            source_fvg=grade_a_result.source_fvg,
+            flip_candle_index=grade_a_result.flip_candle_index,
         )
 
     return IfvgResult(

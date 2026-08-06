@@ -323,7 +323,7 @@ class PipelineStrategyEngine:
         ifvg_validation = ValidationResult(passed=ifvg_result.passed, layer_name="IFVG", reason=ifvg_result.reason)
         stage_results["IFVG"] = ifvg_validation
         stages.append(self._stage(4, "IFVG", ifvg_validation, start))
-        context = context.with_updates(selected_entry_zone=ifvg_result.ifvg_zone)
+        context = context.with_updates(selected_entry_zone=ifvg_result.selected_zone)
         if not ifvg_validation.passed:
             return self._build_rejected_result(context, expected_direction, stages, "IFVG", ifvg_validation)
 
@@ -347,7 +347,7 @@ class PipelineStrategyEngine:
 
         # Stage 6: RISK_MANAGEMENT
         start = _now_ms()
-        entry_zone = ifvg_result.ifvg_zone
+        entry_zone = ifvg_result.selected_zone
         atr = entry_snapshot.atr
         if entry_zone is None or atr is None or atr <= 0:
             risk_validation = ValidationResult.failure(

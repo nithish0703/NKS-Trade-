@@ -415,6 +415,100 @@ class TestEvaluateIfvgWithStructureBreak:
         assert result.bos_zone.upper_price == 110.0
         assert result.bos_zone.direction == "SELL"
 
+    def test_structure_invalidated_before_grade_a_retest_falls_through_to_grade_b(self):
+        # BOS breaks swing_price=90 (bullish, close=95 at index 0). The
+        # IFVG flip+retest would confirm at index 5, but index 3 closes
+        # back below 90 first -- the structural premise is negated
+        # before Grade A can confirm, so it must not pass. A later
+        # candle (index 8) then retests the BOS zone [90, 95] itself,
+        # after the invalidation -- Grade B's own check runs
+        # independently against the invalidation window ending at ITS
+        # retest index (8), and 3 <= 8, so Grade B is invalidated too:
+        # overall rejection with a reason naming invalidation.
+        structure_break = _structure_break(
+            direction=BreakDirection.BULLISH, swing_price=90.0, break_price=95.0, break_candle_index=0
+        )
+        zone = _fvg_zone(direction="SELL", lower_price=100.0, upper_price=105.0, source_candle_index=1)
+        candles = [_candle(0, 94, 96, 93, 95)]  # break candle
+        candles.append(_candle(1, 102, 104, 101, 103))  # close=103 <= 105
+        candles.append(_candle(2, 102, 104, 101, 103))
+        candles.append(_candle(3, 85, 86, 84, 85))  # closes below 90 -> invalidation
+        candles.append(_candle(4, 108, 111, 108, 110))  # flip: close=110 > 105
+        candles.append(_candle(5, 104, 104, 102, 103))  # would-be Grade A retest
+
+        result = evaluate_ifvg(
+            candles, [zone], expected_direction="BUY", structure_break=structure_break
+        )
+
+        assert result.passed is False
+        assert result.entry_grade is None
+        assert "structure invalidated" in result.reason.lower()
+
+    def test_structure_invalidated_before_grade_b_retest_rejects_outright(self):
+        # No opposing FVG at all (Grade A can never confirm). A later
+        # candle retests the BOS zone [90, 95], but an earlier candle
+        # already closed back below 90 -- invalidating the structure
+        # before that retest -- so Grade B must not pass either.
+        structure_break = _structure_break(
+            direction=BreakDirection.BULLISH, swing_price=90.0, break_price=95.0, break_candle_index=0
+        )
+        candles = [_candle(0, 94, 96, 93, 95)]  # break candle
+        candles += [_candle(i, 110, 112, 109, 111) for i in range(1, 5)]  # away from the zone
+        candles.append(_candle(5, 85, 86, 84, 85))  # closes below 90 -> invalidation
+        candles += [_candle(i, 110, 112, 109, 111) for i in range(6, 10)]
+        candles.append(_candle(10, 93, 94, 91, 92))  # retests [90, 95] AFTER invalidation
+
+        result = evaluate_ifvg(candles, [], expected_direction="BUY", structure_break=structure_break)
+
+        assert result.passed is False
+        assert result.entry_grade is None
+        assert result.bos_zone is None
+        assert "structure invalidated" in result.reason.lower()
+
+    def test_invalidation_after_grade_a_retest_does_not_block_grade_a(self):
+        # Structure is invalidated on a candle AFTER the Grade A retest
+        # already confirmed -- invalidation only matters if it happens
+        # before confirmation, never after, so Grade A must still pass.
+        structure_break = _structure_break(
+            direction=BreakDirection.BULLISH, swing_price=90.0, break_price=95.0, break_candle_index=0
+        )
+        zone = _fvg_zone(direction="SELL", lower_price=100.0, upper_price=105.0, source_candle_index=1)
+        candles = [_candle(0, 94, 96, 93, 95)]  # break candle
+        candles += [_candle(i, 102, 104, 101, 103) for i in range(1, 4)]  # close=103 <= 105
+        candles.append(_candle(4, 108, 111, 108, 110))  # flip: close=110 > 105
+        candles.append(_candle(5, 104, 104, 102, 103))  # retest confirms Grade A
+        candles.append(_candle(6, 85, 86, 84, 85))  # closes below 90, but AFTER the retest
+
+        result = evaluate_ifvg(
+            candles, [zone], expected_direction="BUY", structure_break=structure_break
+        )
+
+        assert result.passed is True
+        assert result.entry_grade == "A"
+        assert result.retest_candle_index == 5
+
+    def test_bearish_structure_invalidated_before_retest_falls_through(self):
+        # Mirror of the bullish case: a bearish break's structure is
+        # invalidated by a close back ABOVE the broken swing price.
+        structure_break = _structure_break(
+            direction=BreakDirection.BEARISH, swing_price=110.0, break_price=105.0, break_candle_index=0
+        )
+        zone = _fvg_zone(direction="BUY", lower_price=100.0, upper_price=105.0, source_candle_index=1)
+        candles = [_candle(0, 108, 109, 104, 105)]  # break candle
+        candles.append(_candle(1, 92, 93, 91, 92))
+        candles.append(_candle(2, 92, 93, 91, 92))
+        candles.append(_candle(3, 112, 113, 111, 112))  # closes above 110 -> invalidation
+        candles.append(_candle(4, 92, 96, 90, 91))  # flip: close=91 < 100
+        candles.append(_candle(5, 102, 104, 101, 102))  # would-be Grade A retest
+
+        result = evaluate_ifvg(
+            candles, [zone], expected_direction="SELL", structure_break=structure_break
+        )
+
+        assert result.passed is False
+        assert result.entry_grade is None
+        assert "structure invalidated" in result.reason.lower()
+
     def test_no_structure_break_preserves_unbounded_legacy_behavior(self):
         # When structure_break is not supplied at all, Grade A runs with
         # no validity window (matching the function's pre-fallback
