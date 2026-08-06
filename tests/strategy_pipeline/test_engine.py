@@ -100,3 +100,69 @@ class TestMarketDataUnavailable:
 
         with pytest.raises(PipelineDataUnavailableError):
             await _analyze(engine)
+
+
+class TestFetchOpenInterestWithRetry:
+    """
+    Unit tests for PipelineStrategyEngine._fetch_open_interest_with_retry
+    in isolation (Stage 5's OI fetch retry/tracking), independent of the
+    rest of the pipeline chain.
+    """
+
+    async def test_immediate_success_returns_history_and_no_failure_flag(self):
+        provider = MagicMock()
+        provider.fetch_open_interest_history = AsyncMock(return_value=["point"])
+        engine = _build_engine(market_data_provider=provider)
+
+        history, fetch_failed = await engine._fetch_open_interest_with_retry("BTC-USDT")
+
+        assert history == ["point"]
+        assert fetch_failed is False
+        assert provider.fetch_open_interest_history.await_count == 1
+
+    async def test_retries_once_on_empty_result_then_succeeds(self):
+        provider = MagicMock()
+        provider.fetch_open_interest_history = AsyncMock(side_effect=[[], ["point"]])
+        engine = _build_engine(market_data_provider=provider)
+
+        history, fetch_failed = await engine._fetch_open_interest_with_retry("BTC-USDT")
+
+        assert history == ["point"]
+        assert fetch_failed is False
+        assert provider.fetch_open_interest_history.await_count == 2
+
+    async def test_exhausts_retries_and_reports_fetch_failed(self):
+        provider = MagicMock()
+        provider.fetch_open_interest_history = AsyncMock(return_value=[])
+        engine = _build_engine(market_data_provider=provider)
+
+        history, fetch_failed = await engine._fetch_open_interest_with_retry("BTC-USDT")
+
+        assert history == []
+        assert fetch_failed is True
+        assert provider.fetch_open_interest_history.await_count == 2  # OPEN_INTEREST_FETCH_MAX_ATTEMPTS
+
+    async def test_exception_is_treated_the_same_as_empty_result(self):
+        # The provider contract never raises in production, but a
+        # caught exception here must still be handled as a retryable
+        # empty result rather than propagating and crashing the scan.
+        provider = MagicMock()
+        provider.fetch_open_interest_history = AsyncMock(side_effect=RuntimeError("boom"))
+        engine = _build_engine(market_data_provider=provider)
+
+        history, fetch_failed = await engine._fetch_open_interest_with_retry("BTC-USDT")
+
+        assert history == []
+        assert fetch_failed is True
+        assert provider.fetch_open_interest_history.await_count == 2
+
+    async def test_does_not_retry_after_first_success(self):
+        provider = MagicMock()
+        provider.fetch_open_interest_history = AsyncMock(return_value=["a", "b"])
+        engine = _build_engine(market_data_provider=provider)
+
+        history, fetch_failed = await engine._fetch_open_interest_with_retry("BTC-USDT")
+
+        assert history == ["a", "b"]
+        assert fetch_failed is False
+        assert provider.fetch_open_interest_history.await_count == 1

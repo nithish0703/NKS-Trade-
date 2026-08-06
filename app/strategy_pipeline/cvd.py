@@ -19,6 +19,7 @@ from typing import Optional, Sequence
 from pydantic import BaseModel, ConfigDict
 
 from app.models.candle import Candle
+from app.strategy_pipeline.open_interest import ConfirmationStatus
 
 
 class CvdPoint(BaseModel):
@@ -36,6 +37,7 @@ class CvdConfirmationResult(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     passed: bool
+    status: ConfirmationStatus
     reason: str
     cvd_series: list[CvdPoint] = []
 
@@ -110,11 +112,17 @@ def evaluate_cvd_confirmation(
       - SELL requires the two most recent confirmed CVD swing highs to
         form a lower high (later high < earlier high).
 
-    Never fabricates a swing pattern from insufficient candle history;
-    fewer than two confirmed swing points of the required type fails.
+    Never fabricates a swing pattern from insufficient candle history:
+    fewer than two confirmed swing points of the required type is
+    reported as status=UNAVAILABLE (data problem, not a genuine
+    disagreement) -- a caller must be able to tell "not enough CVD
+    swing structure formed yet" apart from "CVD formed the wrong
+    pattern" (status=DISAGREED).
     """
     if not candles:
-        return CvdConfirmationResult(passed=False, reason="No candles available.")
+        return CvdConfirmationResult(
+            passed=False, status=ConfirmationStatus.UNAVAILABLE, reason="No candles available."
+        )
 
     series = calculate_cvd_series(candles)
     values = [point.cvd for point in series]
@@ -124,6 +132,7 @@ def evaluate_cvd_confirmation(
         if len(swing_low_indices) < 2:
             return CvdConfirmationResult(
                 passed=False,
+                status=ConfirmationStatus.UNAVAILABLE,
                 reason="Fewer than two confirmed CVD swing lows exist; cannot determine higher-low pattern.",
                 cvd_series=series,
             )
@@ -132,6 +141,7 @@ def evaluate_cvd_confirmation(
         if later_low > earlier_low:
             return CvdConfirmationResult(
                 passed=True,
+                status=ConfirmationStatus.CONFIRMED,
                 reason=(
                     f"CVD formed a higher low ({earlier_low:.6g} -> {later_low:.6g}), "
                     "confirming genuine buying pressure."
@@ -140,6 +150,7 @@ def evaluate_cvd_confirmation(
             )
         return CvdConfirmationResult(
             passed=False,
+            status=ConfirmationStatus.DISAGREED,
             reason=(
                 f"CVD did not form a higher low ({earlier_low:.6g} -> {later_low:.6g}); "
                 "CVD disagrees with BUY."
@@ -152,6 +163,7 @@ def evaluate_cvd_confirmation(
     if len(swing_high_indices) < 2:
         return CvdConfirmationResult(
             passed=False,
+            status=ConfirmationStatus.UNAVAILABLE,
             reason="Fewer than two confirmed CVD swing highs exist; cannot determine lower-high pattern.",
             cvd_series=series,
         )
@@ -160,6 +172,7 @@ def evaluate_cvd_confirmation(
     if later_high < earlier_high:
         return CvdConfirmationResult(
             passed=True,
+            status=ConfirmationStatus.CONFIRMED,
             reason=(
                 f"CVD formed a lower high ({earlier_high:.6g} -> {later_high:.6g}), "
                 "confirming genuine selling pressure."
@@ -168,6 +181,7 @@ def evaluate_cvd_confirmation(
         )
     return CvdConfirmationResult(
         passed=False,
+        status=ConfirmationStatus.DISAGREED,
         reason=(
             f"CVD did not form a lower high ({earlier_high:.6g} -> {later_high:.6g}); "
             "CVD disagrees with SELL."
