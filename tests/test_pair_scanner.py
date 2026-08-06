@@ -65,7 +65,6 @@ def _market_context(symbol="BTC-USDT") -> MarketContext:
         symbol=symbol,
         detection_time_utc=UTC_NOW,
         candles_by_timeframe={},
-        btc_candles_by_timeframe={},
     )
 
 
