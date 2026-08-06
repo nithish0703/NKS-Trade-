@@ -19,7 +19,7 @@ EMA_TREND_PERIOD: Final[int] = 200
 
 # Risk management
 MAX_RISK_PER_TRADE: Final[float] = 0.01
-MIN_RISK_REWARD_RATIO: Final[float] = 2.0
+MIN_RISK_REWARD_RATIO: Final[float] = 1.80
 MAX_ACTIVE_TRADES: Final[int] = 5
 ATR_STOP_LOSS_MULTIPLIER: Final[float] = 1.5
 

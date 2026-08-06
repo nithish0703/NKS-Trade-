@@ -5,14 +5,13 @@ Computes take profit levels for a trade setup.
 import hashlib
 from typing import Sequence
 
+from app.config.thresholds import MIN_RISK_REWARD_RATIO
 from app.liquidity.level_selector import get_institutional_priority
 from app.liquidity.results import LiquidityLevel, LiquiditySide, LiquidityStrength
 from app.market_structure.results import SwingPoint, SwingType
 from app.models.trade_zone import TradeZone
 
 from app.risk.results import TakeProfitCandidate, TakeProfitResult, TakeProfitSource
-
-_MINIMUM_RISK_REWARD = 2.0
 
 # Strategy priority: lower number = higher priority.
 _SOURCE_PRIORITY = {
@@ -44,8 +43,8 @@ def _calculate_rr(direction: str, entry_price: float, stop_loss: float, target: 
 class SingleTakeProfitCalculator:
     """
     Selects exactly one take-profit target from a strictly prioritized
-    set of candidate sources, requiring a minimum 1:2 risk-reward ratio.
-    Never returns more than one final target.
+    set of candidate sources, requiring at least MIN_RISK_REWARD_RATIO
+    risk-reward. Never returns more than one final target.
     """
 
     def calculate(
@@ -62,10 +61,10 @@ class SingleTakeProfitCalculator:
 
         Generates candidates from major institutional liquidity, strong
         swing extremes, unmitigated liquidity pools, and FVG completion,
-        filters out wrong-side and sub-2.0-RR candidates, then selects
-        by strategy priority (nearest valid target within the same
-        priority tier). Returns invalid when no target meets the
-        minimum risk-reward ratio.
+        filters out wrong-side and sub-MIN_RISK_REWARD_RATIO candidates,
+        then selects by strategy priority (nearest valid target within
+        the same priority tier). Returns invalid when no target meets
+        the minimum risk-reward ratio.
         """
         if entry_price <= 0 or stop_loss <= 0:
             return self._invalid_result(
@@ -285,7 +284,7 @@ class SingleTakeProfitCalculator:
             )
 
         rr = _calculate_rr(direction, entry_price, stop_loss, price)
-        valid = rr >= _MINIMUM_RISK_REWARD
+        valid = rr >= MIN_RISK_REWARD_RATIO
 
         return TakeProfitCandidate(
             source=source,
@@ -298,7 +297,7 @@ class SingleTakeProfitCalculator:
             reason=(
                 "Valid target meeting minimum risk-reward."
                 if valid
-                else f"Risk-reward {rr:.4f} is below the minimum {_MINIMUM_RISK_REWARD:.4f}."
+                else f"Risk-reward {rr:.4f} is below the minimum {MIN_RISK_REWARD_RATIO:.4f}."
             ),
         )
 
