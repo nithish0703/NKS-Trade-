@@ -398,7 +398,6 @@ class TestChartTrend:
             symbol="BTC-USDT",
             detection_time_utc=UTC_NOW,
             candles_by_timeframe={"15m": candles},
-            btc_candles_by_timeframe={},
         )
 
     def test_higher_close_gives_up(self):
@@ -425,13 +424,11 @@ class TestChartTrend:
 
     def test_never_derived_from_htf_bias(self):
         # Distinct from direction: chart_trend must be computable even
-        # when htf_bias_result is absent entirely.
+        # when no HTF bias data is present on the context at all.
         context = MarketContext(
             symbol="BTC-USDT",
             detection_time_utc=UTC_NOW,
             candles_by_timeframe={"15m": [self._candle(100.0, minutes_ago=15), self._candle(105.0, minutes_ago=0)]},
-            btc_candles_by_timeframe={},
-            htf_bias_result=None,
         )
         assert calculate_chart_trend(context) == "UP"
 
