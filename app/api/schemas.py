@@ -60,20 +60,6 @@ class ScanningCoin(BaseModel):
     validation_progress_percentage: Optional[float] = None
     last_executed_layer: Optional[str] = None
 
-    # Dashboard-only, non-trading scan PREVIEW. Independently
-    # re-evaluated from the same market data, continuing past the point
-    # the real fail-fast pipeline stopped. Never a signal, never
-    # persisted, never notified, never used for risk/trade decisions,
-    # and never a substitute for `direction`/`validation_progress_*`
-    # above (which reflect the real, fail-fast pipeline outcome).
-    preview_direction: Optional[str] = None
-    preview_progress_raw_score: Optional[float] = None
-    preview_progress_max_score: Optional[float] = None
-    preview_progress_percentage: Optional[float] = None
-    preview_completed_layers: Optional[list[str]] = None
-    preview_failed_layers: Optional[list[str]] = None
-    preview_data_availability: Optional[dict[str, str]] = None
-
     # Dashboard-only visual cue: raw price direction of the most recent
     # completed entry-timeframe candle vs. the one before it. A pure
     # chart observation -- never HTF-bias-derived, never a substitute
@@ -160,15 +146,9 @@ class SignalDetails(BaseModel):
     stop_loss: float
     take_profit: float
     risk_reward_ratio: float
-    market_regime: str
-    higher_timeframe_bias: str
     liquidity_type: str
     entry_zone_type: str
     structure_confirmation: str
-    volume_confirmation: bool
-    atr_status: str
-    trading_session: str
-    btc_market_alignment: bool
     detection_time_utc: datetime
     institutional_reason: str
     # Dashboard-only lifecycle status ("NEW" or "ACTIVE"). Drives whether

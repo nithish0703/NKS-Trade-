@@ -10,7 +10,7 @@ from app.api.access_tier import AccessTier, get_access_tier
 from app.api.dashboard_service import DashboardService
 from app.api.dependencies import get_dashboard_service, get_signal_repository
 from app.api.schemas import SignalDetails
-from app.models.signal import Direction, MarketRegime, Signal, SignalStatus
+from app.models.signal import Direction, Signal, SignalStatus
 from app.storage.signal_repository import SignalRepository
 from pydantic import BaseModel, ConfigDict
 
@@ -30,7 +30,6 @@ class SignalListItem(BaseModel):
     take_profit: float
     risk_reward_ratio: float
     status: SignalStatus
-    market_regime: MarketRegime
     detection_time_utc: object
 
 
@@ -44,7 +43,6 @@ def _to_list_item(signal: Signal) -> SignalListItem:
         take_profit=signal.take_profit,
         risk_reward_ratio=signal.risk_reward_ratio,
         status=signal.status,
-        market_regime=signal.market_regime,
         detection_time_utc=signal.detection_time_utc,
     )
 

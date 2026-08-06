@@ -18,10 +18,9 @@ from app.api.runtime_store import DashboardRuntimeStore
 from app.models.candle import Candle
 from app.models.market_context import MarketContext
 from app.api.access_tier import AccessTier
-from app.models.signal import Direction, MarketRegime, Signal, SignalStatus
+from app.models.signal import Direction, Signal, SignalStatus
 from app.scanner.pipeline_results import PipelineStageResult, PipelineStatus, StrategyPipelineResult
 from app.scanner.scan_results import PairScanResult, PairScanStatus, ScanCycleResult
-from app.scoring.results import ConfidenceClassification, ConfidenceScoreResult
 from app.storage.analytics_repository import RejectionRecord
 from app.storage.signal_repository import (
     DASHBOARD_STATUS_ACTIVE,
@@ -87,22 +86,15 @@ def _signal(
         take_profit=110.0 if direction == Direction.BUY else 90.0,
         risk_reward_ratio=risk_reward_ratio,
         status=SignalStatus.CONFIRMED,
-        market_regime=MarketRegime.TRENDING,
-        higher_timeframe_bias="BULLISH",
         liquidity_type="EQUAL_HIGH",
         entry_zone_type="ORDER_BLOCK",
         structure_confirmation="BOS",
-        volume_confirmation=True,
-        atr_status="EXPANDING",
-        trading_session="LONDON",
-        btc_market_alignment=True,
         detection_time_utc=UTC_NOW,
         institutional_reason="Confirmed setup facts only.",
         setup_key=f"setup-{trade_id}",
         liquidity_sweep_id="sweep-1",
         structure_break_id="break-1",
         entry_zone_id="zone-1",
-        retest_id="retest-1",
         created_at_utc=UTC_NOW,
     )
 
@@ -244,6 +236,42 @@ class TestSummary:
         assert summary.scanner_running is True
 
 
+def _stage(order: int, name: str, *, executed: bool, passed: bool) -> PipelineStageResult:
+    return PipelineStageResult(
+        stage_order=order,
+        layer_name=name,
+        mandatory=True,
+        executed=executed,
+        passed=passed,
+        duration_ms=1.0,
+    )
+
+
+_ALL_STAGE_NAMES = ("HTF_BIAS", "LIQUIDITY_SWEEP", "BOS", "IFVG", "ORDER_FLOW", "RISK_MANAGEMENT")
+
+
+def _stages(passed_through: str) -> list[PipelineStageResult]:
+    """Every stage up to and including `passed_through` executed and passed; rest not executed."""
+    stages = []
+    passed_index = _ALL_STAGE_NAMES.index(passed_through)
+    for order, name in enumerate(_ALL_STAGE_NAMES, start=1):
+        executed = order - 1 <= passed_index
+        stages.append(_stage(order, name, executed=executed, passed=executed))
+    return stages
+
+
+def _stages_with_failure(failed_at: str) -> list[PipelineStageResult]:
+    """Like _stages, but the named stage executes and fails (all later stages not executed)."""
+    stages = []
+    failed_index = _ALL_STAGE_NAMES.index(failed_at)
+    for order, name in enumerate(_ALL_STAGE_NAMES, start=1):
+        index = order - 1
+        executed = index <= failed_index
+        passed = executed and index < failed_index
+        stages.append(_stage(order, name, executed=executed, passed=passed))
+    return stages
+
+
 class TestScanningCoins:
     async def test_scanning_pairs_mapping_preserves_configured_order(self):
         from app.config.pairs import get_configured_pairs
@@ -259,17 +287,6 @@ class TestScanningCoins:
 
     async def test_valid_pipeline_result_maps_to_ready_with_score(self):
         runtime_store = DashboardRuntimeStore()
-        confidence_result = ConfidenceScoreResult(
-            raw_score=115.0,
-            maximum_raw_score=115,
-            normalized_score=96.0,
-            classification=ConfidenceClassification.PREMIUM,
-            publishable=True,
-            mandatory_layers_passed=True,
-            layer_scores=[],
-            failed_mandatory_layers=[],
-            reason="PREMIUM",
-        )
         risk_plan = _real_risk_plan()
         pipeline_result = StrategyPipelineResult(
             symbol="BTC-USDT",
@@ -277,9 +294,8 @@ class TestScanningCoins:
             detection_time_utc=UTC_NOW,
             status=PipelineStatus.VALID,
             passed=True,
-            stages=[],
+            stages=_stages("RISK_MANAGEMENT"),
             risk_plan=risk_plan,
-            confidence_result=confidence_result,
         )
         pair_result = PairScanResult(
             symbol="BTC-USDT",
@@ -315,7 +331,7 @@ class TestScanningCoins:
         coins = await service.get_scanning_coins()
         btc = next(c for c in coins if c.coin == "BTC-USDT")
         assert btc.status == "READY"
-        assert btc.score == 96.0
+        assert btc.score == 6.0
         assert btc.direction == "BUY"
 
     async def test_rejected_pipeline_result_has_no_score(self):
@@ -326,8 +342,8 @@ class TestScanningCoins:
             detection_time_utc=UTC_NOW,
             status=PipelineStatus.REJECTED,
             passed=False,
-            failed_layer="MARKET_REGIME",
-            rejection_reason="not trending",
+            failed_layer="HTF_BIAS",
+            rejection_reason="Higher-timeframe bias is MIXED or UNKNOWN.",
             stages=[],
         )
         pair_result = PairScanResult(
@@ -337,7 +353,7 @@ class TestScanningCoins:
             started_at_utc=UTC_NOW,
             completed_at_utc=UTC_NOW,
             duration_ms=1.0,
-            reason="not trending",
+            reason="Higher-timeframe bias is MIXED or UNKNOWN.",
         )
         cycle_result = ScanCycleResult(
             cycle_id="c1",
@@ -366,217 +382,54 @@ class TestScanningCoins:
         eth = next(c for c in coins if c.coin == "ETH-USDT")
         assert eth.status == "REJECTED"
         assert eth.score is None
-        assert eth.failed_layer == "MARKET_REGIME"
-
-    async def test_rejected_pipeline_result_surfaces_preview_fields(self):
-        from app.scanner.preview_analyzer import PreviewAnalysisResult, PreviewLayerStatus
-
-        runtime_store = DashboardRuntimeStore()
-        preview = PreviewAnalysisResult(
-            symbol="ETH-USDT",
-            preview_direction="BUY",
-            preview_progress_raw_score=40.0,
-            preview_progress_max_score=120.0,
-            preview_progress_percentage=33,
-            preview_completed_layers=["MARKET_REGIME", "HTF_BIAS"],
-            preview_failed_layers=["LIQUIDITY_SWEEP"],
-            preview_data_availability={
-                "MARKET_REGIME": PreviewLayerStatus.PASSED,
-                "LIQUIDITY_SWEEP": PreviewLayerStatus.FAILED,
-            },
-        )
-        pipeline_result = StrategyPipelineResult(
-            symbol="ETH-USDT",
-            expected_direction=None,
-            detection_time_utc=UTC_NOW,
-            status=PipelineStatus.REJECTED,
-            passed=False,
-            failed_layer="MARKET_REGIME",
-            rejection_reason="not trending",
-            stages=[],
-        )
-        pair_result = PairScanResult(
-            symbol="ETH-USDT",
-            status=PairScanStatus.REJECTED,
-            pipeline_result=pipeline_result,
-            started_at_utc=UTC_NOW,
-            completed_at_utc=UTC_NOW,
-            duration_ms=1.0,
-            reason="not trending",
-            preview_result=preview,
-        )
-        cycle_result = ScanCycleResult(
-            cycle_id="c1", started_at_utc=UTC_NOW, completed_at_utc=UTC_NOW, duration_ms=1.0,
-            configured_pairs=["ETH-USDT"], attempted_pairs=["ETH-USDT"],
-            valid_results=[], rejected_results=[pair_result], duplicate_results=[],
-            error_results=[], skipped_results=[], pair_results=[pair_result],
-            total_pairs=1, valid_count=0, rejected_count=1, duplicate_count=0,
-            error_count=0, skipped_count=0,
-        )
-        await runtime_store.record_cycle_result(cycle_result)
-        service = _build_service(runtime_store=runtime_store)
-
-        coins = await service.get_scanning_coins()
-        eth = next(c for c in coins if c.coin == "ETH-USDT")
-
-        # Real pipeline outcome remains REJECTED with no score/direction...
-        assert eth.status == "REJECTED"
-        assert eth.direction is None
-        assert eth.score is None
-        # ...while the independently computed preview is also surfaced,
-        # never overwriting the real fields above.
-        assert eth.preview_direction == "BUY"
-        assert eth.preview_progress_percentage == 33
-        assert eth.preview_completed_layers == ["MARKET_REGIME", "HTF_BIAS"]
-        assert eth.preview_failed_layers == ["LIQUIDITY_SWEEP"]
-        assert eth.preview_data_availability == {
-            "MARKET_REGIME": "PASSED",
-            "LIQUIDITY_SWEEP": "FAILED",
-        }
-
-    async def test_no_preview_result_leaves_preview_fields_none(self):
-        runtime_store = DashboardRuntimeStore()
-        pipeline_result = StrategyPipelineResult(
-            symbol="ETH-USDT",
-            expected_direction=None,
-            detection_time_utc=UTC_NOW,
-            status=PipelineStatus.REJECTED,
-            passed=False,
-            failed_layer="MARKET_REGIME",
-            rejection_reason="not trending",
-            stages=[],
-        )
-        pair_result = PairScanResult(
-            symbol="ETH-USDT",
-            status=PairScanStatus.REJECTED,
-            pipeline_result=pipeline_result,
-            started_at_utc=UTC_NOW,
-            completed_at_utc=UTC_NOW,
-            duration_ms=1.0,
-            reason="not trending",
-        )
-        cycle_result = ScanCycleResult(
-            cycle_id="c1", started_at_utc=UTC_NOW, completed_at_utc=UTC_NOW, duration_ms=1.0,
-            configured_pairs=["ETH-USDT"], attempted_pairs=["ETH-USDT"],
-            valid_results=[], rejected_results=[pair_result], duplicate_results=[],
-            error_results=[], skipped_results=[], pair_results=[pair_result],
-            total_pairs=1, valid_count=0, rejected_count=1, duplicate_count=0,
-            error_count=0, skipped_count=0,
-        )
-        await runtime_store.record_cycle_result(cycle_result)
-        service = _build_service(runtime_store=runtime_store)
-
-        coins = await service.get_scanning_coins()
-        eth = next(c for c in coins if c.coin == "ETH-USDT")
-        assert eth.preview_direction is None
-        assert eth.preview_progress_percentage is None
-        assert eth.preview_completed_layers is None
-
-
-# Full 14-stage ordering, mirroring app.scanner.strategy_engine._STAGE_DEFINITIONS.
-_ALL_STAGE_NAMES = (
-    "MARKET_REGIME", "HTF_BIAS", "LIQUIDITY_SWEEP", "STRUCTURE_SHIFT",
-    "VOLUME_CONFIRMATION", "ENTRY_ZONE", "PREMIUM_DISCOUNT", "RETEST_CONFIRMATION",
-    "SESSION_FILTER", "BTC_ALIGNMENT", "FAKE_BREAKOUT_FILTER", "CANDLE_QUALITY",
-    "RISK_MANAGEMENT", "CONFIDENCE_SCORING",
-)
-_NON_MANDATORY_STAGES = {
-    "PREMIUM_DISCOUNT", "RETEST_CONFIRMATION", "SESSION_FILTER",
-    "BTC_ALIGNMENT", "FAKE_BREAKOUT_FILTER",
-}
-
-
-def _stages(passed_through: str) -> list[PipelineStageResult]:
-    """
-    Build a full 17-stage list where every stage up to and including
-    `passed_through` is executed and passed, and every stage after it is
-    not executed. Mirrors _build_rejected_result's real backfill shape.
-    """
-    stages = []
-    passed_index = _ALL_STAGE_NAMES.index(passed_through)
-    for order, name in enumerate(_ALL_STAGE_NAMES, start=1):
-        executed = order - 1 <= passed_index
-        stages.append(
-            PipelineStageResult(
-                stage_order=order,
-                layer_name=name,
-                mandatory=name not in _NON_MANDATORY_STAGES,
-                executed=executed,
-                passed=executed,
-                duration_ms=1.0,
-            )
-        )
-    return stages
-
-
-def _stages_with_failure(failed_at: str) -> list[PipelineStageResult]:
-    """Like _stages, but the named stage executes and fails (all later stages not executed)."""
-    stages = []
-    failed_index = _ALL_STAGE_NAMES.index(failed_at)
-    for order, name in enumerate(_ALL_STAGE_NAMES, start=1):
-        index = order - 1
-        executed = index <= failed_index
-        passed = executed and index < failed_index
-        stages.append(
-            PipelineStageResult(
-                stage_order=order,
-                layer_name=name,
-                mandatory=name not in _NON_MANDATORY_STAGES,
-                executed=executed,
-                passed=passed,
-                duration_ms=1.0,
-            )
-        )
-    return stages
-
-
-def _candle(close: float, symbol="BTC-USDT", timeframe="15m", minutes_ago=0) -> Candle:
-    ts = UTC_NOW - timedelta(minutes=minutes_ago)
-    return Candle(
-        timestamp=ts, open=close, high=close + 1, low=close - 1, close=close,
-        volume=100.0, symbol=symbol, timeframe=timeframe,
-    )
-
-
-def _context_with_candles(candles) -> MarketContext:
-    return MarketContext(
-        symbol="BTC-USDT",
-        detection_time_utc=UTC_NOW,
-        candles_by_timeframe={"15m": candles},
-        btc_candles_by_timeframe={},
-    )
+        assert eth.failed_layer == "HTF_BIAS"
 
 
 class TestChartTrend:
+    def _candle(self, close: float, symbol="BTC-USDT", timeframe="15m", minutes_ago=0) -> Candle:
+        ts = UTC_NOW - timedelta(minutes=minutes_ago)
+        return Candle(
+            timestamp=ts, open=close, high=close + 1, low=close - 1, close=close,
+            volume=100.0, symbol=symbol, timeframe=timeframe,
+        )
+
+    def _context_with_candles(self, candles) -> MarketContext:
+        return MarketContext(
+            symbol="BTC-USDT",
+            detection_time_utc=UTC_NOW,
+            candles_by_timeframe={"15m": candles},
+            btc_candles_by_timeframe={},
+        )
+
     def test_higher_close_gives_up(self):
-        candles = [_candle(100.0, minutes_ago=15), _candle(105.0, minutes_ago=0)]
-        assert calculate_chart_trend(_context_with_candles(candles)) == "UP"
+        candles = [self._candle(100.0, minutes_ago=15), self._candle(105.0, minutes_ago=0)]
+        assert calculate_chart_trend(self._context_with_candles(candles)) == "UP"
 
     def test_lower_close_gives_down(self):
-        candles = [_candle(105.0, minutes_ago=15), _candle(100.0, minutes_ago=0)]
-        assert calculate_chart_trend(_context_with_candles(candles)) == "DOWN"
+        candles = [self._candle(105.0, minutes_ago=15), self._candle(100.0, minutes_ago=0)]
+        assert calculate_chart_trend(self._context_with_candles(candles)) == "DOWN"
 
     def test_equal_close_gives_none(self):
-        candles = [_candle(100.0, minutes_ago=15), _candle(100.0, minutes_ago=0)]
-        assert calculate_chart_trend(_context_with_candles(candles)) is None
+        candles = [self._candle(100.0, minutes_ago=15), self._candle(100.0, minutes_ago=0)]
+        assert calculate_chart_trend(self._context_with_candles(candles)) is None
 
     def test_fewer_than_two_candles_gives_none(self):
-        candles = [_candle(100.0)]
-        assert calculate_chart_trend(_context_with_candles(candles)) is None
+        candles = [self._candle(100.0)]
+        assert calculate_chart_trend(self._context_with_candles(candles)) is None
 
     def test_no_candles_gives_none(self):
-        assert calculate_chart_trend(_context_with_candles([])) is None
+        assert calculate_chart_trend(self._context_with_candles([])) is None
 
     def test_none_market_context_gives_none(self):
         assert calculate_chart_trend(None) is None
 
     def test_never_derived_from_htf_bias(self):
-        # Distinct from direction/preview_direction: chart_trend must be
-        # computable even when htf_bias_result is absent entirely.
+        # Distinct from direction: chart_trend must be computable even
+        # when htf_bias_result is absent entirely.
         context = MarketContext(
             symbol="BTC-USDT",
             detection_time_utc=UTC_NOW,
-            candles_by_timeframe={"15m": [_candle(100.0, minutes_ago=15), _candle(105.0, minutes_ago=0)]},
+            candles_by_timeframe={"15m": [self._candle(100.0, minutes_ago=15), self._candle(105.0, minutes_ago=0)]},
             btc_candles_by_timeframe={},
             htf_bias_result=None,
         )
@@ -584,150 +437,46 @@ class TestChartTrend:
 
 
 class TestValidationProgressCalculation:
-    def test_market_regime_only_gives_15_raw_points(self):
-        raw, maximum, percentage, last_layer = calculate_validation_progress(
-            _stages("MARKET_REGIME")
-        )
-        assert raw == 15
-        assert maximum == 115
-        assert percentage == 13
-        assert last_layer == "MARKET_REGIME"
-
-    def test_market_regime_plus_htf_bias_gives_40_raw_points(self):
-        # MARKET_REGIME=15 + HTF_BIAS=25 (the real SCORE_HTF_BIAS constant
-        # from app.config.thresholds, which ConfidenceScoringEngine also
-        # uses) = 40/115 = 35%.
-        raw, maximum, percentage, last_layer = calculate_validation_progress(_stages("HTF_BIAS"))
-        assert raw == 40
-        assert percentage == 35
+    def test_first_stage_only_gives_one_passed(self):
+        stages_passed, stages_total, last_layer = calculate_validation_progress(_stages("HTF_BIAS"))
+        assert stages_passed == 1
+        assert stages_total == 6
         assert last_layer == "HTF_BIAS"
 
-    def test_failed_layer_gets_zero_points(self):
-        raw, _, _, last_layer = calculate_validation_progress(_stages_with_failure("HTF_BIAS"))
-        # MARKET_REGIME (15) passed, HTF_BIAS executed but failed (0 points).
-        assert raw == 15
-        assert last_layer == "HTF_BIAS"
+    def test_two_stages_passed(self):
+        stages_passed, stages_total, last_layer = calculate_validation_progress(_stages("LIQUIDITY_SWEEP"))
+        assert stages_passed == 2
+        assert last_layer == "LIQUIDITY_SWEEP"
+
+    def test_failed_layer_gets_zero_credit(self):
+        stages_passed, _, last_layer = calculate_validation_progress(_stages_with_failure("LIQUIDITY_SWEEP"))
+        # HTF_BIAS passed (1), LIQUIDITY_SWEEP executed but failed (0).
+        assert stages_passed == 1
+        assert last_layer == "LIQUIDITY_SWEEP"
 
     def test_non_executed_layers_get_zero(self):
-        raw, _, _, _ = calculate_validation_progress(_stages("MARKET_REGIME"))
-        # Only MARKET_REGIME's 15 points; every later non-executed scoring
-        # layer (HTF_BIAS=25, LIQUIDITY_SWEEP=15, ...) contributes zero.
-        assert raw == 15
+        stages_passed, _, _ = calculate_validation_progress(_stages("HTF_BIAS"))
+        assert stages_passed == 1
 
-    def test_all_scoring_layers_pass_gives_115_and_100_percent(self):
-        raw, maximum, percentage, last_layer = calculate_validation_progress(
-            _stages("CONFIDENCE_SCORING")
+    def test_all_stages_pass_gives_full_count(self):
+        stages_passed, stages_total, last_layer = calculate_validation_progress(
+            _stages("RISK_MANAGEMENT")
         )
-        assert raw == 115
-        assert maximum == 115
-        assert percentage == 100
-        assert last_layer == "CONFIDENCE_SCORING"
+        assert stages_passed == 6
+        assert stages_total == 6
+        assert last_layer == "RISK_MANAGEMENT"
 
     def test_empty_stages_returns_zero_and_no_last_layer(self):
-        raw, maximum, percentage, last_layer = calculate_validation_progress([])
-        assert raw == 0.0
-        assert maximum == 115
-        assert percentage == 0
+        stages_passed, stages_total, last_layer = calculate_validation_progress([])
+        assert stages_passed == 0
+        assert stages_total == 0
         assert last_layer is None
 
     def test_none_stages_returns_zero_and_no_last_layer(self):
-        raw, maximum, percentage, last_layer = calculate_validation_progress(None)
-        assert raw == 0.0
-        assert percentage == 0
+        stages_passed, stages_total, last_layer = calculate_validation_progress(None)
+        assert stages_passed == 0
+        assert stages_total == 0
         assert last_layer is None
-
-    def test_non_scoring_stages_never_contribute_points(self):
-        # CANDLE_QUALITY (stage 12) executes and passes but is not in the
-        # 115-point weight map (it's a structural/account-safety gate, not
-        # a scoring layer), so it must not add any points beyond the 11
-        # scoring layers that ran before it (which sum to the full 115).
-        raw, _, _, _ = calculate_validation_progress(_stages("CANDLE_QUALITY"))
-        assert raw == 115
-
-
-class TestValidationProgressDoesNotAffectStrategy:
-    async def test_rejected_setup_retains_partial_progress_score(self):
-        runtime_store = DashboardRuntimeStore()
-        pipeline_result = StrategyPipelineResult(
-            symbol="ETH-USDT",
-            expected_direction=None,
-            detection_time_utc=UTC_NOW,
-            status=PipelineStatus.REJECTED,
-            passed=False,
-            failed_layer="LIQUIDITY_SWEEP",
-            rejection_reason="Institutional liquidity sweep missing",
-            stages=_stages_with_failure("LIQUIDITY_SWEEP"),
-        )
-        pair_result = PairScanResult(
-            symbol="ETH-USDT",
-            status=PairScanStatus.REJECTED,
-            pipeline_result=pipeline_result,
-            started_at_utc=UTC_NOW,
-            completed_at_utc=UTC_NOW,
-            duration_ms=1.0,
-            reason="Institutional liquidity sweep missing",
-        )
-        cycle_result = ScanCycleResult(
-            cycle_id="c1", started_at_utc=UTC_NOW, completed_at_utc=UTC_NOW, duration_ms=1.0,
-            configured_pairs=["ETH-USDT"], attempted_pairs=["ETH-USDT"],
-            valid_results=[], rejected_results=[pair_result], duplicate_results=[],
-            error_results=[], skipped_results=[], pair_results=[pair_result],
-            total_pairs=1, valid_count=0, rejected_count=1, duplicate_count=0,
-            error_count=0, skipped_count=0,
-        )
-        await runtime_store.record_cycle_result(cycle_result)
-        service = _build_service(runtime_store=runtime_store)
-
-        coins = await service.get_scanning_coins()
-        eth = next(c for c in coins if c.coin == "ETH-USDT")
-
-        # Still rejected internally...
-        assert eth.status == "REJECTED"
-        assert eth.score is None
-        # ...but a partial validation-progress percentage is still shown.
-        assert eth.validation_progress_raw_score == 40  # MARKET_REGIME + HTF_BIAS passed
-        assert eth.validation_progress_percentage == 35
-        assert eth.last_executed_layer == "LIQUIDITY_SWEEP"
-
-    async def test_partial_score_never_changes_final_confidence(self):
-        runtime_store = DashboardRuntimeStore()
-        confidence_result = ConfidenceScoreResult(
-            raw_score=115.0, maximum_raw_score=115, normalized_score=96.0,
-            classification=ConfidenceClassification.PREMIUM, publishable=True,
-            mandatory_layers_passed=True, layer_scores=[], failed_mandatory_layers=[],
-            reason="PREMIUM",
-        )
-        risk_plan = _real_risk_plan()
-        pipeline_result = StrategyPipelineResult(
-            symbol="BTC-USDT", expected_direction="BUY", detection_time_utc=UTC_NOW,
-            status=PipelineStatus.VALID, passed=True,
-            stages=_stages("CONFIDENCE_SCORING"),
-            risk_plan=risk_plan, confidence_result=confidence_result,
-        )
-        pair_result = PairScanResult(
-            symbol="BTC-USDT", status=PairScanStatus.VALID, pipeline_result=pipeline_result,
-            started_at_utc=UTC_NOW, completed_at_utc=UTC_NOW, duration_ms=1.0,
-        )
-        cycle_result = ScanCycleResult(
-            cycle_id="c1", started_at_utc=UTC_NOW, completed_at_utc=UTC_NOW, duration_ms=1.0,
-            configured_pairs=["BTC-USDT"], attempted_pairs=["BTC-USDT"],
-            valid_results=[pair_result], rejected_results=[], duplicate_results=[],
-            error_results=[], skipped_results=[], pair_results=[pair_result],
-            total_pairs=1, valid_count=1, rejected_count=0, duplicate_count=0,
-            error_count=0, skipped_count=0,
-        )
-        await runtime_store.record_cycle_result(cycle_result)
-        service = _build_service(runtime_store=runtime_store)
-
-        coins = await service.get_scanning_coins()
-        btc = next(c for c in coins if c.coin == "BTC-USDT")
-
-        # validation_progress_percentage (100, from all stages passing) is
-        # a completely different value than the final confidence score
-        # (96.0), proving one never overwrites or substitutes the other.
-        assert btc.score == 96.0
-        assert btc.validation_progress_percentage == 100
-        assert btc.score != btc.validation_progress_percentage
 
 
 class TestDirectionResolution:
@@ -765,16 +514,10 @@ class TestDirectionResolution:
         return next(c for c in coins if c.coin == "BTC-USDT")
 
     async def test_bullish_htf_bias_maps_to_buy(self):
-        confidence_result = ConfidenceScoreResult(
-            raw_score=115.0, maximum_raw_score=115, normalized_score=96.0,
-            classification=ConfidenceClassification.PREMIUM, publishable=True,
-            mandatory_layers_passed=True, layer_scores=[], failed_mandatory_layers=[],
-            reason="PREMIUM",
-        )
         pipeline_result = StrategyPipelineResult(
             symbol="BTC-USDT", expected_direction="BUY", detection_time_utc=UTC_NOW,
             status=PipelineStatus.VALID, passed=True, stages=[],
-            risk_plan=_real_risk_plan(), confidence_result=confidence_result,
+            risk_plan=_real_risk_plan(),
         )
         coin = await self._coin_for(pipeline_result, pair_status=PairScanStatus.VALID)
         assert coin.direction == "BUY"
@@ -798,15 +541,6 @@ class TestDirectionResolution:
         coin = await self._coin_for(pipeline_result)
         assert coin.direction is None
 
-    async def test_rejection_before_htf_resolution_maps_to_null(self):
-        pipeline_result = StrategyPipelineResult(
-            symbol="BTC-USDT", expected_direction=None, detection_time_utc=UTC_NOW,
-            status=PipelineStatus.REJECTED, passed=False,
-            failed_layer="MARKET_REGIME", rejection_reason="not trending", stages=[],
-        )
-        coin = await self._coin_for(pipeline_result)
-        assert coin.direction is None
-
     async def test_technical_error_maps_direction_safely_to_null(self):
         # A technical ERROR is raised before any StrategyPipelineResult is
         # built, so PairScanResult.pipeline_result is None.
@@ -817,9 +551,8 @@ class TestDirectionResolution:
 
 class TestDashboardServiceDoesNotRecalculateStrategy:
     async def test_no_medium_signals_exposed_via_scanning_coins(self):
-        # MEDIUM is never a valid PipelineStatus.VALID outcome (only
-        # PREMIUM/STRONG publish); confirm scanning-coins never fabricates
-        # or exposes a MEDIUM classification anywhere in its response.
+        # There is no MEDIUM/confidence classification anywhere in this
+        # pipeline; confirm scanning-coins never exposes such a value.
         runtime_store = DashboardRuntimeStore()
         service = _build_service(runtime_store=runtime_store)
         coins = await service.get_scanning_coins()
@@ -863,7 +596,9 @@ class TestPairScanUpdatedEvents:
         assert event.data == {
             "coin": "ETH-USDT",
             "direction": None,
-            "validation_progress_percentage": 35,
+            # HTF_BIAS (stage 1) passed, LIQUIDITY_SWEEP (stage 2) executed
+            # but failed: 1 of 6 stages passed = 17%.
+            "validation_progress_percentage": 17,
             "last_executed_layer": "LIQUIDITY_SWEEP",
             "failed_layer": "LIQUIDITY_SWEEP",
             "reason": "Institutional liquidity sweep missing",
@@ -872,14 +607,8 @@ class TestPairScanUpdatedEvents:
     def test_no_secrets_candles_or_stack_traces_in_event_data(self):
         pipeline_result = StrategyPipelineResult(
             symbol="BTC-USDT", expected_direction="BUY", detection_time_utc=UTC_NOW,
-            status=PipelineStatus.VALID, passed=True, stages=_stages("CONFIDENCE_SCORING"),
+            status=PipelineStatus.VALID, passed=True, stages=_stages("RISK_MANAGEMENT"),
             risk_plan=_real_risk_plan(),
-            confidence_result=ConfidenceScoreResult(
-                raw_score=115.0, maximum_raw_score=115, normalized_score=100.0,
-                classification=ConfidenceClassification.PREMIUM, publishable=True,
-                mandatory_layers_passed=True, layer_scores=[], failed_mandatory_layers=[],
-                reason="PREMIUM",
-            ),
         )
         pair_result = PairScanResult(
             symbol="BTC-USDT", status=PairScanStatus.VALID, pipeline_result=pipeline_result,
@@ -962,16 +691,10 @@ class TestRecordPairResult:
         # without waiting for record_cycle_result (the whole cycle) to
         # ever be called.
         runtime_store = DashboardRuntimeStore()
-        confidence_result = ConfidenceScoreResult(
-            raw_score=115.0, maximum_raw_score=115, normalized_score=96.0,
-            classification=ConfidenceClassification.PREMIUM, publishable=True,
-            mandatory_layers_passed=True, layer_scores=[], failed_mandatory_layers=[],
-            reason="PREMIUM",
-        )
         pipeline_result = StrategyPipelineResult(
             symbol="BTC-USDT", expected_direction="BUY", detection_time_utc=UTC_NOW,
-            status=PipelineStatus.VALID, passed=True, stages=[],
-            risk_plan=_real_risk_plan(), confidence_result=confidence_result,
+            status=PipelineStatus.VALID, passed=True, stages=_stages("RISK_MANAGEMENT"),
+            risk_plan=_real_risk_plan(),
         )
         pair_result = PairScanResult(
             symbol="BTC-USDT", status=PairScanStatus.VALID, pipeline_result=pipeline_result,
@@ -984,7 +707,7 @@ class TestRecordPairResult:
         coins = await service.get_scanning_coins()
         btc = next(c for c in coins if c.coin == "BTC-USDT")
         assert btc.status == "READY"
-        assert btc.score == 96.0
+        assert btc.score == 6.0
 
     async def test_later_pair_result_for_the_same_symbol_overwrites_the_earlier_one(self):
         runtime_store = DashboardRuntimeStore()
@@ -1262,7 +985,7 @@ class TestRecentRejections:
             return_value=[
                 RejectionRecord(
                     symbol="BTC-USDT",
-                    failed_layer="MARKET_REGIME",
+                    failed_layer="HTF_BIAS",
                     rejection_reason="not trending",
                     detection_time_utc=UTC_NOW,
                     created_at_utc=UTC_NOW,

@@ -9,10 +9,8 @@ from pydantic import BaseModel, ConfigDict, field_validator
 
 class ValidationResult(BaseModel):
     """
-    Generic result produced by a single validation layer.
-
-    Used by every validator in `app.validators` to report whether a
-    given check passed, with supporting context.
+    Generic result produced by a single validation layer, reporting
+    whether a given check passed, with supporting context.
     """
 
     model_config = ConfigDict(frozen=True)

@@ -19,7 +19,6 @@ from app.risk.results import (
 )
 from app.scanner.pipeline_results import PipelineStatus, StrategyPipelineResult
 from app.scanner.scan_results import PairScanResult, PairScanStatus, ScanCycleResult, ScannerRuntimeStatus
-from app.scoring.results import ConfidenceClassification, ConfidenceScoreResult
 
 pytestmark = pytest.mark.asyncio
 
@@ -80,17 +79,6 @@ def _real_risk_plan() -> RiskPlan:
 
 def _valid_pipeline_result(symbol="BTC-USDT"):
     risk_plan = _real_risk_plan()
-    confidence = ConfidenceScoreResult(
-        raw_score=115.0,
-        maximum_raw_score=115,
-        normalized_score=95.8,
-        classification=ConfidenceClassification.PREMIUM,
-        publishable=True,
-        mandatory_layers_passed=True,
-        layer_scores=[],
-        failed_mandatory_layers=[],
-        reason="PREMIUM_CONFIDENCE",
-    )
     return StrategyPipelineResult(
         symbol=symbol,
         expected_direction="BUY",
@@ -99,7 +87,6 @@ def _valid_pipeline_result(symbol="BTC-USDT"):
         passed=True,
         stages=[],
         risk_plan=risk_plan,
-        confidence_result=confidence,
     )
 
 
@@ -210,7 +197,6 @@ class TestScanOnceMode:
         output = capsys.readouterr().out
         assert "valid: symbol=BTC-USDT" in output
         assert "direction=BUY" in output
-        assert "classification=PREMIUM" in output
 
     async def test_no_full_candle_payload(self, capsys):
         service = MagicMock()

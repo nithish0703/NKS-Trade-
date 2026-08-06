@@ -88,15 +88,9 @@ export function SignalDetailsModal({
             <Row label="Dynamic Stop Loss" value={formatPriceOrDash(details.stop_loss)} />
             <Row label="Take Profit" value={formatPriceOrDash(details.take_profit)} />
             <Row label="Risk Reward" value={`1:${details.risk_reward_ratio.toFixed(2)}`} />
-            <Row label="Market Regime" value={details.market_regime} />
-            <Row label="Higher Timeframe Bias" value={details.higher_timeframe_bias} />
             <Row label="Liquidity Type" value={details.liquidity_type} />
             <Row label="Entry Zone Type" value={details.entry_zone_type} />
             <Row label="Structure Confirmation" value={details.structure_confirmation} />
-            <Row label="Volume Confirmation" value={details.volume_confirmation ? "Confirmed" : "Not confirmed"} />
-            <Row label="ATR Status" value={details.atr_status} />
-            <Row label="Trading Session" value={details.trading_session} />
-            <Row label="BTC Alignment" value={details.btc_market_alignment ? "Aligned" : "Not aligned"} />
             <Row label="Detection Time" value={formatUtcTime(details.detection_time_utc)} />
             <div className="mt-3 rounded-md bg-slate-50 p-3 text-sm text-slate-600">
               <div className="mb-1 font-semibold text-slate-700">Institutional Reason</div>

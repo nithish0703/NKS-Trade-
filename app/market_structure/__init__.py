@@ -1,13 +1,11 @@
 """
-Market structure package: swing points, trend structure, BOS/CHoCH/MSS detection.
+Market structure package: swing points, trend structure, BOS detection.
 """
 
 from app.market_structure.bos_detector import BOSDetector
 from app.market_structure.calculator import MarketStructureCalculator
-from app.market_structure.choch_detector import CHOCHDetector
 from app.market_structure.displacement import DisplacementDetector, StructureShiftCalculationError
 from app.market_structure.htf_bias import HigherTimeframeBiasAnalyzer
-from app.market_structure.mss_detector import MSSDetector
 from app.market_structure.results import (
     ClassifiedSwing,
     HigherTimeframeBias,
@@ -18,7 +16,6 @@ from app.market_structure.results import (
     SwingType,
     TrendDirection,
 )
-from app.market_structure.shift_calculator import StructureShiftCalculator
 from app.market_structure.shift_results import (
     BreakConfirmation,
     BreakDirection,
@@ -49,9 +46,6 @@ __all__ = [
     "HigherTimeframeBias",
     "DisplacementDetector",
     "BOSDetector",
-    "CHOCHDetector",
-    "MSSDetector",
-    "StructureShiftCalculator",
     "StructureShiftCalculationError",
     "DisplacementResult",
     "StructureBreakResult",

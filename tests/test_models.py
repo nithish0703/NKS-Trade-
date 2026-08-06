@@ -8,7 +8,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.models.candle import Candle
-from app.models.signal import Direction, MarketRegime, Signal, SignalStatus
+from app.models.signal import Direction, Signal, SignalStatus
 from app.models.trade_zone import TradeZone, ZoneStatus, ZoneType
 from app.models.validation_result import ValidationResult
 
@@ -40,22 +40,15 @@ def _make_signal(**overrides) -> Signal:
         "take_profit": 110.0,
         "risk_reward_ratio": 2.0,
         "status": SignalStatus.CONFIRMED,
-        "market_regime": MarketRegime.TRENDING,
-        "higher_timeframe_bias": "BULLISH",
         "liquidity_type": "EQUAL_HIGHS",
         "entry_zone_type": "ORDER_BLOCK",
         "structure_confirmation": "BOS",
-        "volume_confirmation": True,
-        "atr_status": "NORMAL",
-        "trading_session": "LONDON",
-        "btc_market_alignment": True,
         "detection_time_utc": UTC_NOW,
         "institutional_reason": "Bullish order block retest with liquidity sweep.",
         "setup_key": "setup-key-abc",
         "liquidity_sweep_id": "sweep-1",
         "structure_break_id": "break-1",
         "entry_zone_id": "zone-1",
-        "retest_id": "retest-1",
         "created_at_utc": UTC_NOW,
     }
     fields.update(overrides)

@@ -5,7 +5,6 @@ and never fabricates values.
 """
 
 from datetime import datetime, timezone
-from decimal import ROUND_HALF_UP, Decimal
 from typing import Optional
 
 from app.api.access_tier import AccessTier
@@ -23,23 +22,9 @@ from app.api.schemas import (
 )
 from app.config.pairs import get_configured_pairs
 from app.config.timeframes import ENTRY_TIMEFRAME
-from app.config.thresholds import (
-    SCORE_BTC_ALIGNMENT,
-    SCORE_ENTRY_ZONE,
-    SCORE_FAKE_BREAKOUT,
-    SCORE_HTF_BIAS,
-    SCORE_LIQUIDITY_SWEEP,
-    SCORE_MARKET_REGIME,
-    SCORE_MAXIMUM_RAW,
-    SCORE_PREMIUM_DISCOUNT,
-    SCORE_RETEST_CONFIRMATION,
-    SCORE_SESSION,
-    SCORE_STRUCTURE_SHIFT,
-    SCORE_VOLUME_CONFIRMATION,
-)
 from app.data.provider_base import MarketDataProvider
 from app.models.signal import Direction, Signal
-from app.scanner.pipeline_results import PipelineStageResult, PipelineStatus
+from app.scanner.pipeline_results import PipelineStageResult
 from app.scanner.scan_results import PairScanResult, PairScanStatus, ScanCycleResult
 from app.scanner.scanner_events import ScannerEvent, ScannerEventType
 from app.storage.analytics_repository import AnalyticsRepository
@@ -53,64 +38,35 @@ from app.storage.signal_repository import (
     SignalWithStatus,
 )
 
-# Dashboard-only scan-progress weights. These mirror the exact layer
-# weights ConfidenceScoringEngine already uses (app/config/thresholds.py)
-# so the displayed progress reflects the real strategy weighting, but
-# this mapping is never read by the scoring engine itself and never
-# feeds back into signal classification, storage, or notification.
-_VALIDATION_PROGRESS_LAYER_WEIGHTS: dict[str, float] = {
-    "MARKET_REGIME": SCORE_MARKET_REGIME,
-    "HTF_BIAS": SCORE_HTF_BIAS,
-    "LIQUIDITY_SWEEP": SCORE_LIQUIDITY_SWEEP,
-    "STRUCTURE_SHIFT": SCORE_STRUCTURE_SHIFT,
-    "VOLUME_CONFIRMATION": SCORE_VOLUME_CONFIRMATION,
-    "ENTRY_ZONE": SCORE_ENTRY_ZONE,
-    "PREMIUM_DISCOUNT": SCORE_PREMIUM_DISCOUNT,
-    "RETEST_CONFIRMATION": SCORE_RETEST_CONFIRMATION,
-    "SESSION_FILTER": SCORE_SESSION,
-    "BTC_ALIGNMENT": SCORE_BTC_ALIGNMENT,
-    "FAKE_BREAKOUT_FILTER": SCORE_FAKE_BREAKOUT,
-}
-_VALIDATION_PROGRESS_MAX_SCORE: float = float(SCORE_MAXIMUM_RAW)
-
-
+# Dashboard-only "Scanning Coins" ranking score: how many of the
+# 5-stage pipeline's mandatory stages a symbol has cleared so far this
+# cycle, out of the total stage count. This is a pure ranking/display
+# aid for the Scanning Coins panel only -- it is never read back into
+# the strategy pipeline and never influences whether a signal is
+# generated (that decision is purely binary CONFIRMED/REJECTED, per
+# calculate_pipeline_decision in app.strategy_pipeline.scoring).
 def calculate_validation_progress(
     stages: Optional[list[PipelineStageResult]],
-) -> tuple[float, float, int, Optional[str]]:
+) -> tuple[int, int, Optional[str]]:
     """
-    Compute a dashboard-only "how far did this scan get" progress score
-    from a StrategyPipelineResult's stage audit trail.
+    Compute a dashboard-only "how many stages did this scan clear"
+    progress count from a StrategyPipelineResult's stage audit trail.
 
-    This never recalculates any validator, never touches
-    ConfidenceScoringEngine, and never affects PREMIUM/STRONG/MEDIUM/
-    IGNORE classification. It only reads `executed`/`passed` off stages
-    that already ran and awards each scoring layer's existing fixed
-    weight (or zero), purely for scanner visibility.
-
-    Returns (raw_score, max_score, percentage, last_executed_layer).
-    percentage is rounded to the nearest whole number. Non-scoring
-    stages (CANDLE_QUALITY, RISK_MANAGEMENT, CONFIDENCE_SCORING) are
-    ignored entirely.
+    Returns (stages_passed, stages_total, last_executed_layer).
     """
     if not stages:
-        return 0.0, _VALIDATION_PROGRESS_MAX_SCORE, 0, None
+        return 0, 0, None
 
-    raw_score = 0.0
+    stages_passed = 0
     last_executed_layer: Optional[str] = None
 
     for stage in sorted(stages, key=lambda s: s.stage_order):
         if stage.executed:
             last_executed_layer = stage.layer_name
+            if stage.passed:
+                stages_passed += 1
 
-        weight = _VALIDATION_PROGRESS_LAYER_WEIGHTS.get(stage.layer_name)
-        if weight is None:
-            continue
-        if stage.executed and stage.passed:
-            raw_score += weight
-
-    raw_percentage = Decimal(str(raw_score)) / Decimal(str(_VALIDATION_PROGRESS_MAX_SCORE)) * 100
-    percentage = int(raw_percentage.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
-    return raw_score, _VALIDATION_PROGRESS_MAX_SCORE, percentage, last_executed_layer
+    return stages_passed, len(stages), last_executed_layer
 
 
 def calculate_chart_trend(market_context) -> Optional[str]:
@@ -153,7 +109,8 @@ def build_pair_scan_updated_event(pair_result: PairScanResult) -> ScannerEvent:
     pipeline_result = pair_result.pipeline_result
     direction = pipeline_result.expected_direction if pipeline_result is not None else None
     stages = pipeline_result.stages if pipeline_result is not None else None
-    _, _, percentage, last_executed_layer = calculate_validation_progress(stages)
+    stages_passed, stages_total, last_executed_layer = calculate_validation_progress(stages)
+    percentage = round((stages_passed / stages_total) * 100) if stages_total else None
     failed_layer = pipeline_result.failed_layer if pipeline_result is not None else None
 
     return ScannerEvent(
@@ -309,13 +266,6 @@ class DashboardService:
                         validation_progress_max_score=None,
                         validation_progress_percentage=None,
                         last_executed_layer=None,
-                        preview_direction=None,
-                        preview_progress_raw_score=None,
-                        preview_progress_max_score=None,
-                        preview_progress_percentage=None,
-                        preview_completed_layers=None,
-                        preview_failed_layers=None,
-                        preview_data_availability=None,
                         chart_trend=None,
                     )
                 )
@@ -327,14 +277,6 @@ class DashboardService:
     def _to_scanning_coin(pair_result: PairScanResult, *, price: Optional[float] = None) -> ScanningCoin:
         pipeline_result = pair_result.pipeline_result
         direction = pipeline_result.expected_direction if pipeline_result is not None else None
-
-        score: Optional[float] = None
-        if (
-            pipeline_result is not None
-            and pipeline_result.confidence_result is not None
-            and pipeline_result.status == PipelineStatus.VALID
-        ):
-            score = pipeline_result.confidence_result.normalized_score
 
         status_map = {
             PairScanStatus.VALID: "READY",
@@ -349,14 +291,13 @@ class DashboardService:
         reason = pair_result.reason
 
         stages = pipeline_result.stages if pipeline_result is not None else None
-        raw_score, max_score, percentage, last_executed_layer = calculate_validation_progress(stages)
+        stages_passed, stages_total, last_executed_layer = calculate_validation_progress(stages)
+        percentage = round((stages_passed / stages_total) * 100) if stages_total else None
 
-        preview = pair_result.preview_result
-        preview_data_availability = (
-            {layer: status.value for layer, status in preview.preview_data_availability.items()}
-            if preview is not None
-            else None
-        )
+        # Scanning Coins ranking-only score: how many pipeline stages
+        # this symbol has cleared so far, out of the total stage count.
+        # Never used for signal generation -- see calculate_pipeline_decision.
+        score: Optional[float] = float(stages_passed) if stages else None
 
         market_context = pipeline_result.market_context if pipeline_result is not None else None
         chart_trend = calculate_chart_trend(market_context)
@@ -370,19 +311,10 @@ class DashboardService:
             failed_layer=failed_layer,
             reason=reason,
             updated_at_utc=pair_result.completed_at_utc,
-            validation_progress_raw_score=raw_score if stages else None,
-            validation_progress_max_score=max_score if stages else None,
-            validation_progress_percentage=percentage if stages else None,
+            validation_progress_raw_score=float(stages_passed) if stages else None,
+            validation_progress_max_score=float(stages_total) if stages else None,
+            validation_progress_percentage=percentage,
             last_executed_layer=last_executed_layer,
-            preview_direction=preview.preview_direction if preview is not None else None,
-            preview_progress_raw_score=preview.preview_progress_raw_score if preview is not None else None,
-            preview_progress_max_score=preview.preview_progress_max_score if preview is not None else None,
-            preview_progress_percentage=(
-                preview.preview_progress_percentage if preview is not None else None
-            ),
-            preview_completed_layers=preview.preview_completed_layers if preview is not None else None,
-            preview_failed_layers=preview.preview_failed_layers if preview is not None else None,
-            preview_data_availability=preview_data_availability,
             chart_trend=chart_trend,
         )
 
@@ -571,15 +503,9 @@ class DashboardService:
             stop_loss=signal.stop_loss,
             take_profit=signal.take_profit,
             risk_reward_ratio=signal.risk_reward_ratio,
-            market_regime=signal.market_regime.value,
-            higher_timeframe_bias=signal.higher_timeframe_bias,
             liquidity_type=signal.liquidity_type,
             entry_zone_type=signal.entry_zone_type,
             structure_confirmation=signal.structure_confirmation,
-            volume_confirmation=signal.volume_confirmation,
-            atr_status=signal.atr_status,
-            trading_session=signal.trading_session,
-            btc_market_alignment=signal.btc_market_alignment,
             detection_time_utc=signal.detection_time_utc,
             institutional_reason=signal.institutional_reason,
             dashboard_status=result.dashboard_status,

@@ -1,6 +1,6 @@
 """
-New institutional strategy pipeline engine, replacing the legacy
-14-stage InstitutionalSMCStrategyEngine.
+Institutional strategy pipeline engine: the sole strategy engine used
+by the live scanner, dashboard, and Telegram notification path.
 
 Flow:
 
@@ -19,10 +19,8 @@ Flow:
 Every dependency is injected; this class does not construct its own
 calculators or detectors. It never mutates input candles, contexts,
 positions, or calculation results, and never persists, publishes, or
-executes a trade. Exposes the same `analyze_symbol(...) ->
-StrategyPipelineResult` interface as the legacy engine, so
-`app.scanner.pair_scanner.PairScanner` needs no changes to use either
-engine interchangeably.
+executes a trade. Exposes `analyze_symbol(...) -> StrategyPipelineResult`,
+the interface `app.scanner.pair_scanner.PairScanner` depends on.
 """
 
 import asyncio

@@ -12,28 +12,15 @@ from app.risk.results import RiskPlan, RiskPlanStatus
 from app.scanner.pipeline_results import PipelineStatus, StrategyPipelineResult
 from app.scanner.scan_results import PairScanResult, PairScanStatus
 from app.scanner.scan_scheduler import MultiPairScanScheduler, _seconds_until_next_interval_boundary
-from app.scoring.results import ConfidenceClassification, ConfidenceScoreResult
 
 pytestmark = pytest.mark.asyncio
 
 UTC_NOW = datetime(2026, 1, 1, 10, 0, tzinfo=timezone.utc)
 
 
-def _valid_pipeline_result(symbol: str, normalized_score: float = 95.8) -> StrategyPipelineResult:
+def _valid_pipeline_result(symbol: str) -> StrategyPipelineResult:
     risk_plan = MagicMock(spec=RiskPlan)
     risk_plan.status = RiskPlanStatus.VALID
-    raw_score = round((normalized_score / 100) * 115, 2)
-    confidence = ConfidenceScoreResult(
-        raw_score=raw_score,
-        maximum_raw_score=115,
-        normalized_score=normalized_score,
-        classification=ConfidenceClassification.PREMIUM,
-        publishable=True,
-        mandatory_layers_passed=True,
-        layer_scores=[],
-        failed_mandatory_layers=[],
-        reason="PREMIUM_CONFIDENCE",
-    )
     return StrategyPipelineResult(
         symbol=symbol,
         expected_direction="BUY",
@@ -42,12 +29,11 @@ def _valid_pipeline_result(symbol: str, normalized_score: float = 95.8) -> Strat
         passed=True,
         stages=[],
         risk_plan=risk_plan,
-        confidence_result=confidence,
     )
 
 
 def _pair_result(
-    symbol: str, status: PairScanStatus = PairScanStatus.REJECTED, normalized_score: float = 95.8
+    symbol: str, status: PairScanStatus = PairScanStatus.REJECTED
 ) -> PairScanResult:
     kwargs = dict(
         symbol=symbol,
@@ -62,7 +48,7 @@ def _pair_result(
         error_type=None,
     )
     if status == PairScanStatus.VALID:
-        kwargs["pipeline_result"] = _valid_pipeline_result(symbol, normalized_score)
+        kwargs["pipeline_result"] = _valid_pipeline_result(symbol)
     elif status == PairScanStatus.REJECTED:
         kwargs["reason"] = "not trending"
     elif status == PairScanStatus.DUPLICATE:
@@ -256,29 +242,14 @@ class TestRunCycle:
         symbols = [f"COIN{i}-USDT" for i in range(37)]
         pair_scanner = _build_pair_scanner(
             results_by_symbol={
-                symbol: _pair_result(symbol, status=PairScanStatus.VALID, normalized_score=float(i))
-                for i, symbol in enumerate(symbols)
+                symbol: _pair_result(symbol, status=PairScanStatus.VALID)
+                for symbol in symbols
             }
         )
         scheduler = _build_scheduler(pair_scanner=pair_scanner, pairs=tuple(symbols))
         cycle_result = await _run_cycle(scheduler)
         assert len(cycle_result.valid_results) == 37
         assert {r.symbol for r in cycle_result.valid_results} == set(symbols)
-
-    async def test_ranking_does_not_recalculate_scores(self):
-        pair_scanner = _build_pair_scanner(
-            results_by_symbol={
-                "BTC-USDT": _pair_result("BTC-USDT", status=PairScanStatus.VALID, normalized_score=80.0),
-                "ETH-USDT": _pair_result("ETH-USDT", status=PairScanStatus.VALID, normalized_score=99.0),
-            }
-        )
-        scheduler = _build_scheduler(pair_scanner=pair_scanner, pairs=("BTC-USDT", "ETH-USDT"))
-        cycle_result = await _run_cycle(scheduler)
-        scores = {
-            r.symbol: r.pipeline_result.confidence_result.normalized_score
-            for r in cycle_result.valid_results
-        }
-        assert scores == {"BTC-USDT": 80.0, "ETH-USDT": 99.0}
 
     async def test_inputs_not_mutated(self):
         scheduler = _build_scheduler()

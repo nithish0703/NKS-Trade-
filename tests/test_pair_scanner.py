@@ -14,27 +14,11 @@ from app.scanner.duplicate_guard import DuplicateSignalGuard
 from app.scanner.pair_scanner import PairScanner
 from app.scanner.pipeline_exceptions import PipelineDataUnavailableError
 from app.scanner.pipeline_results import PipelineStatus, StrategyPipelineResult
-from app.scanner.preview_analyzer import PreviewAnalysisResult, PreviewLayerStatus
 from app.scanner.scan_results import PairScanStatus
-from app.scoring.results import ConfidenceClassification, ConfidenceScoreResult
 
 pytestmark = pytest.mark.asyncio
 
 UTC_NOW = datetime(2026, 1, 1, 10, 0, tzinfo=timezone.utc)
-
-
-def _confidence(classification=ConfidenceClassification.PREMIUM, publishable=True):
-    return ConfidenceScoreResult(
-        raw_score=115.0,
-        maximum_raw_score=115,
-        normalized_score=95.8,
-        classification=classification,
-        publishable=publishable,
-        mandatory_layers_passed=True,
-        layer_scores=[],
-        failed_mandatory_layers=[],
-        reason="CONFIDENCE",
-    )
 
 
 def _risk_plan():
@@ -61,15 +45,7 @@ def _break(break_id="break-1"):
     return structure_break
 
 
-def _retest(retest_id="retest-1"):
-    retest = MagicMock()
-    retest.retest_id = retest_id
-    return retest
-
-
-def _valid_pipeline_result(
-    symbol="BTC-USDT", classification=ConfidenceClassification.PREMIUM, publishable=True
-):
+def _valid_pipeline_result(symbol="BTC-USDT"):
     return StrategyPipelineResult(
         symbol=symbol,
         expected_direction="BUY",
@@ -80,9 +56,7 @@ def _valid_pipeline_result(
         liquidity_sweep=_sweep(),
         selected_entry_zone=_zone(),
         selected_structure_break=_break(),
-        retest_result=_retest(),
         risk_plan=_risk_plan(),
-        confidence_result=_confidence(classification=classification, publishable=publishable),
     )
 
 
@@ -102,23 +76,10 @@ def _rejected_pipeline_result(symbol="BTC-USDT", market_context=None):
         detection_time_utc=UTC_NOW,
         status=PipelineStatus.REJECTED,
         passed=False,
-        failed_layer="MARKET_REGIME",
-        rejection_reason="ADX below trending threshold.",
+        failed_layer="HTF_BIAS",
+        rejection_reason="Higher-timeframe bias is MIXED or UNKNOWN.",
         stages=[],
         market_context=market_context,
-    )
-
-
-def _preview_result(symbol="BTC-USDT") -> PreviewAnalysisResult:
-    return PreviewAnalysisResult(
-        symbol=symbol,
-        preview_direction="BUY",
-        preview_progress_raw_score=40.0,
-        preview_progress_max_score=120.0,
-        preview_progress_percentage=33,
-        preview_completed_layers=["MARKET_REGIME", "HTF_BIAS"],
-        preview_failed_layers=["LIQUIDITY_SWEEP"],
-        preview_data_availability={"LIQUIDITY_SWEEP": PreviewLayerStatus.FAILED},
     )
 
 
@@ -126,14 +87,12 @@ def _build_scanner(
     strategy_engine=None,
     duplicate_guard=None,
     semaphore=None,
-    preview_analyzer=None,
     on_pair_result=None,
 ) -> PairScanner:
     return PairScanner(
         strategy_engine=strategy_engine or MagicMock(),
         duplicate_guard=duplicate_guard or DuplicateSignalGuard(retention_seconds=3600, maximum_entries=1000),
         semaphore=semaphore or asyncio.Semaphore(5),
-        preview_analyzer=preview_analyzer,
         on_pair_result=on_pair_result,
     )
 
@@ -150,48 +109,12 @@ async def _scan(scanner: PairScanner, symbol="BTC-USDT"):
 
 
 class TestPairScannerOutcomes:
-    async def test_valid_premium_result(self):
+    async def test_valid_result(self):
         engine = MagicMock()
-        engine.analyze_symbol = AsyncMock(
-            return_value=_valid_pipeline_result(classification=ConfidenceClassification.PREMIUM)
-        )
+        engine.analyze_symbol = AsyncMock(return_value=_valid_pipeline_result())
         scanner = _build_scanner(strategy_engine=engine)
         result = await _scan(scanner)
         assert result.status == PairScanStatus.VALID
-
-    async def test_valid_strong_result(self):
-        engine = MagicMock()
-        engine.analyze_symbol = AsyncMock(
-            return_value=_valid_pipeline_result(classification=ConfidenceClassification.STRONG)
-        )
-        scanner = _build_scanner(strategy_engine=engine)
-        result = await _scan(scanner)
-        assert result.status == PairScanStatus.VALID
-
-    async def test_medium_result_does_not_become_valid_candidate(self):
-        # StrategyPipelineResult itself guarantees status=VALID implies a
-        # publishable PREMIUM/STRONG confidence result, so a MEDIUM/IGNORE
-        # classification always carries status=REJECTED in practice. Confirm
-        # the pair scanner never reports such a result as VALID.
-        pipeline_result = StrategyPipelineResult(
-            symbol="BTC-USDT",
-            expected_direction="BUY",
-            detection_time_utc=UTC_NOW,
-            status=PipelineStatus.REJECTED,
-            passed=False,
-            failed_layer="CONFIDENCE_SCORING",
-            rejection_reason="Confidence classification is MEDIUM.",
-            stages=[],
-            confidence_result=_confidence(
-                classification=ConfidenceClassification.MEDIUM, publishable=False
-            ),
-        )
-        engine = MagicMock()
-        engine.analyze_symbol = AsyncMock(return_value=pipeline_result)
-        scanner = _build_scanner(strategy_engine=engine)
-        result = await _scan(scanner)
-        assert result.status != PairScanStatus.VALID
-        assert result.status == PairScanStatus.REJECTED
 
     async def test_rejected_pipeline_result(self):
         engine = MagicMock()
@@ -199,7 +122,7 @@ class TestPairScannerOutcomes:
         scanner = _build_scanner(strategy_engine=engine)
         result = await _scan(scanner)
         assert result.status == PairScanStatus.REJECTED
-        assert result.reason == "ADX below trending threshold."
+        assert result.reason == "Higher-timeframe bias is MIXED or UNKNOWN."
 
     async def test_error_pipeline_result(self):
         error_result = StrategyPipelineResult(
@@ -300,143 +223,6 @@ class TestPairScannerMetadata:
         result_fields = set(type(result).model_fields.keys())
         forbidden = {"telegram_status", "dashboard_status", "exchange_order_id", "persisted"}
         assert result_fields.isdisjoint(forbidden)
-
-
-class TestPreviewAnalyzerWiring:
-    async def test_preview_computed_only_for_rejected_result(self):
-        pipeline_result = _rejected_pipeline_result(market_context=_market_context())
-        engine = MagicMock()
-        engine.analyze_symbol = AsyncMock(return_value=pipeline_result)
-
-        preview_analyzer = MagicMock()
-        preview_analyzer.analyze = MagicMock(return_value=_preview_result())
-
-        scanner = _build_scanner(strategy_engine=engine, preview_analyzer=preview_analyzer)
-        result = await _scan(scanner)
-
-        preview_analyzer.analyze.assert_called_once_with(pipeline_result.market_context)
-        assert result.preview_result is not None
-        assert result.preview_result.preview_direction == "BUY"
-
-    async def test_preview_not_computed_for_valid_result(self):
-        engine = MagicMock()
-        engine.analyze_symbol = AsyncMock(return_value=_valid_pipeline_result())
-
-        preview_analyzer = MagicMock()
-        preview_analyzer.analyze = MagicMock(return_value=_preview_result())
-
-        scanner = _build_scanner(strategy_engine=engine, preview_analyzer=preview_analyzer)
-        result = await _scan(scanner)
-
-        preview_analyzer.analyze.assert_not_called()
-        assert result.status == PairScanStatus.VALID
-        assert result.preview_result is None
-
-    async def test_preview_not_computed_for_error_result_without_market_context(self):
-        # An unhandled exception (never reaching a StrategyPipelineResult
-        # at all) has no market_context to reuse, so no preview can be
-        # computed.
-        engine = MagicMock()
-        engine.analyze_symbol = AsyncMock(side_effect=RuntimeError("boom"))
-
-        preview_analyzer = MagicMock()
-        preview_analyzer.analyze = MagicMock(return_value=_preview_result())
-
-        scanner = _build_scanner(strategy_engine=engine, preview_analyzer=preview_analyzer)
-        result = await _scan(scanner)
-
-        preview_analyzer.analyze.assert_not_called()
-        assert result.status == PairScanStatus.ERROR
-        assert result.preview_result is None
-
-    async def test_preview_computed_for_error_result_with_market_context(self):
-        # A PipelineStatus.ERROR result that DID reach market-data
-        # preparation (market_context is populated) should still get a
-        # preview score, the same as a REJECTED result -- an ERROR
-        # status must not silently fall back to no score when the
-        # necessary inputs are actually available.
-        error_result = StrategyPipelineResult(
-            symbol="BTC-USDT",
-            expected_direction=None,
-            detection_time_utc=UTC_NOW,
-            status=PipelineStatus.ERROR,
-            passed=False,
-            rejection_reason="Downstream calculation error.",
-            stages=[],
-            market_context=_market_context(),
-        )
-        engine = MagicMock()
-        engine.analyze_symbol = AsyncMock(return_value=error_result)
-
-        preview_analyzer = MagicMock()
-        preview_analyzer.analyze = MagicMock(return_value=_preview_result())
-
-        scanner = _build_scanner(strategy_engine=engine, preview_analyzer=preview_analyzer)
-        result = await _scan(scanner)
-
-        preview_analyzer.analyze.assert_called_once_with(error_result.market_context)
-        assert result.status == PairScanStatus.ERROR
-        assert result.preview_result is not None
-        assert result.preview_result.preview_direction == "BUY"
-
-    async def test_no_preview_analyzer_configured_leaves_preview_result_none(self):
-        pipeline_result = _rejected_pipeline_result(market_context=_market_context())
-        engine = MagicMock()
-        engine.analyze_symbol = AsyncMock(return_value=pipeline_result)
-
-        scanner = _build_scanner(strategy_engine=engine, preview_analyzer=None)
-        result = await _scan(scanner)
-
-        assert result.status == PairScanStatus.REJECTED
-        assert result.preview_result is None
-
-    async def test_rejected_result_has_no_market_context_skips_preview(self):
-        pipeline_result = _rejected_pipeline_result(market_context=None)
-        engine = MagicMock()
-        engine.analyze_symbol = AsyncMock(return_value=pipeline_result)
-
-        preview_analyzer = MagicMock()
-        preview_analyzer.analyze = MagicMock(return_value=_preview_result())
-
-        scanner = _build_scanner(strategy_engine=engine, preview_analyzer=preview_analyzer)
-        result = await _scan(scanner)
-
-        preview_analyzer.analyze.assert_not_called()
-        assert result.preview_result is None
-
-    async def test_preview_analyzer_exception_never_affects_real_result(self):
-        pipeline_result = _rejected_pipeline_result(market_context=_market_context())
-        engine = MagicMock()
-        engine.analyze_symbol = AsyncMock(return_value=pipeline_result)
-
-        preview_analyzer = MagicMock()
-        preview_analyzer.analyze = MagicMock(side_effect=RuntimeError("preview boom"))
-
-        scanner = _build_scanner(strategy_engine=engine, preview_analyzer=preview_analyzer)
-        result = await _scan(scanner)  # must not raise
-
-        assert result.status == PairScanStatus.REJECTED
-        assert result.reason == "ADX below trending threshold."
-        assert result.preview_result is None
-
-    async def test_preview_result_never_changes_pair_scan_status(self):
-        pipeline_result = _rejected_pipeline_result(market_context=_market_context())
-        engine = MagicMock()
-        engine.analyze_symbol = AsyncMock(return_value=pipeline_result)
-
-        preview_analyzer = MagicMock()
-        preview_analyzer.analyze = MagicMock(return_value=_preview_result())
-
-        scanner = _build_scanner(strategy_engine=engine, preview_analyzer=preview_analyzer)
-        result = await _scan(scanner)
-
-        # Even though the preview independently resolved BUY with 33%
-        # progress, the real PairScanResult remains REJECTED -- a preview
-        # can never mark a rejected pipeline as valid.
-        assert result.status == PairScanStatus.REJECTED
-        assert result.status != PairScanStatus.VALID
-        assert result.duplicate is False
-        assert result.duplicate_key is None
 
 
 class TestOnPairResultCallback:

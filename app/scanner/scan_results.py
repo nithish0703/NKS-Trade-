@@ -9,7 +9,6 @@ from typing import Any, Optional
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 from app.scanner.pipeline_results import StrategyPipelineResult, PipelineStatus
-from app.scanner.preview_analyzer import PreviewAnalysisResult
 
 
 def _is_utc(value: datetime) -> bool:
@@ -42,7 +41,6 @@ class PairScanResult(BaseModel):
     reason: Optional[str] = None
     error_type: Optional[str] = None
     metadata: Optional[dict[str, Any]] = None
-    preview_result: Optional[PreviewAnalysisResult] = None
 
     @field_validator("started_at_utc", "completed_at_utc")
     @classmethod

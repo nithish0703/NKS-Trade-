@@ -8,22 +8,15 @@ function coin(overrides: Partial<ScanningCoin> = {}): ScanningCoin {
     coin: "BTC-USDT",
     price: 65432.1,
     direction: "BUY",
-    score: 96,
+    score: 6,
     status: "READY",
     failed_layer: null,
     reason: null,
     updated_at_utc: "2026-01-01T10:00:00Z",
-    validation_progress_raw_score: 120,
-    validation_progress_max_score: 120,
+    validation_progress_raw_score: 6,
+    validation_progress_max_score: 6,
     validation_progress_percentage: 100,
-    last_executed_layer: "CONFIDENCE_SCORING",
-    preview_direction: "BUY",
-    preview_progress_raw_score: 120,
-    preview_progress_max_score: 120,
-    preview_progress_percentage: 100,
-    preview_completed_layers: ["MARKET_REGIME", "HTF_BIAS"],
-    preview_failed_layers: [],
-    preview_data_availability: { MARKET_REGIME: "PASSED", HTF_BIAS: "PASSED" },
+    last_executed_layer: "RISK_MANAGEMENT",
     ...overrides,
   };
 }
@@ -40,15 +33,15 @@ describe("ScanningCoinsTable", () => {
     expect(screen.getByText("Waiting for scanner")).toBeInTheDocument();
   });
 
-  it("shows a muted double-dash inside the circle for a missing preview score", () => {
+  it("shows a muted double-dash inside the circle for a missing score", () => {
     render(
       <ScanningCoinsTable
         coins={[
           coin({
             status: "SCANNING",
-            preview_progress_percentage: null,
-            preview_progress_raw_score: null,
-            preview_progress_max_score: null,
+            validation_progress_percentage: null,
+            validation_progress_raw_score: null,
+            validation_progress_max_score: null,
           }),
         ]}
       />,
@@ -98,7 +91,7 @@ describe("ScanningCoinsTable", () => {
             score: null,
             direction: null,
             failed_layer: null,
-            reason: "Pipeline result is not a publishable PREMIUM/STRONG setup.",
+            reason: "Pipeline result is not CONFIRMED.",
           }),
         ]}
       />,
@@ -162,42 +155,42 @@ describe("ScanningCoinsTable", () => {
       <ScanningCoinsTable
         coins={[
           coin({ coin: "READY-USDT", status: "READY" }),
-          coin({ coin: "REJECTED-USDT", status: "REJECTED", failed_layer: "MARKET_REGIME" }),
+          coin({ coin: "REJECTED-USDT", status: "REJECTED", failed_layer: "HTF_BIAS" }),
         ]}
       />,
     );
     const readyStatus = screen.getByText("READY");
-    const rejectedStatus = screen.getByText("REJECTED: MARKET_REGIME");
+    const rejectedStatus = screen.getByText("REJECTED: HTF_BIAS");
     expect(readyStatus.className).not.toBe(rejectedStatus.className);
   });
 
-  it("renders BUY preview direction in a green, semibold style", () => {
-    render(<ScanningCoinsTable coins={[coin({ preview_direction: "BUY" })]} />);
+  it("renders BUY direction in a green, semibold style", () => {
+    render(<ScanningCoinsTable coins={[coin({ direction: "BUY" })]} />);
     const buyText = screen.getByText("BUY");
     expect(buyText.className).toContain("text-emerald-600");
     expect(buyText.className).toContain("font-semibold");
   });
 
-  it("renders SELL preview direction in a red, semibold style", () => {
-    render(<ScanningCoinsTable coins={[coin({ preview_direction: "SELL" })]} />);
+  it("renders SELL direction in a red, semibold style", () => {
+    render(<ScanningCoinsTable coins={[coin({ direction: "SELL" })]} />);
     const sellText = screen.getByText("SELL");
     expect(sellText.className).toContain("text-red-600");
     expect(sellText.className).toContain("font-semibold");
   });
 
-  it("renders a muted dash for an unknown/null preview direction", () => {
-    render(<ScanningCoinsTable coins={[coin({ preview_direction: null })]} />);
+  it("renders a muted dash for an unknown/null direction", () => {
+    render(<ScanningCoinsTable coins={[coin({ direction: null })]} />);
     const dash = screen.getByText("—");
     expect(dash.className).toContain("text-slate-400");
   });
 
-  it("displays the preview progress percentage as text", () => {
-    render(<ScanningCoinsTable coins={[coin({ preview_progress_percentage: 72 })]} />);
+  it("displays the validation progress percentage as text", () => {
+    render(<ScanningCoinsTable coins={[coin({ validation_progress_percentage: 72 })]} />);
     expect(screen.getByText("72%")).toBeInTheDocument();
   });
 
-  it("renders a circular progress indicator matching the preview percentage", () => {
-    render(<ScanningCoinsTable coins={[coin({ preview_progress_percentage: 63 })]} />);
+  it("renders a circular progress indicator matching the progress percentage", () => {
+    render(<ScanningCoinsTable coins={[coin({ validation_progress_percentage: 63 })]} />);
     const svgs = document.querySelectorAll("table svg");
     expect(svgs.length).toBeGreaterThan(0);
     const progressCircle = svgs[0]?.querySelectorAll("circle")[1];
@@ -205,22 +198,19 @@ describe("ScanningCoinsTable", () => {
     expect(progressCircle?.getAttribute("stroke-dashoffset")).not.toBeNull();
   });
 
-  it("shows a partial preview score even when the real pipeline is REJECTED", () => {
+  it("shows a partial progress score even when the real pipeline is REJECTED", () => {
     render(
       <ScanningCoinsTable
         coins={[
           coin({
             status: "REJECTED",
-            score: null,
-            direction: null,
-            failed_layer: "MARKET_REGIME",
-            reason: "ATR expansion ratio is insufficient.",
-            validation_progress_raw_score: 0,
-            validation_progress_percentage: 0,
-            last_executed_layer: "MARKET_REGIME",
-            preview_direction: "BUY",
-            preview_progress_percentage: 33,
-            preview_completed_layers: ["MARKET_REGIME", "HTF_BIAS"],
+            score: 2,
+            direction: "BUY",
+            failed_layer: "BOS",
+            reason: "No confirmed structure break.",
+            validation_progress_raw_score: 2,
+            validation_progress_percentage: 33,
+            last_executed_layer: "BOS",
           }),
         ]}
       />,
@@ -229,19 +219,19 @@ describe("ScanningCoinsTable", () => {
     expect(screen.getByText("BUY")).toBeInTheDocument();
   });
 
-  it("never labels the preview percentage as confidence", () => {
+  it("never labels the progress percentage as confidence", () => {
     render(<ScanningCoinsTable coins={[coin()]} />);
     expect(screen.queryByText(/confidence/i)).not.toBeInTheDocument();
   });
 
-  it("never renders a hardcoded percentage when the preview is unavailable", () => {
+  it("never renders a hardcoded percentage when progress is unavailable", () => {
     render(
       <ScanningCoinsTable
         coins={[
           coin({
-            preview_progress_percentage: null,
-            preview_progress_raw_score: null,
-            preview_progress_max_score: null,
+            validation_progress_percentage: null,
+            validation_progress_raw_score: null,
+            validation_progress_max_score: null,
           }),
         ]}
       />,
@@ -253,9 +243,9 @@ describe("ScanningCoinsTable", () => {
     render(
       <ScanningCoinsTable
         coins={[
-          coin({ coin: "SOL-USDT", preview_progress_percentage: 10 }),
-          coin({ coin: "BTC-USDT", preview_progress_percentage: 90 }),
-          coin({ coin: "ETH-USDT", preview_progress_percentage: 50 }),
+          coin({ coin: "SOL-USDT", score: 1 }),
+          coin({ coin: "BTC-USDT", score: 5 }),
+          coin({ coin: "ETH-USDT", score: 3 }),
         ]}
       />,
     );
@@ -270,8 +260,8 @@ describe("ScanningCoinsTable", () => {
     render(
       <ScanningCoinsTable
         coins={[
-          coin({ coin: "SOL-USDT", preview_progress_percentage: 50 }),
-          coin({ coin: "BTC-USDT", preview_progress_percentage: 50 }),
+          coin({ coin: "SOL-USDT", score: 3 }),
+          coin({ coin: "BTC-USDT", score: 3 }),
         ]}
       />,
     );
@@ -285,8 +275,8 @@ describe("ScanningCoinsTable", () => {
     render(
       <ScanningCoinsTable
         coins={[
-          coin({ coin: "NEW-USDT", status: "SCANNING", preview_progress_percentage: null }),
-          coin({ coin: "BTC-USDT", preview_progress_percentage: 5 }),
+          coin({ coin: "NEW-USDT", status: "SCANNING", score: null }),
+          coin({ coin: "BTC-USDT", score: 1 }),
         ]}
       />,
     );
@@ -307,8 +297,8 @@ describe("ScanningCoinsTable", () => {
     const { rerender } = render(
       <ScanningCoinsTable
         coins={[
-          coin({ coin: "AAA-USDT", preview_progress_percentage: 10 }),
-          coin({ coin: "BBB-USDT", preview_progress_percentage: 20 }),
+          coin({ coin: "AAA-USDT", score: 1 }),
+          coin({ coin: "BBB-USDT", score: 2 }),
         ]}
       />,
     );
@@ -320,8 +310,8 @@ describe("ScanningCoinsTable", () => {
     rerender(
       <ScanningCoinsTable
         coins={[
-          coin({ coin: "AAA-USDT", preview_progress_percentage: 95 }),
-          coin({ coin: "BBB-USDT", preview_progress_percentage: 20 }),
+          coin({ coin: "AAA-USDT", score: 6 }),
+          coin({ coin: "BBB-USDT", score: 2 }),
         ]}
       />,
     );
@@ -335,8 +325,8 @@ describe("ScanningCoinsTable", () => {
       const { rerender } = render(
         <ScanningCoinsTable
           coins={[
-            coin({ coin: "AAA-USDT", preview_progress_percentage: 10 }),
-            coin({ coin: "BBB-USDT", preview_progress_percentage: 20 }),
+            coin({ coin: "AAA-USDT", score: 1 }),
+            coin({ coin: "BBB-USDT", score: 2 }),
           ]}
         />,
       );
@@ -346,8 +336,8 @@ describe("ScanningCoinsTable", () => {
       rerender(
         <ScanningCoinsTable
           coins={[
-            coin({ coin: "AAA-USDT", preview_progress_percentage: 95 }),
-            coin({ coin: "BBB-USDT", preview_progress_percentage: 20 }),
+            coin({ coin: "AAA-USDT", score: 6 }),
+            coin({ coin: "BBB-USDT", score: 2 }),
           ]}
         />,
       );
@@ -363,13 +353,13 @@ describe("ScanningCoinsTable", () => {
 
   it("appends a newly discovered coin at the end instead of forcing an immediate resort", () => {
     const { rerender } = render(
-      <ScanningCoinsTable coins={[coin({ coin: "BTC-USDT", preview_progress_percentage: 50 })]} />,
+      <ScanningCoinsTable coins={[coin({ coin: "BTC-USDT", score: 3 })]} />,
     );
     rerender(
       <ScanningCoinsTable
         coins={[
-          coin({ coin: "BTC-USDT", preview_progress_percentage: 50 }),
-          coin({ coin: "ETH-USDT", preview_progress_percentage: 99 }),
+          coin({ coin: "BTC-USDT", score: 3 }),
+          coin({ coin: "ETH-USDT", score: 6 }),
         ]}
       />,
     );
@@ -379,11 +369,11 @@ describe("ScanningCoinsTable", () => {
     expect(coinNames[1]).toContain("ETH-USDT");
   });
 
-  it("shows the dashboard-preview-only tooltip notice on the score cell", () => {
+  it("shows the ranking-only tooltip notice on the score cell", () => {
     render(<ScanningCoinsTable coins={[coin()]} />);
     const scoreCell = screen.getByText("100%").closest("[title]");
     expect(scoreCell?.getAttribute("title")).toContain(
-      "Dashboard preview only. This is not final trade confidence.",
+      "Ranking only. This is not a trading signal or confidence score.",
     );
   });
 

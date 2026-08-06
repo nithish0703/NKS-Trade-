@@ -14,15 +14,9 @@ function details(overrides: Partial<SignalDetails> = {}): SignalDetails {
     stop_loss: 116250,
     take_profit: 118200,
     risk_reward_ratio: 2.5,
-    market_regime: "TRENDING",
-    higher_timeframe_bias: "BULLISH",
     liquidity_type: "EQUAL_HIGH",
     entry_zone_type: "ORDER_BLOCK",
     structure_confirmation: "BOS",
-    volume_confirmation: true,
-    atr_status: "EXPANDING",
-    trading_session: "LONDON",
-    btc_market_alignment: true,
     detection_time_utc: "2026-01-01T10:00:00Z",
     institutional_reason: "Confirmed setup facts only.",
     dashboard_status: "NEW",
@@ -52,8 +46,8 @@ describe("SignalDetailsModal", () => {
     expect(screen.getByText("BTC-USDT")).toBeInTheDocument();
     expect(screen.getByText("CONFIRMED")).toBeInTheDocument();
     expect(screen.getByText("1:2.50")).toBeInTheDocument();
-    expect(screen.getByText("TRENDING")).toBeInTheDocument();
-    expect(screen.getByText("BULLISH")).toBeInTheDocument();
+    expect(screen.getByText("EQUAL_HIGH")).toBeInTheDocument();
+    expect(screen.getByText("ORDER_BLOCK")).toBeInTheDocument();
     expect(screen.getByText("Confirmed setup facts only.")).toBeInTheDocument();
   });
 

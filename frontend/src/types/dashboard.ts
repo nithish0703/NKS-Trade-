@@ -31,28 +31,21 @@ export interface ScanningCoin {
   // decision. Null if the bulk ticker fetch failed for this symbol.
   price: number | null;
   direction: Direction | null;
+  // Ranking-only score: how many pipeline stages this coin cleared so
+  // far this cycle. Used only to order the Scanning Coins table; never
+  // used to generate a signal (that decision is purely binary
+  // CONFIRMED/REJECTED).
   score: number | null;
   status: ScanningCoinStatus;
   failed_layer: string | null;
   reason: string | null;
   updated_at_utc: string | null;
-  // Dashboard-only scan-progress visibility (never the final confidence
-  // score, never used to publish/store/notify a signal).
+  // Dashboard-only scan-progress visibility (a stage-pass count, never
+  // a confidence score; never used to publish/store/notify a signal).
   validation_progress_raw_score: number | null;
   validation_progress_max_score: number | null;
   validation_progress_percentage: number | null;
   last_executed_layer: string | null;
-  // Dashboard-only, non-trading scan PREVIEW: independently
-  // re-evaluated past the point the real fail-fast pipeline stopped.
-  // Never a signal, never persisted, never notified, never final
-  // trade confidence.
-  preview_direction: Direction | null;
-  preview_progress_raw_score: number | null;
-  preview_progress_max_score: number | null;
-  preview_progress_percentage: number | null;
-  preview_completed_layers: string[] | null;
-  preview_failed_layers: string[] | null;
-  preview_data_availability: Record<string, string> | null;
 }
 
 export interface ActiveSignal {
@@ -131,15 +124,9 @@ export interface SignalDetails {
   stop_loss: number;
   take_profit: number;
   risk_reward_ratio: number;
-  market_regime: string;
-  higher_timeframe_bias: string;
   liquidity_type: string;
   entry_zone_type: string;
   structure_confirmation: string;
-  volume_confirmation: boolean;
-  atr_status: string;
-  trading_session: string;
-  btc_market_alignment: boolean;
   detection_time_utc: string;
   institutional_reason: string;
   // Dashboard-only lifecycle status ("NEW" or "ACTIVE"). Drives the

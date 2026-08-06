@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.models.signal import Direction, MarketRegime, Signal, SignalStatus
+from app.models.signal import Direction, Signal, SignalStatus
 from app.notifications.results import NotificationStatus, TelegramNotificationResult
 from app.notifications.telegram_formatter import TelegramSignalFormatter
 from app.notifications.telegram_notifier import TelegramSignalNotifier
@@ -27,22 +27,15 @@ def _signal(status=SignalStatus.CONFIRMED) -> Signal:
         take_profit=110.0,
         risk_reward_ratio=3.0,
         status=status,
-        market_regime=MarketRegime.TRENDING,
-        higher_timeframe_bias="BULLISH",
         liquidity_type="EQUAL_HIGH",
         entry_zone_type="ORDER_BLOCK",
         structure_confirmation="BOS",
-        volume_confirmation=True,
-        atr_status="EXPANDING",
-        trading_session="LONDON",
-        btc_market_alignment=True,
         detection_time_utc=UTC_NOW,
         institutional_reason="Confirmed setup facts only.",
         setup_key="setup-1",
         liquidity_sweep_id="sweep-1",
         structure_break_id="break-1",
         entry_zone_id="zone-1",
-        retest_id="retest-1",
         created_at_utc=UTC_NOW,
     )
     if status == SignalStatus.CONFIRMED:

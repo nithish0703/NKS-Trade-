@@ -28,10 +28,8 @@ from app.scanner.scan_scheduler import MultiPairScanScheduler
 from app.scanner.scanner_events import ScannerEvent, ScannerEventType
 from app.scanner.scanner_service import ScannerService
 from app.scanner.signal_builder import InstitutionalSignalBuilder, SignalBuildError
-from app.scanner.strategy_engine import InstitutionalSMCStrategyEngine
 
 __all__ = [
-    "InstitutionalSMCStrategyEngine",
     "StrategyPipelineResult",
     "PipelineStageResult",
     "PipelineStatus",

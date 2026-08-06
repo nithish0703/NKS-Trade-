@@ -1,10 +1,6 @@
 """
 Constructs a fully wired PipelineStrategyEngine using centralized
 application settings and thresholds.
-
-Isolated from app.scanner.engine_factory during staged development:
-nothing here is imported by the live scanner/dashboard/Telegram wiring
-until the final, separately-approved cutover.
 """
 
 from app.config import thresholds

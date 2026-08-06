@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.models.signal import Direction, MarketRegime, Signal, SignalStatus
+from app.models.signal import Direction, Signal, SignalStatus
 from app.scanner.pipeline_results import PipelineStatus, StrategyPipelineResult
 from app.scanner.scan_results import PairScanResult, PairScanStatus, ScanCycleResult
 from app.scanner.signal_builder import SignalBuildError
@@ -30,22 +30,15 @@ def _signal(trade_id="SMC-1") -> Signal:
         take_profit=110.0,
         risk_reward_ratio=3.0,
         status=SignalStatus.CONFIRMED,
-        market_regime=MarketRegime.TRENDING,
-        higher_timeframe_bias="BULLISH",
         liquidity_type="EQUAL_HIGH",
         entry_zone_type="ORDER_BLOCK",
         structure_confirmation="BOS",
-        volume_confirmation=True,
-        atr_status="EXPANDING",
-        trading_session="LONDON",
-        btc_market_alignment=True,
         detection_time_utc=UTC_NOW,
         institutional_reason="Confirmed setup facts only.",
         setup_key="setup-1",
         liquidity_sweep_id="sweep-1",
         structure_break_id="break-1",
         entry_zone_id="zone-1",
-        retest_id="retest-1",
         created_at_utc=UTC_NOW,
     )
 
@@ -153,40 +146,6 @@ class TestProcessPairResult:
         result = await service.process_pair_result(_rejected_pair_result())
 
         assert result is None
-        analytics_repository.save_rejection.assert_awaited_once()
-
-    async def test_rejected_result_with_preview_never_builds_signal(self):
-        # Even a preview with a resolved BUY direction and high progress
-        # must never cause a Signal to be built or persisted for a
-        # REJECTED PairScanResult.
-        from app.scanner.preview_analyzer import PreviewAnalysisResult, PreviewLayerStatus
-
-        preview = PreviewAnalysisResult(
-            symbol="BTC-USDT",
-            preview_direction="BUY",
-            preview_progress_raw_score=115.0,
-            preview_progress_max_score=120.0,
-            preview_progress_percentage=96,
-            preview_completed_layers=["MARKET_REGIME", "HTF_BIAS"],
-            preview_failed_layers=[],
-            preview_data_availability={"MARKET_REGIME": PreviewLayerStatus.PASSED},
-        )
-        rejected_with_preview = _rejected_pair_result().model_copy(update={"preview_result": preview})
-
-        signal_builder = MagicMock(build=MagicMock())
-        signal_repository = MagicMock(save=AsyncMock())
-        analytics_repository = MagicMock(save_rejection=AsyncMock())
-        service = _build_service(
-            signal_builder=signal_builder,
-            signal_repository=signal_repository,
-            analytics_repository=analytics_repository,
-        )
-
-        result = await service.process_pair_result(rejected_with_preview)
-
-        assert result is None
-        signal_builder.build.assert_not_called()
-        signal_repository.save.assert_not_awaited()
         analytics_repository.save_rejection.assert_awaited_once()
 
     async def test_scanner_duplicate_ignored(self):
