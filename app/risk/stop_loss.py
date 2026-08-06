@@ -20,6 +20,13 @@ class DynamicStopLossCalculator:
     candidate sources: ATR distance, the selected entry zone boundary,
     and the supporting liquidity-sweep extreme. Never uses a fixed
     percentage stop.
+
+    Selection picks the candidate CLOSEST to entry among the valid
+    (correct-side) candidates -- i.e. the tightest structurally sound
+    stop, not the widest. A tighter stop keeps the risk distance small,
+    which keeps downstream take-profit risk-reward targets (see
+    app.risk.take_profit) realistically reachable without loosening
+    the minimum risk-reward requirement itself.
     """
 
     def __init__(self, atr_multiplier: float, structural_buffer_ratio: float) -> None:
@@ -48,9 +55,9 @@ class DynamicStopLossCalculator:
 
         Generates exactly three candidates (ATR, zone, liquidity sweep),
         rejects any candidate on the wrong side of entry, and selects
-        the safest valid candidate: the lowest for BUY, the highest for
-        SELL. Returns an invalid result (never a fabricated stop) when
-        no valid candidate exists.
+        the tightest valid candidate: the one closest to entry_price,
+        for both BUY and SELL. Returns an invalid result (never a
+        fabricated stop) when no valid candidate exists.
         """
         if entry_price <= 0:
             return self._invalid_result(
@@ -137,10 +144,13 @@ class DynamicStopLossCalculator:
                 metadata={"rejection_code": "NO_VALID_STOP_CANDIDATE"},
             )
 
-        if direction == "BUY":
-            selected = min(valid_candidates, key=lambda c: c.price)
-        else:
-            selected = max(valid_candidates, key=lambda c: c.price)
+        # Tightest valid stop wins: the candidate whose price is closest
+        # to entry_price, on the correct side. This minimizes the risk
+        # distance (entry - stop) so that downstream take-profit RR
+        # checks have a realistic chance of clearing MIN_RISK_REWARD_RATIO.
+        # `c.price` is the tie-breaker for full determinism when two
+        # candidates land at an identical distance.
+        selected = min(valid_candidates, key=lambda c: (c.distance_from_entry, c.price))
 
         return StopLossResult(
             direction=direction,

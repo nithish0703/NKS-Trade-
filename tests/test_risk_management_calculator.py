@@ -128,9 +128,9 @@ class TestRiskManagementCalculator:
     def test_complete_valid_risk_plan(self):
         zone = _zone()
         sweep = _sweep()
-        # Selected stop is the sweep-based candidate (~84.96), so the
-        # target must be far enough above entry to clear RR >= 2.0
-        # against that ~15-point risk distance.
+        # Selected stop is the tightest candidate (ATR, ~97.0), so a
+        # modest target above entry easily clears RR >= 2.0 against
+        # that small risk distance.
         level = _liquidity_level(160.0)
         candidate_candles = _candles([100 + i for i in range(10)])
 

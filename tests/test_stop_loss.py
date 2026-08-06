@@ -101,23 +101,29 @@ class TestBuyStopLoss:
         sweep_candidate = next(c for c in result.candidates if c.source == StopLossSource.LIQUIDITY_SWEEP)
         assert sweep_candidate.price == pytest.approx(85.0 - 85.0 * 0.0005)
 
-    def test_buy_selects_lowest_valid_stop(self):
+    def test_buy_selects_closest_valid_stop(self):
+        # Candidates: ATR=97.0, ZONE=89.955, SWEEP=79.96 -- the tightest
+        # (closest to entry=100.0) valid candidate is ATR, not the
+        # farthest (sweep).
         zone = _zone("BUY", lower=90.0, upper=95.0)
-        sweep = _sweep(SweepDirection.BULLISH, sweep_price=80.0)  # lowest candidate
+        sweep = _sweep(SweepDirection.BULLISH, sweep_price=80.0)
         result = _calculator().calculate("BUY", entry_price=100.0, atr=2.0, selected_zone=zone, liquidity_sweep=sweep)
         assert result.valid is True
-        assert result.selected_source == StopLossSource.LIQUIDITY_SWEEP
-        assert result.selected_stop_loss == pytest.approx(80.0 - 80.0 * 0.0005)
+        assert result.selected_source == StopLossSource.ATR
+        assert result.selected_stop_loss == pytest.approx(100.0 - 2.0 * 1.5)
 
 
 class TestSellStopLoss:
-    def test_sell_selects_highest_valid_stop(self):
+    def test_sell_selects_closest_valid_stop(self):
+        # Candidates: ATR=98.0, ZONE=105.0525, SWEEP=110.055 -- the
+        # tightest (closest to entry=95.0) valid candidate is ATR, not
+        # the farthest (sweep).
         zone = _zone("SELL", lower=100.0, upper=105.0)
-        sweep = _sweep(SweepDirection.BEARISH, sweep_price=110.0)  # highest candidate
+        sweep = _sweep(SweepDirection.BEARISH, sweep_price=110.0)
         result = _calculator().calculate("SELL", entry_price=95.0, atr=2.0, selected_zone=zone, liquidity_sweep=sweep)
         assert result.valid is True
-        assert result.selected_source == StopLossSource.LIQUIDITY_SWEEP
-        assert result.selected_stop_loss == pytest.approx(110.0 + 110.0 * 0.0005)
+        assert result.selected_source == StopLossSource.ATR
+        assert result.selected_stop_loss == pytest.approx(95.0 + 2.0 * 1.5)
 
 
 class TestGuardConditions:
