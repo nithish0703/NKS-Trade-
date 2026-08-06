@@ -33,15 +33,6 @@ class SignalStatus(str, Enum):
     REJECTED = "REJECTED"
 
 
-class MarketRegime(str, Enum):
-    """Broad classification of the current market regime."""
-
-    TRENDING = "TRENDING"
-    RANGING = "RANGING"
-    LOW_VOLATILITY = "LOW_VOLATILITY"
-    UNKNOWN = "UNKNOWN"
-
-
 class Signal(BaseModel):
     """
     Fully-formed institutional trade signal produced by the signal
@@ -64,15 +55,9 @@ class Signal(BaseModel):
     take_profit: float
     risk_reward_ratio: float
     status: SignalStatus
-    market_regime: MarketRegime
-    higher_timeframe_bias: str
     liquidity_type: str
     entry_zone_type: str
     structure_confirmation: str
-    volume_confirmation: bool
-    atr_status: str
-    trading_session: str
-    btc_market_alignment: bool
     detection_time_utc: datetime
     institutional_reason: str
 
@@ -80,7 +65,6 @@ class Signal(BaseModel):
     liquidity_sweep_id: str
     structure_break_id: str
     entry_zone_id: str
-    retest_id: str
     created_at_utc: datetime
 
     @field_validator("entry_price", "stop_loss", "take_profit")

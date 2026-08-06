@@ -11,7 +11,7 @@ This module provides five manual, development-facing CLI modes:
 
 None of these modes implement a dashboard, WebSocket broadcasting, live
 trading, or TradingView integration. `scan-once` and `scan` persist
-PREMIUM/STRONG signals to local SQLite storage only when persistence is
+CONFIRMED signals to local SQLite storage only when persistence is
 enabled, and send a Telegram notification for each newly stored,
 non-duplicate signal to every chat ID configured in TELEGRAM_CHAT_IDS,
 only when Telegram is enabled in settings.
@@ -80,10 +80,6 @@ def _print_result(result) -> None:
         print(f"take_profit={result.risk_plan.take_profit_result.selected_take_profit}")
         print(f"risk_reward_ratio={result.risk_plan.risk_reward_ratio}")
 
-    if result.confidence_result is not None:
-        print(f"confidence={result.confidence_result.normalized_score}")
-        print(f"classification={result.confidence_result.classification.value}")
-
 
 async def _run_manual_analysis(symbol: str, account_balance: float) -> None:
     """Build the strategy engine and run exactly one analysis for `symbol`."""
@@ -127,12 +123,6 @@ def _print_cycle_summary(cycle_result: ScanCycleResult) -> None:
         print(f"  valid: symbol={pair_result.symbol}", end="")
         if pipeline_result is not None:
             print(f" direction={pipeline_result.expected_direction}", end="")
-            if pipeline_result.confidence_result is not None:
-                print(
-                    f" classification={pipeline_result.confidence_result.classification.value}"
-                    f" confidence={pipeline_result.confidence_result.normalized_score}",
-                    end="",
-                )
         print()
 
     for pair_result in cycle_result.error_results:

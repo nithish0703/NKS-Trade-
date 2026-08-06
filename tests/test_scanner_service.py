@@ -10,10 +10,8 @@ import pytest
 from app.risk.results import RiskPlan, RiskPlanStatus
 from app.scanner.active_state import ActiveTradingState
 from app.scanner.pipeline_results import PipelineStatus, StrategyPipelineResult
-from app.scanner.preview_analyzer import PreviewAnalysisResult, PreviewLayerStatus
 from app.scanner.scan_results import PairScanResult, PairScanStatus, ScanCycleResult
 from app.scanner.scanner_service import ScannerService
-from app.scoring.results import ConfidenceClassification, ConfidenceScoreResult
 
 pytestmark = pytest.mark.asyncio
 
@@ -23,17 +21,6 @@ UTC_NOW = datetime(2026, 1, 1, 10, 0, tzinfo=timezone.utc)
 def _valid_pipeline_result(symbol="BTC-USDT"):
     risk_plan = MagicMock(spec=RiskPlan)
     risk_plan.status = RiskPlanStatus.VALID
-    confidence = ConfidenceScoreResult(
-        raw_score=115.0,
-        maximum_raw_score=115,
-        normalized_score=95.8,
-        classification=ConfidenceClassification.PREMIUM,
-        publishable=True,
-        mandatory_layers_passed=True,
-        layer_scores=[],
-        failed_mandatory_layers=[],
-        reason="PREMIUM_CONFIDENCE",
-    )
     return StrategyPipelineResult(
         symbol=symbol,
         expected_direction="BUY",
@@ -42,7 +29,6 @@ def _valid_pipeline_result(symbol="BTC-USDT"):
         passed=True,
         stages=[],
         risk_plan=risk_plan,
-        confidence_result=confidence,
     )
 
 
@@ -184,39 +170,6 @@ class TestRunSingleCycle:
         )
         candidate_buffer = MagicMock(add=AsyncMock())
         service = _build_service(scheduler=scheduler, candidate_buffer=candidate_buffer)
-
-        await service.run_single_cycle(10000.0)
-
-        candidate_buffer.add.assert_not_called()
-
-    async def test_rejected_result_with_preview_still_not_added(self):
-        # A REJECTED result carrying a fully "passing-looking" preview
-        # (BUY direction, high progress) must still never reach the
-        # candidate buffer, storage, or notifications -- a preview can
-        # never mark a rejected pipeline as valid.
-        preview = PreviewAnalysisResult(
-            symbol="ETH-USDT",
-            preview_direction="BUY",
-            preview_progress_raw_score=115.0,
-            preview_progress_max_score=120.0,
-            preview_progress_percentage=96,
-            preview_completed_layers=["MARKET_REGIME", "HTF_BIAS"],
-            preview_failed_layers=[],
-            preview_data_availability={"MARKET_REGIME": PreviewLayerStatus.PASSED},
-        )
-        rejected_result = _pair_result(symbol="ETH-USDT", status=PairScanStatus.REJECTED)
-        rejected_result = rejected_result.model_copy(update={"preview_result": preview})
-
-        scheduler = MagicMock()
-        scheduler.run_cycle = AsyncMock(return_value=_cycle_result([rejected_result]))
-        candidate_buffer = MagicMock(add=AsyncMock())
-        signal_storage_service = MagicMock()
-        signal_storage_service.process_cycle = AsyncMock(return_value=[])
-        service = _build_service(
-            scheduler=scheduler,
-            candidate_buffer=candidate_buffer,
-            signal_storage_service=signal_storage_service,
-        )
 
         await service.run_single_cycle(10000.0)
 

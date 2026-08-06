@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy import desc, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
-from app.models.signal import Direction, MarketRegime, Signal, SignalStatus
+from app.models.signal import Direction, Signal, SignalStatus
 from app.storage.database import DatabaseManager, DatabaseOperationError
 from app.storage.models import SignalRecord
 
@@ -304,21 +304,14 @@ class SignalRepository:
             take_profit=signal.take_profit,
             risk_reward_ratio=signal.risk_reward_ratio,
             status=signal.status.value,
-            market_regime=signal.market_regime.value,
-            higher_timeframe_bias=signal.higher_timeframe_bias,
             liquidity_type=signal.liquidity_type,
             entry_zone_type=signal.entry_zone_type,
             structure_confirmation=signal.structure_confirmation,
-            volume_confirmation=signal.volume_confirmation,
-            atr_status=signal.atr_status,
-            trading_session=signal.trading_session,
-            btc_market_alignment=signal.btc_market_alignment,
             detection_time_utc=signal.detection_time_utc,
             institutional_reason=signal.institutional_reason,
             liquidity_sweep_id=signal.liquidity_sweep_id,
             structure_break_id=signal.structure_break_id,
             entry_zone_id=signal.entry_zone_id,
-            retest_id=signal.retest_id,
             created_at_utc=signal.created_at_utc,
         )
 
@@ -333,21 +326,14 @@ class SignalRepository:
             take_profit=record.take_profit,
             risk_reward_ratio=record.risk_reward_ratio,
             status=SignalStatus(record.status),
-            market_regime=MarketRegime(record.market_regime),
-            higher_timeframe_bias=record.higher_timeframe_bias,
             liquidity_type=record.liquidity_type,
             entry_zone_type=record.entry_zone_type,
             structure_confirmation=record.structure_confirmation,
-            volume_confirmation=record.volume_confirmation,
-            atr_status=record.atr_status,
-            trading_session=record.trading_session,
-            btc_market_alignment=record.btc_market_alignment,
             detection_time_utc=_as_utc(record.detection_time_utc),
             institutional_reason=record.institutional_reason,
             setup_key=record.setup_key,
             liquidity_sweep_id=record.liquidity_sweep_id,
             structure_break_id=record.structure_break_id,
             entry_zone_id=record.entry_zone_id,
-            retest_id=record.retest_id,
             created_at_utc=_as_utc(record.created_at_utc),
         )

@@ -11,23 +11,8 @@ import pytest
 from app.risk.results import RiskPlan, RiskPlanStatus
 from app.scanner.duplicate_guard import DuplicateGuardError, DuplicateSignalGuard
 from app.scanner.pipeline_results import PipelineStatus, StrategyPipelineResult
-from app.scoring.results import ConfidenceClassification, ConfidenceScoreResult
 
 UTC_NOW = datetime(2026, 1, 1, 10, 0, tzinfo=timezone.utc)
-
-
-def _confidence() -> ConfidenceScoreResult:
-    return ConfidenceScoreResult(
-        raw_score=115.0,
-        maximum_raw_score=115,
-        normalized_score=95.8,
-        classification=ConfidenceClassification.PREMIUM,
-        publishable=True,
-        mandatory_layers_passed=True,
-        layer_scores=[],
-        failed_mandatory_layers=[],
-        reason="PREMIUM_CONFIDENCE",
-    )
 
 
 def _risk_plan():
@@ -43,7 +28,6 @@ def _valid_pipeline_result(
     sweep_id: str = "sweep-1",
     zone_id: str = "zone-1",
     break_id: str = "break-1",
-    retest_id: str = "retest-1",
 ) -> StrategyPipelineResult:
     sweep = MagicMock()
     sweep.sweep_id = sweep_id
@@ -51,8 +35,6 @@ def _valid_pipeline_result(
     zone.zone_id = zone_id
     structure_break = MagicMock()
     structure_break.break_id = break_id
-    retest = MagicMock()
-    retest.retest_id = retest_id
 
     return StrategyPipelineResult(
         symbol=symbol,
@@ -64,9 +46,7 @@ def _valid_pipeline_result(
         liquidity_sweep=sweep,
         selected_entry_zone=zone,
         selected_structure_break=structure_break,
-        retest_result=retest,
         risk_plan=_risk_plan(),
-        confidence_result=_confidence(),
     )
 
 
@@ -115,34 +95,6 @@ class TestBuildSetupKey:
         assert DuplicateSignalGuard.build_setup_key(
             result_a
         ) != DuplicateSignalGuard.build_setup_key(result_b)
-
-    def test_different_retest_id_changes_key(self):
-        result_a = _valid_pipeline_result(retest_id="retest-1")
-        result_b = _valid_pipeline_result(retest_id="retest-2")
-        assert DuplicateSignalGuard.build_setup_key(
-            result_a
-        ) != DuplicateSignalGuard.build_setup_key(result_b)
-
-    def test_confidence_change_does_not_change_setup_key(self):
-        result_a = _valid_pipeline_result()
-        result_b = result_a.model_copy(
-            update={
-                "confidence_result": ConfidenceScoreResult(
-                    raw_score=100.0,
-                    maximum_raw_score=115,
-                    normalized_score=83.3,
-                    classification=ConfidenceClassification.STRONG,
-                    publishable=True,
-                    mandatory_layers_passed=True,
-                    layer_scores=[],
-                    failed_mandatory_layers=[],
-                    reason="STRONG_CONFIDENCE",
-                )
-            }
-        )
-        assert DuplicateSignalGuard.build_setup_key(
-            result_a
-        ) == DuplicateSignalGuard.build_setup_key(result_b)
 
     def test_entry_price_fluctuation_does_not_change_setup_key(self):
         # entry price lives on risk_plan, which is not part of the setup identity.

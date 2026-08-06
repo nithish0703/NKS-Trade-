@@ -34,7 +34,6 @@ class TelegramSignalFormatter:
             f"\U0001F3AF Take Profit: <b>{self._format_price(signal.take_profit)}</b>",
             f"\U00002696 Risk Reward: 1:{signal.risk_reward_ratio:.2f}",
             divider,
-            f"\U000023F0 Session: {html.escape(signal.trading_session)}",
             f"\U0001F4C5 Detected: {signal.detection_time_utc.isoformat()} UTC",
         ]
 

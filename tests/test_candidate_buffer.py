@@ -12,25 +12,10 @@ from app.risk.results import RiskPlan, RiskPlanStatus
 from app.scanner.candidate_buffer import ValidSignalCandidateBuffer
 from app.scanner.pipeline_results import PipelineStatus, StrategyPipelineResult
 from app.scanner.scan_results import PairScanResult, PairScanStatus
-from app.scoring.results import ConfidenceClassification, ConfidenceScoreResult
 
 pytestmark = pytest.mark.asyncio
 
 UTC_NOW = datetime(2026, 1, 1, 10, 0, tzinfo=timezone.utc)
-
-
-def _confidence(classification=ConfidenceClassification.PREMIUM, publishable=True):
-    return ConfidenceScoreResult(
-        raw_score=115.0,
-        maximum_raw_score=115,
-        normalized_score=95.8,
-        classification=classification,
-        publishable=publishable,
-        mandatory_layers_passed=True,
-        layer_scores=[],
-        failed_mandatory_layers=[],
-        reason="CONFIDENCE",
-    )
 
 
 def _risk_plan():
@@ -39,7 +24,7 @@ def _risk_plan():
     return risk_plan
 
 
-def _pipeline_result(classification=ConfidenceClassification.PREMIUM, publishable=True):
+def _pipeline_result():
     return StrategyPipelineResult(
         symbol="BTC-USDT",
         expected_direction="BUY",
@@ -48,7 +33,6 @@ def _pipeline_result(classification=ConfidenceClassification.PREMIUM, publishabl
         passed=True,
         stages=[],
         risk_plan=_risk_plan(),
-        confidence_result=_confidence(classification=classification, publishable=publishable),
     )
 
 
@@ -56,8 +40,6 @@ def _pair_result(
     *,
     symbol="BTC-USDT",
     status=PairScanStatus.VALID,
-    classification=ConfidenceClassification.PREMIUM,
-    publishable=True,
     duplicate=False,
     duplicate_key=None,
     reason=None,
@@ -65,7 +47,7 @@ def _pair_result(
 ):
     pipeline_result = None
     if status in (PairScanStatus.VALID, PairScanStatus.DUPLICATE):
-        pipeline_result = _pipeline_result(classification=classification, publishable=publishable)
+        pipeline_result = _pipeline_result()
 
     return PairScanResult(
         symbol=symbol,
@@ -82,15 +64,9 @@ def _pair_result(
 
 
 class TestValidSignalCandidateBuffer:
-    async def test_valid_premium_candidate_accepted(self):
+    async def test_valid_candidate_accepted(self):
         buffer = ValidSignalCandidateBuffer(maximum_size=10)
-        result = _pair_result(classification=ConfidenceClassification.PREMIUM)
-        await buffer.add(result)
-        assert await buffer.size() == 1
-
-    async def test_valid_strong_candidate_accepted(self):
-        buffer = ValidSignalCandidateBuffer(maximum_size=10)
-        result = _pair_result(classification=ConfidenceClassification.STRONG)
+        result = _pair_result()
         await buffer.add(result)
         assert await buffer.size() == 1
 

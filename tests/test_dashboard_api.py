@@ -401,7 +401,7 @@ class TestScannerStatusEndpoint:
 
 class TestSignalsListEndpoint:
     def test_list_signals_endpoint(self, app_with_mocks):
-        from app.models.signal import Direction, MarketRegime, Signal, SignalStatus
+        from app.models.signal import Direction, Signal, SignalStatus
 
         app, _, signal_repository = app_with_mocks
         signal_repository.list_recent = AsyncMock(
@@ -415,22 +415,15 @@ class TestSignalsListEndpoint:
                     take_profit=110.0,
                     risk_reward_ratio=3.0,
                     status=SignalStatus.CONFIRMED,
-                    market_regime=MarketRegime.TRENDING,
-                    higher_timeframe_bias="BULLISH",
                     liquidity_type="EQUAL_HIGH",
                     entry_zone_type="ORDER_BLOCK",
                     structure_confirmation="BOS",
-                    volume_confirmation=True,
-                    atr_status="EXPANDING",
-                    trading_session="LONDON",
-                    btc_market_alignment=True,
                     detection_time_utc=UTC_NOW,
                     institutional_reason="reason",
                     setup_key="setup-1",
                     liquidity_sweep_id="sweep-1",
                     structure_break_id="break-1",
                     entry_zone_id="zone-1",
-                    retest_id="retest-1",
                     created_at_utc=UTC_NOW,
                 )
             ]

@@ -20,9 +20,10 @@ interface ScanningCoinsTableProps {
 const SORT_STABILIZATION_INTERVAL_MS = 5000;
 
 function scoreRank(coin: ScanningCoin): number {
-  // Higher preview score ranks first. Coins with no score yet sink
-  // to the bottom instead of jumping to the top.
-  return coin.preview_progress_percentage ?? -1;
+  // Higher stage-pass score ranks first. Coins with no score yet sink
+  // to the bottom instead of jumping to the top. Ranking-only: never
+  // used to generate a signal.
+  return coin.score ?? -1;
 }
 
 function compareByScoreThenCoin(a: ScanningCoin, b: ScanningCoin): number {
@@ -35,7 +36,7 @@ function compareByScoreThenCoin(a: ScanningCoin, b: ScanningCoin): number {
   return a.coin.localeCompare(b.coin);
 }
 
-const PREVIEW_TOOLTIP_NOTICE = "Dashboard preview only. This is not final trade confidence.";
+const SCORE_TOOLTIP_NOTICE = "Ranking only. This is not a trading signal or confidence score.";
 
 function progressColorClassName(percentage: number): string {
   return percentage > 0 ? "text-emerald-500" : "text-slate-300";
@@ -43,13 +44,12 @@ function progressColorClassName(percentage: number): string {
 
 function scoreTooltip(coin: ScanningCoin): string {
   const lines = [
-    PREVIEW_TOOLTIP_NOTICE,
-    `Preview progress: ${coin.preview_progress_raw_score ?? 0} / ${
-      coin.preview_progress_max_score ?? 120
+    SCORE_TOOLTIP_NOTICE,
+    `Stages cleared: ${coin.validation_progress_raw_score ?? 0} / ${
+      coin.validation_progress_max_score ?? 0
     }`,
-    `Completed layers: ${coin.preview_completed_layers?.join(", ") || "—"}`,
-    `Failed layers: ${coin.preview_failed_layers?.join(", ") || "—"}`,
-    `Failed layer (real pipeline): ${coin.failed_layer ?? "—"}`,
+    `Last executed stage: ${coin.last_executed_layer ?? "—"}`,
+    `Failed layer: ${coin.failed_layer ?? "—"}`,
     `Reason: ${coin.reason ?? "—"}`,
   ];
   return lines.join("\n");
@@ -190,7 +190,7 @@ export function ScanningCoinsTable({ coins }: ScanningCoinsTableProps) {
             </thead>
             <tbody className="divide-y divide-slate-100">
               {filteredCoins.map((coin) => {
-                const percentage = coin.preview_progress_percentage ?? 0;
+                const percentage = coin.validation_progress_percentage ?? 0;
                 return (
                   <tr key={coin.coin}>
                     <td className="py-1 pr-4 font-medium text-slate-900">{coin.coin}</td>
@@ -198,12 +198,12 @@ export function ScanningCoinsTable({ coins }: ScanningCoinsTableProps) {
                       {formatPriceOrDash(coin.price)}
                     </td>
                     <td className="py-1 pr-6">
-                      <DirectionBadge direction={coin.preview_direction} />
+                      <DirectionBadge direction={coin.direction} />
                     </td>
                     <td className="py-1 pr-6">
                       <div className="flex items-center" title={scoreTooltip(coin)}>
                         <CircularProgress
-                          percentage={coin.preview_progress_percentage === null ? null : percentage}
+                          percentage={coin.validation_progress_percentage === null ? null : percentage}
                           colorClassName={progressColorClassName(percentage)}
                           size={46}
                           showLabel

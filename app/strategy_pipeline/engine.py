@@ -1,6 +1,6 @@
 """
-New institutional strategy pipeline engine, replacing the legacy
-14-stage InstitutionalSMCStrategyEngine.
+Institutional strategy pipeline engine: the sole strategy engine used
+by the live scanner, dashboard, and Telegram notification path.
 
 Flow:
 
@@ -19,18 +19,15 @@ Flow:
 Every dependency is injected; this class does not construct its own
 calculators or detectors. It never mutates input candles, contexts,
 positions, or calculation results, and never persists, publishes, or
-executes a trade. Exposes the same `analyze_symbol(...) ->
-StrategyPipelineResult` interface as the legacy engine, so
-`app.scanner.pair_scanner.PairScanner` needs no changes to use either
-engine interchangeably.
+executes a trade. Exposes `analyze_symbol(...) -> StrategyPipelineResult`,
+the interface `app.scanner.pair_scanner.PairScanner` depends on.
 """
 
-import asyncio
 import time
 from datetime import datetime, timezone
 from typing import Mapping, Optional, Sequence
 
-from app.config.pairs import BTC_SYMBOL, validate_pair_symbol
+from app.config.pairs import validate_pair_symbol
 from app.config.timeframes import ENTRY_TIMEFRAME, HTF_PRIMARY, HTF_SECONDARY
 from app.data.candle_repository import CandleRepository
 from app.data.market_data_errors import MarketDataError
@@ -117,13 +114,6 @@ class PipelineStrategyEngine:
         self._fair_value_gap_detector = fair_value_gap_detector
         self._risk_management_calculator = risk_management_calculator
 
-        # Same per-scan-cycle BTC-candle cache pattern as the legacy
-        # engine: every symbol scanned within one cycle shares the same
-        # `detection_time_utc`, so it doubles as a cache key.
-        self._btc_candle_cache_key: Optional[str] = None
-        self._btc_candle_cache: Optional[dict[str, list[Candle]]] = None
-        self._btc_candle_cache_lock = asyncio.Lock()
-
     async def analyze_symbol(
         self,
         *,
@@ -188,17 +178,6 @@ class PipelineStrategyEngine:
             stages=stages,
         )
 
-    async def _fetch_btc_candles_for_cycle(self, detection_time_utc: datetime) -> dict[str, list[Candle]]:
-        cache_key = detection_time_utc.isoformat()
-        async with self._btc_candle_cache_lock:
-            if self._btc_candle_cache_key == cache_key and self._btc_candle_cache is not None:
-                return self._btc_candle_cache
-
-            btc_candles = await self._market_data_provider.fetch_symbol_market_data(BTC_SYMBOL)
-            self._btc_candle_cache_key = cache_key
-            self._btc_candle_cache = btc_candles
-            return btc_candles
-
     async def _prepare_market_context(self, symbol: str, detection_time_utc: datetime) -> MarketContext:
         """Fetch candles, persist them, and calculate indicators/structures for the 1H HTF Bias stage."""
         symbol_candles = await self._market_data_provider.fetch_symbol_market_data(symbol)
@@ -213,9 +192,6 @@ class PipelineStrategyEngine:
                 )
             self._candle_repository.save_candles(symbol, timeframe, candles)
 
-        if symbol != BTC_SYMBOL:
-            await self._fetch_btc_candles_for_cycle(detection_time_utc)
-
         indicators_by_timeframe = self._indicator_calculator.calculate_multiple_timeframes(symbol_candles)
         structures_by_timeframe = self._market_structure_calculator.calculate_multiple_timeframes(
             symbol_candles
@@ -225,7 +201,6 @@ class PipelineStrategyEngine:
             symbol=symbol,
             detection_time_utc=detection_time_utc,
             candles_by_timeframe=symbol_candles,
-            btc_candles_by_timeframe={},
             entry_timeframe=ENTRY_TIMEFRAME,
             indicators_by_timeframe=indicators_by_timeframe,
             structures_by_timeframe=structures_by_timeframe,

@@ -10,7 +10,6 @@ import main
 from app.data.market_data_errors import MarketDataRequestError
 from app.scanner.pipeline_exceptions import PipelineInputError
 from app.scanner.pipeline_results import PipelineStatus, StrategyPipelineResult
-from app.scoring.results import ConfidenceClassification
 
 
 def _valid_result() -> StrategyPipelineResult:
@@ -20,10 +19,6 @@ def _valid_result() -> StrategyPipelineResult:
     risk_plan.take_profit_result.selected_take_profit = 110.0
     risk_plan.risk_reward_ratio = 2.0
 
-    confidence_result = MagicMock()
-    confidence_result.normalized_score = 92.5
-    confidence_result.classification = ConfidenceClassification.PREMIUM
-
     result = MagicMock(spec=StrategyPipelineResult)
     result.symbol = "BTC-USDT"
     result.status = PipelineStatus.VALID
@@ -31,7 +26,6 @@ def _valid_result() -> StrategyPipelineResult:
     result.failed_layer = None
     result.rejection_reason = None
     result.risk_plan = risk_plan
-    result.confidence_result = confidence_result
     return result
 
 
@@ -43,7 +37,6 @@ def _rejected_result() -> StrategyPipelineResult:
     result.failed_layer = "MARKET_REGIME"
     result.rejection_reason = "ADX below trending threshold."
     result.risk_plan = None
-    result.confidence_result = None
     return result
 
 
@@ -69,8 +62,6 @@ class TestPrintResult:
         assert "entry=100.0" in output
         assert "stop_loss=95.0" in output
         assert "take_profit=110.0" in output
-        assert "confidence=92.5" in output
-        assert "classification=PREMIUM" in output
 
     def test_concise_rejected_output(self, capsys):
         main._print_result(_rejected_result())

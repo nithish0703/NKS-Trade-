@@ -2,12 +2,11 @@
 Builds structured signal objects from validated setups.
 """
 
-from app.models.signal import Direction, MarketRegime, Signal, SignalStatus
+from app.models.signal import Direction, Signal, SignalStatus
 from app.risk.results import RiskPlanStatus
 from app.scanner.pipeline_results import PipelineStatus, StrategyPipelineResult
 from app.scanner.scan_results import PairScanResult, PairScanStatus
 from app.utils.identifiers import make_setup_key, make_trade_id
-from app.validators.session_filter import SessionFilter
 
 
 class SignalBuildError(Exception):
@@ -20,15 +19,13 @@ class InstitutionalSignalBuilder:
     reusing only already-computed pipeline/risk results.
 
     A Signal is built whenever every required strategy condition
-    (all hard-mandatory pipeline stages) has passed -- there is no
+    (all hard-mandatory pipeline stages: HTF Bias, Liquidity Sweep,
+    BOS, IFVG, Order Flow, Risk Management) has passed -- there is no
     intermediate score or confidence tier gating this. Never
     recalculates market structure, indicators, liquidity, zones, or
     risk management, and never builds a signal from a rejected,
     duplicate, or errored scanner result.
     """
-
-    def __init__(self) -> None:
-        self._session_filter = SessionFilter()
 
     def build(self, pair_scan_result: PairScanResult) -> Signal:
         if pair_scan_result.status != PairScanStatus.VALID:
@@ -47,7 +44,6 @@ class InstitutionalSignalBuilder:
         sweep = pipeline_result.liquidity_sweep
         zone = pipeline_result.selected_entry_zone
         structure_break = pipeline_result.selected_structure_break
-        retest = pipeline_result.retest_result
 
         stop_loss = risk_plan.stop_loss_result.selected_stop_loss
         take_profit = risk_plan.take_profit_result.selected_take_profit
@@ -66,7 +62,7 @@ class InstitutionalSignalBuilder:
             sweep_id=sweep.sweep_id,
             zone_id=zone.zone_id,
             break_id=structure_break.break_id,
-            retest_id=retest.retest_id,
+            retest_id=zone.zone_id,
         )
         trade_id = make_trade_id(
             symbol=pipeline_result.symbol,
@@ -75,11 +71,8 @@ class InstitutionalSignalBuilder:
             detection_time_utc=pipeline_result.detection_time_utc,
         )
 
-        session = self._session_filter.detect_session(pipeline_result.detection_time_utc)
-
         institutional_reason = self._build_institutional_reason(
             pipeline_result=pipeline_result,
-            session=session.value,
             stop_loss_source=risk_plan.stop_loss_result.selected_source,
             take_profit_source=risk_plan.take_profit_result.selected_source,
             risk_reward_ratio=risk_reward_ratio,
@@ -94,22 +87,15 @@ class InstitutionalSignalBuilder:
             take_profit=take_profit,
             risk_reward_ratio=risk_reward_ratio,
             status=SignalStatus.CONFIRMED,
-            market_regime=MarketRegime.TRENDING,
-            higher_timeframe_bias=pipeline_result.htf_bias_result.final_bias.value,
             liquidity_type=sweep.liquidity_level.liquidity_type.value,
             entry_zone_type=zone.zone_type.value,
             structure_confirmation=structure_break.break_type.value,
-            volume_confirmation=pipeline_result.volume_validation.passed,
-            atr_status="EXPANDING",
-            trading_session=session.value,
-            btc_market_alignment=pipeline_result.btc_alignment_result.passed,
             detection_time_utc=pipeline_result.detection_time_utc,
             institutional_reason=institutional_reason,
             setup_key=setup_key,
             liquidity_sweep_id=sweep.sweep_id,
             structure_break_id=structure_break.break_id,
             entry_zone_id=zone.zone_id,
-            retest_id=retest.retest_id,
             created_at_utc=pipeline_result.detection_time_utc,
         )
 
@@ -128,10 +114,6 @@ class InstitutionalSignalBuilder:
             raise SignalBuildError("Pipeline result has no selected structure break.")
         if pipeline_result.selected_entry_zone is None:
             raise SignalBuildError("Pipeline result has no selected entry zone.")
-        if pipeline_result.retest_result is None:
-            raise SignalBuildError("Pipeline result has no retest confirmation.")
-        if pipeline_result.htf_bias_result is None:
-            raise SignalBuildError("Pipeline result has no higher-timeframe bias result.")
         if pipeline_result.expected_direction is None:
             raise SignalBuildError("Pipeline result has no expected direction.")
 
@@ -139,23 +121,14 @@ class InstitutionalSignalBuilder:
     def _build_institutional_reason(
         *,
         pipeline_result: StrategyPipelineResult,
-        session: str,
         stop_loss_source,
         take_profit_source,
         risk_reward_ratio: float,
     ) -> str:
-        htf_bias = pipeline_result.htf_bias_result.final_bias.value
+        direction = pipeline_result.expected_direction
         liquidity_type = pipeline_result.liquidity_sweep.liquidity_level.liquidity_type.value
         structure_type = pipeline_result.selected_structure_break.break_type.value
         zone_type = pipeline_result.selected_entry_zone.zone_type.value
-
-        dealing_range_result = pipeline_result.dealing_range_result
-        range_position = (
-            dealing_range_result.position.value if dealing_range_result is not None else "UNKNOWN"
-        )
-
-        volume_confirmed = pipeline_result.volume_validation.passed
-        btc_aligned = pipeline_result.btc_alignment_result.passed
 
         stop_loss_source_text = stop_loss_source.value if stop_loss_source is not None else "UNKNOWN"
         take_profit_source_text = (
@@ -163,11 +136,10 @@ class InstitutionalSignalBuilder:
         )
 
         return (
-            f"HTF bias {htf_bias} confirmed by a {liquidity_type} liquidity sweep and a "
-            f"{structure_type} structure shift. Entry at a {zone_type} zone in the "
-            f"{range_position} of the dealing range, confirmed by a retest. "
-            f"Volume {'confirmed' if volume_confirmed else 'not confirmed'} on displacement/retest. "
-            f"{session} session. BTC alignment {'confirmed' if btc_aligned else 'not confirmed'}. "
+            f"{direction} bias confirmed by a {liquidity_type} liquidity sweep and a "
+            f"{structure_type} structure break (BOS). Entry at an inverted Fair Value "
+            f"Gap ({zone_type}) that flipped and was retested, with order flow (OI + CVD) "
+            f"agreeing with the trade direction. "
             f"Stop loss sourced from {stop_loss_source_text}, take profit sourced from "
             f"{take_profit_source_text}, risk-reward ratio {risk_reward_ratio:.2f}. "
             f"This reflects confirmed setup facts only and is not a guarantee of outcome."

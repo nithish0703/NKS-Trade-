@@ -4,7 +4,7 @@ Tests for app.notifications.telegram_formatter.TelegramSignalFormatter.
 
 from datetime import datetime, timezone
 
-from app.models.signal import Direction, MarketRegime, Signal, SignalStatus
+from app.models.signal import Direction, Signal, SignalStatus
 from app.notifications.telegram_formatter import TelegramSignalFormatter
 
 UTC_NOW = datetime(2026, 1, 1, 10, 0, tzinfo=timezone.utc)
@@ -28,22 +28,15 @@ def _signal(
         take_profit=take_profit,
         risk_reward_ratio=3.0,
         status=SignalStatus.CONFIRMED,
-        market_regime=MarketRegime.TRENDING,
-        higher_timeframe_bias="BULLISH" if direction == Direction.BUY else "BEARISH",
         liquidity_type="EQUAL_HIGH",
         entry_zone_type="ORDER_BLOCK",
         structure_confirmation="BOS",
-        volume_confirmation=True,
-        atr_status="EXPANDING",
-        trading_session="LONDON",
-        btc_market_alignment=True,
         detection_time_utc=UTC_NOW,
         institutional_reason=institutional_reason,
         setup_key="setup-1",
         liquidity_sweep_id="sweep-1",
         structure_break_id="break-1",
         entry_zone_id="zone-1",
-        retest_id="retest-1",
         created_at_utc=UTC_NOW,
     )
 
@@ -90,7 +83,6 @@ class TestFormatSignal:
             "Stop Loss:",
             "Take Profit:",
             "Risk Reward:",
-            "Session:",
             "Detected:",
         ):
             assert field_label in message
@@ -108,6 +100,7 @@ class TestFormatSignal:
             "Volume:",
             "ATR:",
             "BTC Alignment:",
+            "Session:",
         ):
             assert removed_label not in message
 
