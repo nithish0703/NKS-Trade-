@@ -43,11 +43,11 @@ class TestCalculateRiskReward:
 
 
 class TestValidateMinimumRiskReward:
-    def test_rr_exactly_2_passes(self):
-        result = validate_minimum_risk_reward(2.0)
+    def test_rr_exactly_minimum_passes(self):
+        result = validate_minimum_risk_reward(1.80)
         assert result.passed is True
 
-    def test_rr_below_2_fails(self):
+    def test_rr_below_minimum_fails(self):
         result = validate_minimum_risk_reward(1.5)
         assert result.passed is False
         assert result.rejection_code == "RISK_REWARD_BELOW_MINIMUM"
@@ -62,3 +62,12 @@ class TestValidateMinimumRiskReward:
         assert passing.score == 0.0
         failing = validate_minimum_risk_reward(1.0)
         assert failing.score == 0.0
+
+    def test_rejection_reason_displays_exact_format(self):
+        result = validate_minimum_risk_reward(1.42, minimum_ratio=1.80)
+        assert result.passed is False
+        assert result.reason == "RISK_REWARD_BELOW_MINIMUM\nActual RR : 1.42\nRequired RR : 1.80"
+
+    def test_default_minimum_is_1_80(self):
+        assert validate_minimum_risk_reward(1.79).passed is False
+        assert validate_minimum_risk_reward(1.80).passed is True
