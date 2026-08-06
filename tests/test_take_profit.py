@@ -4,6 +4,8 @@ Unit tests for app.risk.take_profit.SingleTakeProfitCalculator.
 
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from app.liquidity.results import LiquidityLevel, LiquiditySide, LiquidityStrength, LiquidityType
 from app.market_structure.results import SwingPoint, SwingType
 from app.models.trade_zone import TradeZone, ZoneStatus, ZoneType
@@ -150,6 +152,85 @@ class TestRiskRewardFiltering:
         wrong_side_level = _level(80.0, LiquiditySide.BUY_SIDE)  # below entry for BUY
         result = _calculator().calculate("BUY", 100.0, 90.0, [wrong_side_level], [], [])
         assert result.valid is False
+
+
+class TestSelectionPriorityAmongValidCandidates:
+    def test_higher_rr_within_same_source_wins_over_nearer_lower_rr(self):
+        # Two institutional-liquidity candidates (same source/priority
+        # tier), both RR-valid: the nearer one has a lower RR than the
+        # farther one. Priority 2 (higher RR) must win over priority 3
+        # (shorter distance) within the same source tier.
+        near_level = _level(120.0, LiquiditySide.BUY_SIDE, liquidity_id="near")  # RR=20/10=2.0
+        far_level = _level(140.0, LiquiditySide.BUY_SIDE, liquidity_id="far")  # RR=40/10=4.0
+        result = _calculator().calculate("BUY", 100.0, 90.0, [near_level, far_level], [], [])
+        assert result.valid is True
+        assert result.selected_take_profit == 140.0
+        assert result.risk_reward_ratio == pytest.approx(4.0)
+
+    def test_lower_priority_source_never_beats_higher_priority_source_even_with_lower_rr(self):
+        # An institutional-liquidity candidate (priority 1) with a lower
+        # RR must still be selected over a swing candidate (priority 2)
+        # with a higher RR -- institutional probability outranks RR.
+        institutional_level = _level(115.0, LiquiditySide.BUY_SIDE)  # RR=15/10=1.5 -> invalid at 1.80 floor
+        institutional_valid = _level(122.0, LiquiditySide.BUY_SIDE, liquidity_id="valid-institutional")  # RR=2.2
+        swing = _swing(150.0, SwingType.HIGH)  # RR=50/10=5.0, but lower priority tier
+        result = _calculator().calculate(
+            "BUY", 100.0, 90.0, [institutional_level, institutional_valid], [swing], []
+        )
+        assert result.valid is True
+        assert result.selected_source == TakeProfitSource.MAJOR_INSTITUTIONAL_LIQUIDITY
+        assert result.selected_take_profit == 122.0
+
+    def test_every_candidate_from_every_source_is_generated_regardless_of_validity(self):
+        # A below-RR institutional candidate must not prevent generation
+        # (or selection) of a valid candidate from any other source --
+        # every source is always evaluated independently.
+        weak_institutional = _level(101.0, LiquiditySide.BUY_SIDE)  # RR=0.1, invalid
+        fvg = _fvg("SELL", lower=125.0, upper=130.0)  # BUY target=130 -> RR=30/10=3.0, valid
+        result = _calculator().calculate("BUY", 100.0, 90.0, [weak_institutional], [], [fvg])
+
+        sources_seen = {c.source for c in result.candidates}
+        assert TakeProfitSource.MAJOR_INSTITUTIONAL_LIQUIDITY in sources_seen
+        assert TakeProfitSource.UNMITIGATED_LIQUIDITY_POOL in sources_seen
+        assert TakeProfitSource.FAIR_VALUE_GAP_COMPLETION in sources_seen
+
+        assert result.valid is True
+        assert result.selected_source == TakeProfitSource.FAIR_VALUE_GAP_COMPLETION
+        assert result.selected_take_profit == 130.0
+
+    def test_rr_exactly_at_1_80_minimum_is_valid_and_selectable(self):
+        # MIN_RISK_REWARD_RATIO must remain exactly 1.80: a candidate at
+        # precisely that ratio is valid, not rejected.
+        level = _level(118.0, LiquiditySide.BUY_SIDE)  # RR = 18/10 = 1.80 exactly
+        result = _calculator().calculate("BUY", 100.0, 90.0, [level], [], [])
+        assert result.valid is True
+        assert result.risk_reward_ratio == pytest.approx(1.80)
+
+    def test_debug_log_analysis_never_changes_selection_result(self):
+        # Enabling DEBUG logging must produce identical selection output
+        # to logging disabled -- logging is observational only.
+        import logging
+
+        near_level = _level(120.0, LiquiditySide.BUY_SIDE, liquidity_id="near")
+        far_level = _level(140.0, LiquiditySide.BUY_SIDE, liquidity_id="far")
+
+        result_without_debug = _calculator().calculate(
+            "BUY", 100.0, 90.0, [near_level, far_level], [], []
+        )
+
+        logger = logging.getLogger("app.risk.take_profit")
+        original_level = logger.level
+        logger.setLevel(logging.DEBUG)
+        try:
+            result_with_debug = _calculator().calculate(
+                "BUY", 100.0, 90.0, [near_level, far_level], [], []
+            )
+        finally:
+            logger.setLevel(original_level)
+
+        assert result_with_debug.selected_take_profit == result_without_debug.selected_take_profit
+        assert result_with_debug.selected_source == result_without_debug.selected_source
+        assert result_with_debug.risk_reward_ratio == result_without_debug.risk_reward_ratio
 
 
 class TestSingleTarget:

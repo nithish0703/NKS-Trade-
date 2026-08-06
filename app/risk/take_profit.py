@@ -3,7 +3,8 @@ Computes take profit levels for a trade setup.
 """
 
 import hashlib
-from typing import Sequence
+import logging
+from typing import Optional, Sequence
 
 from app.config.thresholds import MIN_RISK_REWARD_RATIO
 from app.liquidity.level_selector import get_institutional_priority
@@ -12,6 +13,8 @@ from app.market_structure.results import SwingPoint, SwingType
 from app.models.trade_zone import TradeZone
 
 from app.risk.results import TakeProfitCandidate, TakeProfitResult, TakeProfitSource
+
+_logger = logging.getLogger(__name__)
 
 # Strategy priority: lower number = higher priority.
 _SOURCE_PRIORITY = {
@@ -59,12 +62,17 @@ class SingleTakeProfitCalculator:
         """
         Calculate the single best take-profit target.
 
-        Generates candidates from major institutional liquidity, strong
-        swing extremes, unmitigated liquidity pools, and FVG completion,
-        filters out wrong-side and sub-MIN_RISK_REWARD_RATIO candidates,
-        then selects by strategy priority (nearest valid target within
-        the same priority tier). Returns invalid when no target meets
-        the minimum risk-reward ratio.
+        Generates candidates from every source -- major institutional
+        liquidity, strong swing extremes, unmitigated liquidity pools,
+        and FVG completion -- unconditionally, before any selection.
+        Each candidate's own RR is computed independently; wrong-side
+        and sub-MIN_RISK_REWARD_RATIO candidates are marked invalid but
+        never removed from the audit trail. Among all RR-valid
+        candidates, selects by (1) higher institutional probability,
+        (2) higher RR, (3) shorter distance from entry, (4) target_id
+        as a stable deterministic tie-break. Returns invalid only when
+        no candidate from any source meets the minimum risk-reward
+        ratio.
         """
         if entry_price <= 0 or stop_loss <= 0:
             return self._invalid_result(
@@ -103,6 +111,7 @@ class SingleTakeProfitCalculator:
         )
 
         if not candidates:
+            self._log_analysis(direction, entry_price, stop_loss, candidates, selected=None)
             return self._invalid_result(
                 direction, entry_price, stop_loss, candidates,
                 "No institutional take-profit targets are available.",
@@ -112,16 +121,30 @@ class SingleTakeProfitCalculator:
         valid_candidates = [c for c in candidates if c.valid]
 
         if not valid_candidates:
+            self._log_analysis(direction, entry_price, stop_loss, candidates, selected=None)
             return self._invalid_result(
                 direction, entry_price, stop_loss, candidates,
                 "No take-profit target meets the minimum risk-reward ratio.",
                 "NO_TARGET_WITH_MINIMUM_RR",
             )
 
+        # Selection priority among every RR-valid candidate (all sources
+        # are always generated above; this only changes which one wins):
+        #   1. Higher institutional probability (lower _SOURCE_PRIORITY number)
+        #   2. Higher risk-reward ratio
+        #   3. Shorter distance from entry
+        #   4. target_id, for a stable deterministic tie-break
         selected = min(
             valid_candidates,
-            key=lambda c: (_SOURCE_PRIORITY[c.source], c.distance_from_entry, c.target_id),
+            key=lambda c: (
+                _SOURCE_PRIORITY[c.source],
+                -c.risk_reward_ratio,
+                c.distance_from_entry,
+                c.target_id,
+            ),
         )
+
+        self._log_analysis(direction, entry_price, stop_loss, candidates, selected=selected)
 
         return TakeProfitResult(
             direction=direction,
@@ -300,6 +323,58 @@ class SingleTakeProfitCalculator:
                 else f"Risk-reward {rr:.4f} is below the minimum {MIN_RISK_REWARD_RATIO:.4f}."
             ),
         )
+
+    @staticmethod
+    def _log_analysis(
+        direction: str,
+        entry_price: float,
+        stop_loss: float,
+        candidates: list[TakeProfitCandidate],
+        *,
+        selected: Optional[TakeProfitCandidate],
+    ) -> None:
+        """
+        Emit a DEBUG-only audit trail of every candidate considered and
+        which one (if any) was selected, matching the module's existing
+        docstring conventions -- WHY the selection landed where it did,
+        not just WHAT was returned. Never affects control flow: this is
+        purely observational logging, guarded so it costs nothing when
+        DEBUG logging is disabled (the default in production).
+        """
+        if not _logger.isEnabledFor(logging.DEBUG):
+            return
+
+        lines = [
+            "Take Profit Analysis",
+            f"Entry: {entry_price}",
+            f"Stop Loss: {stop_loss}",
+        ]
+        for source, label in (
+            (TakeProfitSource.MAJOR_INSTITUTIONAL_LIQUIDITY, "Institutional"),
+            (TakeProfitSource.STRONG_SWING_HIGH, "Swing"),
+            (TakeProfitSource.STRONG_SWING_LOW, "Swing"),
+            (TakeProfitSource.UNMITIGATED_LIQUIDITY_POOL, "Liquidity Pool"),
+            (TakeProfitSource.FAIR_VALUE_GAP_COMPLETION, "FVG"),
+        ):
+            source_candidates = [c for c in candidates if c.source == source]
+            if not source_candidates:
+                continue
+            lines.append(label)
+            for candidate in source_candidates:
+                lines.append(f"Target: {candidate.price}")
+                lines.append(f"RR: {candidate.risk_reward_ratio:.4f}")
+                lines.append("PASS" if candidate.valid else "FAIL")
+
+        if selected is not None:
+            lines.append(f"Selected: {selected.source.value} @ {selected.price}")
+            lines.append(
+                f"Reason: highest institutional probability among candidates meeting "
+                f"RR >= {MIN_RISK_REWARD_RATIO:.2f} (RR={selected.risk_reward_ratio:.4f})."
+            )
+        else:
+            lines.append(f"Rejected: No TP satisfies RR >= {MIN_RISK_REWARD_RATIO:.2f}")
+
+        _logger.debug("\n".join(lines))
 
     @staticmethod
     def _invalid_result(
