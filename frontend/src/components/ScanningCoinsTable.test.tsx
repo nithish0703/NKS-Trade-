@@ -80,6 +80,33 @@ describe("ScanningCoinsTable", () => {
       />,
     );
     expect(screen.getByText("REJECTED: HTF_BIAS")).toBeInTheDocument();
+    expect(screen.getByText("1H trend is BEARISH; no BUY permitted.")).toBeInTheDocument();
+  });
+
+  it("truncates a very long inline reason but keeps the full text in the tooltip", () => {
+    const longReason =
+      "Correlation with an active position is too high across the correlation " +
+      "window and the candidate symbol was therefore rejected by risk management.";
+    render(
+      <ScanningCoinsTable
+        coins={[
+          coin({
+            status: "REJECTED",
+            score: null,
+            direction: null,
+            failed_layer: "RISK_MANAGEMENT",
+            reason: longReason,
+          }),
+        ]}
+      />,
+    );
+    expect(screen.getByText("REJECTED: RISK_MANAGEMENT")).toBeInTheDocument();
+    expect(screen.queryByText(longReason)).not.toBeInTheDocument();
+    const truncated = screen.getByText(/^Correlation with an active position is too high/);
+    expect(truncated.textContent?.endsWith("…")).toBe(true);
+    expect(truncated.textContent?.length).toBeLessThan(longReason.length);
+    const statusCell = truncated.closest("td");
+    expect(statusCell?.getAttribute("title")).toContain(longReason);
   });
 
   it("shows a plain REJECTED label when no failed_layer is available", () => {
