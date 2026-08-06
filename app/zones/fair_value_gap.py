@@ -69,7 +69,11 @@ class FairValueGapDetector:
                 if upper_price <= lower_price:
                     continue
 
-                source_key = f"{index}"
+                # Keyed on the middle (displacement) candle's timestamp,
+                # not its position/index within whatever candle window
+                # this scan happened to fetch, so the same real FVG
+                # always produces the same zone_id across scan cycles.
+                source_key = middle_candle.timestamp.isoformat()
                 zone_id = make_zone_id(
                     first_candle.symbol, first_candle.timeframe, ZoneType.FAIR_VALUE_GAP, source_key
                 )
@@ -104,7 +108,11 @@ class FairValueGapDetector:
                 if upper_price <= lower_price:
                     continue
 
-                source_key = f"{index}"
+                # Keyed on the middle (displacement) candle's timestamp,
+                # not its position/index within whatever candle window
+                # this scan happened to fetch, so the same real FVG
+                # always produces the same zone_id across scan cycles.
+                source_key = middle_candle.timestamp.isoformat()
                 zone_id = make_zone_id(
                     first_candle.symbol, first_candle.timeframe, ZoneType.FAIR_VALUE_GAP, source_key
                 )

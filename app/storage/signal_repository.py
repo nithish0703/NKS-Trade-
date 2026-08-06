@@ -2,6 +2,7 @@
 Repository for persisting and retrieving signals.
 """
 
+import logging
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -12,6 +13,38 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from app.models.signal import Direction, Signal, SignalStatus
 from app.storage.database import DatabaseManager, DatabaseOperationError
 from app.storage.models import SignalRecord
+
+# Temporary DEBUG-only logger for duplicate-detection diagnostics.
+# Does not affect production behaviour: only emits when DEBUG level
+# is enabled, and no logic below reads from or branches on it.
+_debug_logger = logging.getLogger(__name__)
+
+
+def _log_duplicate_debug(
+    *,
+    symbol: str,
+    setup_key: str,
+    existing_trade_id: str,
+    existing_setup_key: str,
+    created_at,
+) -> None:
+    """DEBUG-only diagnostic print for a duplicate detected by SignalRepository."""
+    _debug_logger.debug(
+        "\n-----------------------------------------\n"
+        "Symbol: %s\n"
+        "Generated setup_key: %s\n"
+        "Duplicate detected at: SignalRepository\n"
+        "existing trade_id: %s\n"
+        "existing setup_key: %s\n"
+        "created_at: %s\n"
+        "-----------------------------------------",
+        symbol,
+        setup_key,
+        existing_trade_id,
+        existing_setup_key,
+        created_at,
+    )
+
 
 DASHBOARD_STATUS_NEW = "NEW"
 DASHBOARD_STATUS_ACTIVE = "ACTIVE"
@@ -88,7 +121,15 @@ class SignalRepository:
                     | (SignalRecord.setup_key == signal.setup_key)
                 )
             )
-            if existing.scalars().first() is not None:
+            existing_record = existing.scalars().first()
+            if existing_record is not None:
+                _log_duplicate_debug(
+                    symbol=signal.coin,
+                    setup_key=signal.setup_key,
+                    existing_trade_id=existing_record.trade_id,
+                    existing_setup_key=existing_record.setup_key,
+                    created_at=existing_record.created_at_utc,
+                )
                 raise DuplicateSignalStorageError(
                     f"A signal with trade_id='{signal.trade_id}' or "
                     f"setup_key='{signal.setup_key}' already exists."
@@ -99,6 +140,24 @@ class SignalRepository:
                 await session.commit()
             except IntegrityError as exc:
                 await session.rollback()
+                try:
+                    conflict = await session.execute(
+                        select(SignalRecord).where(
+                            (SignalRecord.trade_id == signal.trade_id)
+                            | (SignalRecord.setup_key == signal.setup_key)
+                        )
+                    )
+                    conflict_record = conflict.scalars().first()
+                    if conflict_record is not None:
+                        _log_duplicate_debug(
+                            symbol=signal.coin,
+                            setup_key=signal.setup_key,
+                            existing_trade_id=conflict_record.trade_id,
+                            existing_setup_key=conflict_record.setup_key,
+                            created_at=conflict_record.created_at_utc,
+                        )
+                except SQLAlchemyError:
+                    pass  # DEBUG-only lookup; never affects the raised error below.
                 raise DuplicateSignalStorageError(
                     f"A signal with trade_id='{signal.trade_id}' or "
                     f"setup_key='{signal.setup_key}' already exists."
