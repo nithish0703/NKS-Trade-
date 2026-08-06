@@ -139,3 +139,23 @@ MEDIUM_SIGNAL_MINIMUM_SCORE: Final[float] = 70.0
 # app.config.settings.Settings.min_publishable_confidence_score so
 # signal frequency can be tuned via the MIN_PUBLISHABLE_CONFIDENCE_SCORE
 # env var without a code change/redeploy. Default is unchanged (80.0).
+
+# Stage 5 (Order Flow) Open Interest fetch retry configuration. The
+# provider itself never raises (it swallows every failure into an
+# empty list), so an empty result -- not an exception -- is the
+# retryable signal: API delay is often transient, so it's worth a
+# short retry before treating OI confirmation as UNAVAILABLE for this
+# scan. Kept small (well under the scan cycle interval) so a
+# persistently unavailable OI feed never meaningfully slows scanning.
+OPEN_INTEREST_FETCH_MAX_ATTEMPTS: Final[int] = 2
+OPEN_INTEREST_FETCH_RETRY_BACKOFF_SECONDS: Final[float] = 0.5
+
+# Stage 4 (IFVG) validity windows, in candles after a confirmed BOS's
+# break_candle_index. N1 bounds how long the tighter IFVG flip+retest
+# path (Grade A) is looked for before falling back to the wider,
+# coarser BOS-zone retest path (Grade B), which gets its own,
+# independent allowance N2 -- a coarser zone can reasonably be granted
+# a different (typically longer) window than the tighter IFVG zone
+# without the two being coupled to the same constant.
+IFVG_VALIDITY_WINDOW_CANDLES: Final[int] = 12
+BOS_ZONE_RETEST_VALIDITY_WINDOW_CANDLES: Final[int] = 20

@@ -23,11 +23,16 @@ executes a trade. Exposes `analyze_symbol(...) -> StrategyPipelineResult`,
 the interface `app.scanner.pair_scanner.PairScanner` depends on.
 """
 
+import asyncio
 import time
 from datetime import datetime, timezone
 from typing import Mapping, Optional, Sequence
 
 from app.config.pairs import validate_pair_symbol
+from app.config.thresholds import (
+    OPEN_INTEREST_FETCH_MAX_ATTEMPTS,
+    OPEN_INTEREST_FETCH_RETRY_BACKOFF_SECONDS,
+)
 from app.config.timeframes import ENTRY_TIMEFRAME, HTF_PRIMARY, HTF_SECONDARY
 from app.data.candle_repository import CandleRepository
 from app.data.market_data_errors import MarketDataError
@@ -309,25 +314,28 @@ class PipelineStrategyEngine:
                 original_exception=exc,
             ) from exc
 
-        ifvg_result = evaluate_ifvg(entry_candles, fair_value_gaps, expected_direction=expected_direction)
+        ifvg_result = evaluate_ifvg(
+            entry_candles,
+            fair_value_gaps,
+            expected_direction=expected_direction,
+            structure_break=bos_result.structure_break,
+        )
         ifvg_validation = ValidationResult(passed=ifvg_result.passed, layer_name="IFVG", reason=ifvg_result.reason)
         stage_results["IFVG"] = ifvg_validation
         stages.append(self._stage(4, "IFVG", ifvg_validation, start))
-        context = context.with_updates(selected_entry_zone=ifvg_result.ifvg_zone)
+        context = context.with_updates(selected_entry_zone=ifvg_result.selected_zone)
         if not ifvg_validation.passed:
             return self._build_rejected_result(context, expected_direction, stages, "IFVG", ifvg_validation)
 
         # Stage 5: OI + CVD (order flow agrees?)
         start = _now_ms()
-        try:
-            open_interest_history = await self._market_data_provider.fetch_open_interest_history(
-                symbol, _OPEN_INTEREST_INTERVAL, _OPEN_INTEREST_LIMIT
-            )
-        except Exception as exc:  # noqa: BLE001 - OI fetch failure must not crash the pipeline
-            open_interest_history = []
+        open_interest_history, open_interest_fetch_failed = await self._fetch_open_interest_with_retry(symbol)
 
         order_flow_result = evaluate_order_flow(
-            entry_candles, open_interest_history, expected_direction=expected_direction
+            entry_candles,
+            open_interest_history,
+            expected_direction=expected_direction,
+            open_interest_fetch_failed=open_interest_fetch_failed,
         )
         order_flow_validation = ValidationResult(
             passed=order_flow_result.passed, layer_name="ORDER_FLOW", reason=order_flow_result.reason
@@ -339,7 +347,7 @@ class PipelineStrategyEngine:
 
         # Stage 6: RISK_MANAGEMENT
         start = _now_ms()
-        entry_zone = ifvg_result.ifvg_zone
+        entry_zone = ifvg_result.selected_zone
         atr = entry_snapshot.atr
         if entry_zone is None or atr is None or atr <= 0:
             risk_validation = ValidationResult.failure(
@@ -398,6 +406,45 @@ class PipelineStrategyEngine:
             selected_entry_zone=entry_zone,
             risk_plan=risk_plan,
         )
+
+    async def _fetch_open_interest_with_retry(self, symbol: str) -> tuple[list, bool]:
+        """
+        Fetch Open Interest history for Stage 5, retrying a short,
+        fixed number of times on an empty result before giving up.
+
+        The provider contract (app.data.provider_base.MarketDataProvider
+        .fetch_open_interest_history) never raises -- it swallows every
+        request/response/validation failure into an empty list -- so an
+        empty result, not a caught exception, is the actual retryable
+        signal here: API delay is often transient and worth a couple of
+        quick retries, but a persistently empty result (including a
+        symbol the provider recognizes as having no OI data, e.g.
+        spot-only) is not helped by retrying further and must not stall
+        the scan waiting for data that will never arrive.
+
+        Returns (history, fetch_failed): `fetch_failed` is True only
+        when every attempt returned empty, so Stage 5's UNAVAILABLE
+        reason can say the fetch failed after retrying rather than
+        collapsing that into the same wording as a validly thin (but
+        non-empty) history.
+        """
+        history: list = []
+        for attempt in range(OPEN_INTEREST_FETCH_MAX_ATTEMPTS):
+            try:
+                history = await self._market_data_provider.fetch_open_interest_history(
+                    symbol, _OPEN_INTEREST_INTERVAL, _OPEN_INTEREST_LIMIT
+                )
+            except Exception:  # noqa: BLE001 - a fetch failure must never crash the pipeline
+                history = []
+
+            if history:
+                return history, False
+
+            is_last_attempt = attempt == OPEN_INTEREST_FETCH_MAX_ATTEMPTS - 1
+            if not is_last_attempt:
+                await asyncio.sleep(OPEN_INTEREST_FETCH_RETRY_BACKOFF_SECONDS * (attempt + 1))
+
+        return history, True
 
     @staticmethod
     def _select_latest_valid_sweep(confirmed_sweeps, expected_direction: str, detection_time_utc: datetime):

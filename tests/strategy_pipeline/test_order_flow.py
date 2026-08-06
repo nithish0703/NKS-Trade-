@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 from app.data.open_interest_point import OpenInterestPoint
 from app.models.candle import Candle
+from app.strategy_pipeline.open_interest import ConfirmationStatus
 from app.strategy_pipeline.order_flow import evaluate_order_flow
 
 UTC_NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)
@@ -71,15 +72,37 @@ def _cvd_higher_low_buy_candles_with_net_price_rise() -> list[Candle]:
 def _cvd_no_swings_candles_with_net_price_rise() -> list[Candle]:
     """
     Monotonically rising CVD (every candle bullish, so no swing lows
-    ever form -> CVD confirmation fails for BUY), built on a rising
-    absolute price ladder so candles[-1].close is genuinely above
-    candles[0].close (satisfying the OI sub-check's price_change
-    requirement independently).
+    ever form -> CVD confirmation is UNAVAILABLE, not DISAGREED, for
+    BUY), built on a rising absolute price ladder so candles[-1].close
+    is genuinely above candles[0].close (satisfying the OI sub-check's
+    price_change requirement independently).
     """
     candles = []
     price = 100.0
     for i in range(14):
         candles.append(_candle(i, price, price + 1.0, volume=10.0))
+        price += 0.1
+    return candles
+
+
+def _cvd_lower_low_candles_with_net_price_rise() -> list[Candle]:
+    """
+    Same deterministic lower-low CVD delta pattern proven in
+    test_cvd.py's test_explicit_lower_low_fails_buy (genuine
+    DISAGREED, not a data-availability problem: two confirmed swing
+    lows exist, they just form the wrong pattern for BUY), built on a
+    rising absolute price ladder so the OI sub-check's price_change
+    requirement is satisfied independently of the CVD delta pattern.
+    """
+    deltas = [5, 5, -6, -6, -6, 5, 5, 5, 5, -8, -8, -8, 5, 5]
+    candles = []
+    price = 100.0
+    for i, d in enumerate(deltas):
+        if d > 0:
+            candle = _candle(i, price, price + 1.0, volume=d)
+        else:
+            candle = _candle(i, price + 1.0, price, volume=-d)
+        candles.append(candle)
         price += 0.1
     return candles
 
@@ -114,33 +137,128 @@ class TestEvaluateOrderFlowOneDisagrees:
         )
 
         assert result.passed is False
+        assert result.status == ConfirmationStatus.DISAGREED
         assert result.open_interest.passed is False
         assert result.cvd.passed is True
         assert "Open Interest" in result.reason
         assert "CVD" not in result.reason.replace("Open Interest and CVD", "")
+        assert "ORDER_FLOW_DISAGREED" in result.reason
 
     def test_cvd_disagrees_fails_even_with_oi_agreeing(self):
-        candles = _cvd_no_swings_candles_with_net_price_rise()
+        candles = _cvd_lower_low_candles_with_net_price_rise()
         oi = [_oi_point(0, 1000.0), _oi_point(13, 1100.0)]
 
-        result = evaluate_order_flow(candles, oi, expected_direction="BUY")
+        result = evaluate_order_flow(
+            candles, oi, expected_direction="BUY", cvd_left_strength=2, cvd_right_strength=2
+        )
 
         assert result.passed is False
+        assert result.status == ConfirmationStatus.DISAGREED
         assert result.open_interest.passed is True
         assert result.cvd.passed is False
+        assert result.cvd.status == ConfirmationStatus.DISAGREED
         assert "CVD" in result.reason
+        assert "ORDER_FLOW_DISAGREED" in result.reason
 
     def test_both_disagree(self):
-        candles = _cvd_no_swings_candles_with_net_price_rise()
+        candles = _cvd_lower_low_candles_with_net_price_rise()
         oi = [_oi_point(0, 1000.0), _oi_point(13, 900.0)]
 
-        result = evaluate_order_flow(candles, oi, expected_direction="BUY")
+        result = evaluate_order_flow(
+            candles, oi, expected_direction="BUY", cvd_left_strength=2, cvd_right_strength=2
+        )
 
         assert result.passed is False
+        assert result.status == ConfirmationStatus.DISAGREED
         assert result.open_interest.passed is False
         assert result.cvd.passed is False
         assert "Open Interest" in result.reason
         assert "CVD" in result.reason
+        assert "ORDER_FLOW_DISAGREED" in result.reason
+
+
+class TestEvaluateOrderFlowDataUnavailable:
+    """
+    Neither sub-check disagreeing but at least one lacking enough data
+    to reach a conclusion must reject with a status/reason distinct
+    from a genuine market disagreement -- these must never collapse
+    into the same outcome.
+    """
+
+    def test_cvd_unavailable_no_swings_fails_distinctly_from_disagreement(self):
+        candles = _cvd_no_swings_candles_with_net_price_rise()
+        oi = [_oi_point(0, 1000.0), _oi_point(13, 1100.0)]  # OI confirms
+
+        result = evaluate_order_flow(candles, oi, expected_direction="BUY")
+
+        assert result.passed is False
+        assert result.status == ConfirmationStatus.UNAVAILABLE
+        assert result.cvd.status == ConfirmationStatus.UNAVAILABLE
+        assert "ORDER_FLOW_DATA_UNAVAILABLE" in result.reason
+        assert "ORDER_FLOW_DISAGREED" not in result.reason
+        assert "CVD" in result.reason
+
+    def test_open_interest_unavailable_thin_history_fails_distinctly(self):
+        candles = _cvd_higher_low_buy_candles_with_net_price_rise()
+        oi = [_oi_point(0, 1000.0)]  # fewer than 2 points: UNAVAILABLE, not DISAGREED
+
+        result = evaluate_order_flow(
+            candles, oi, expected_direction="BUY", cvd_left_strength=2, cvd_right_strength=2
+        )
+
+        assert result.passed is False
+        assert result.status == ConfirmationStatus.UNAVAILABLE
+        assert result.open_interest.status == ConfirmationStatus.UNAVAILABLE
+        assert "ORDER_FLOW_DATA_UNAVAILABLE" in result.reason
+        assert "Open Interest" in result.reason
+
+    def test_open_interest_fetch_failed_flag_surfaces_in_reason(self):
+        candles = _cvd_higher_low_buy_candles_with_net_price_rise()
+        oi: list[OpenInterestPoint] = []  # simulates every retry attempt returning empty
+
+        result = evaluate_order_flow(
+            candles,
+            oi,
+            expected_direction="BUY",
+            cvd_left_strength=2,
+            cvd_right_strength=2,
+            open_interest_fetch_failed=True,
+        )
+
+        assert result.passed is False
+        assert result.status == ConfirmationStatus.UNAVAILABLE
+        assert "fetch failed after retrying" in result.reason
+
+    def test_thin_but_present_history_without_fetch_failure_reads_differently(self):
+        # A symbol that genuinely has thin OI data (not a fetch failure)
+        # must not claim "the fetch failed" -- open_interest_fetch_failed
+        # defaults to False, so the reason falls back to the generic
+        # "insufficient data" wording instead.
+        candles = _cvd_higher_low_buy_candles_with_net_price_rise()
+        oi = [_oi_point(0, 1000.0)]
+
+        result = evaluate_order_flow(
+            candles, oi, expected_direction="BUY", cvd_left_strength=2, cvd_right_strength=2
+        )
+
+        assert result.passed is False
+        assert "fetch failed after retrying" not in result.reason
+        assert "insufficient data" in result.reason
+
+    def test_one_disagreed_one_unavailable_reports_as_disagreed(self):
+        # A genuine disagreement must never be downgraded to
+        # UNAVAILABLE just because the other sub-check also lacked data
+        # -- DISAGREED always wins when it's present at all.
+        candles = _cvd_no_swings_candles_with_net_price_rise()  # CVD: UNAVAILABLE
+        oi = [_oi_point(0, 1000.0), _oi_point(13, 900.0)]  # OI: DISAGREED (falls while price rises)
+
+        result = evaluate_order_flow(candles, oi, expected_direction="BUY")
+
+        assert result.passed is False
+        assert result.status == ConfirmationStatus.DISAGREED
+        assert result.open_interest.status == ConfirmationStatus.DISAGREED
+        assert result.cvd.status == ConfirmationStatus.UNAVAILABLE
+        assert "ORDER_FLOW_DISAGREED" in result.reason
 
 
 class TestEvaluateOrderFlowBothSubChecksAlwaysRun:

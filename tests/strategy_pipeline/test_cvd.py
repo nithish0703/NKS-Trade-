@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 from app.models.candle import Candle
 from app.strategy_pipeline.cvd import calculate_cvd_series, evaluate_cvd_confirmation
+from app.strategy_pipeline.open_interest import ConfirmationStatus
 
 UTC_NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
@@ -64,18 +65,23 @@ class TestEvaluateCvdConfirmation:
     def test_empty_candles_fails(self):
         result = evaluate_cvd_confirmation([], expected_direction="BUY")
         assert result.passed is False
+        assert result.status == ConfirmationStatus.UNAVAILABLE
 
     def test_insufficient_swings_fails_for_buy(self):
-        # Monotonically rising CVD: no swing lows at all.
+        # Monotonically rising CVD: no swing lows at all -- a data
+        # problem (not enough structure formed yet), not a genuine
+        # disagreement.
         candles = [_bullish(i) for i in range(10)]
         result = evaluate_cvd_confirmation(candles, expected_direction="BUY")
         assert result.passed is False
+        assert result.status == ConfirmationStatus.UNAVAILABLE
         assert "fewer than two" in result.reason.lower()
 
     def test_insufficient_swings_fails_for_sell(self):
         candles = [_bearish(i) for i in range(10)]
         result = evaluate_cvd_confirmation(candles, expected_direction="SELL")
         assert result.passed is False
+        assert result.status == ConfirmationStatus.UNAVAILABLE
         assert "fewer than two" in result.reason.lower()
 
     def test_explicit_higher_low_passes(self):
@@ -97,6 +103,7 @@ class TestEvaluateCvdConfirmation:
         # left_strength=2/right_strength=2; swing low at index 11 (-6)
         # is higher than -14 -> higher low -> BUY confirmed.
         assert result.passed is True
+        assert result.status == ConfirmationStatus.CONFIRMED
         assert "higher low" in result.reason.lower()
 
     def test_explicit_lower_high_passes(self):
@@ -112,6 +119,7 @@ class TestEvaluateCvdConfirmation:
         # Swing high at index 4 (14) then swing high at index 11 (6):
         # 6 < 14 -> lower high -> SELL confirmed.
         assert result.passed is True
+        assert result.status == ConfirmationStatus.CONFIRMED
         assert "lower high" in result.reason.lower()
 
     def test_explicit_lower_low_fails_buy(self):
@@ -128,4 +136,5 @@ class TestEvaluateCvdConfirmation:
         result = evaluate_cvd_confirmation(candles, expected_direction="BUY", left_strength=2, right_strength=2)
         # Swing low at index 4 (-8), swing low at index 11 (-12): -12 < -8 -> lower low, not higher -> fails.
         assert result.passed is False
+        assert result.status == ConfirmationStatus.DISAGREED
         assert "did not form a higher low" in result.reason.lower()
