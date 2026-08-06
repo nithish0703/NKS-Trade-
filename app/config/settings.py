@@ -16,38 +16,11 @@ from app.config.thresholds import (
     SCANNER_INTERVAL_SECONDS,
     TRADE_OUTCOME_MONITOR_INTERVAL_SECONDS,
 )
+from app.utils.chat_ids import parse_chat_ids as _parse_chat_ids
 
 _DEFAULT_MIN_PUBLISHABLE_CONFIDENCE_SCORE = 80.0
 
 load_dotenv()
-
-
-def _parse_chat_ids(raw_value: str) -> list[str]:
-    """
-    Parse a comma-separated string of Telegram chat IDs into a
-    deduplicated, order-preserving list of trimmed, non-empty IDs.
-
-    Kept in sync with app.notifications.chat_ids.parse_chat_ids; defined
-    locally (rather than imported) to avoid a circular import between
-    app.config.settings and app.notifications at package-init time.
-    """
-    if not raw_value.strip():
-        return []
-
-    chat_ids: list[str] = []
-    seen: set[str] = set()
-    for raw_entry in raw_value.split(","):
-        entry = raw_entry.strip()
-        if not entry:
-            raise ValueError("Telegram chat IDs must not contain empty entries.")
-        candidate = entry[1:] if entry.startswith("-") else entry
-        if not candidate.isdigit():
-            raise ValueError(f"'{entry}' is not a valid Telegram chat ID.")
-        if entry not in seen:
-            seen.add(entry)
-            chat_ids.append(entry)
-
-    return chat_ids
 
 
 class Settings(BaseSettings):
