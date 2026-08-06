@@ -58,7 +58,7 @@ def calculate_risk_reward(
 
 
 def validate_minimum_risk_reward(
-    risk_reward_ratio: float, minimum_ratio: float = 2.0
+    risk_reward_ratio: float, minimum_ratio: float = 1.80
 ) -> ValidationResult:
     """
     Validate that `risk_reward_ratio` meets or exceeds `minimum_ratio`.
@@ -78,7 +78,11 @@ def validate_minimum_risk_reward(
     if risk_reward_ratio < minimum_ratio:
         return ValidationResult.failure(
             layer_name=_LAYER_NAME,
-            reason=f"Risk-reward ratio {risk_reward_ratio:.4f} is below the minimum {minimum_ratio:.4f}.",
+            reason=(
+                "RISK_REWARD_BELOW_MINIMUM\n"
+                f"Actual RR : {risk_reward_ratio:.2f}\n"
+                f"Required RR : {minimum_ratio:.2f}"
+            ),
             rejection_code="RISK_REWARD_BELOW_MINIMUM",
             score=0.0,
         )

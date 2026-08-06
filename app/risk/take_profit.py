@@ -12,7 +12,7 @@ from app.models.trade_zone import TradeZone
 
 from app.risk.results import TakeProfitCandidate, TakeProfitResult, TakeProfitSource
 
-_MINIMUM_RISK_REWARD = 2.0
+_MINIMUM_RISK_REWARD = 1.80
 
 # Strategy priority: lower number = higher priority.
 _SOURCE_PRIORITY = {

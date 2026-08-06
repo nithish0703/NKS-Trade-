@@ -27,7 +27,7 @@ from app.risk.risk_reward import validate_minimum_risk_reward
 from app.risk.stop_loss import DynamicStopLossCalculator
 from app.risk.take_profit import SingleTakeProfitCalculator
 
-_MINIMUM_RISK_REWARD = 2.0
+_MINIMUM_RISK_REWARD = 1.80
 
 
 class RiskManagementCalculator:
@@ -140,7 +140,7 @@ class RiskManagementCalculator:
                 stop_loss_result=stop_loss_result,
                 take_profit_result=take_profit_result,
                 risk_reward_ratio=risk_reward_ratio,
-                reason="Risk-reward ratio is below the minimum.",
+                reason=rr_validation.reason or "Risk-reward ratio is below the minimum.",
             )
 
         position_risk_result = self._position_risk_calculator.calculate(
