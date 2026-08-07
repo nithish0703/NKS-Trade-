@@ -57,10 +57,12 @@ from app.scanner.pipeline_exceptions import (
 from app.scanner.pipeline_results import PipelineStageResult, PipelineStatus, StrategyPipelineResult
 
 from app.strategy_pipeline.bos import evaluate_bos
+from app.strategy_pipeline.ema_trend import evaluate_ema_trend
 from app.strategy_pipeline.htf_bias import HtfBiasDirection, evaluate_htf_bias
 from app.strategy_pipeline.ifvg import evaluate_ifvg
 from app.strategy_pipeline.liquidity_sweep import validate_liquidity_sweep
 from app.strategy_pipeline.order_flow import evaluate_order_flow
+from app.strategy_pipeline.premium_discount import evaluate_premium_discount_zone
 from app.strategy_pipeline.scoring import calculate_pipeline_decision
 
 _REQUIRED_TIMEFRAMES = (ENTRY_TIMEFRAME, HTF_SECONDARY, HTF_PRIMARY)
@@ -239,6 +241,19 @@ class PipelineStrategyEngine:
         htf_validation = ValidationResult(
             passed=htf_bias_result.passed, layer_name="HTF_BIAS", reason=htf_bias_result.reason
         )
+
+        # EMA trend filter: an additional direction-agreement condition
+        # folded into Stage 1 rather than a new stage, reusing the
+        # already-computed entry-timeframe EMA200 slope direction (see
+        # app/strategy_pipeline/ema_trend.py). Only evaluated once the
+        # 1H HTF Bias itself has already permitted a direction.
+        if htf_validation.passed and expected_direction is not None:
+            ema_trend_result = evaluate_ema_trend(entry_snapshot, expected_direction)
+            if not ema_trend_result.passed:
+                htf_validation = ValidationResult(
+                    passed=False, layer_name="HTF_BIAS", reason=ema_trend_result.reason
+                )
+
         stage_results["HTF_BIAS"] = htf_validation
         stages.append(self._stage(1, "HTF_BIAS", htf_validation, start))
         if not htf_validation.passed or expected_direction is None:
@@ -321,6 +336,23 @@ class PipelineStrategyEngine:
             structure_break=bos_result.structure_break,
         )
         ifvg_validation = ValidationResult(passed=ifvg_result.passed, layer_name="IFVG", reason=ifvg_result.reason)
+
+        # Premium/Discount dealing-range filter: an additional
+        # entry-location condition folded into Stage 4 rather than a
+        # new stage, reusing the existing swing range already on
+        # entry_structure (see app/strategy_pipeline/premium_discount.py).
+        # Only evaluated once IFVG has already selected a valid entry
+        # zone, using that zone's own price as the entry price under
+        # test.
+        if ifvg_validation.passed and ifvg_result.selected_zone is not None:
+            premium_discount_result = evaluate_premium_discount_zone(
+                entry_structure, entry_candles[-1].close, expected_direction
+            )
+            if not premium_discount_result.passed:
+                ifvg_validation = ValidationResult(
+                    passed=False, layer_name="IFVG", reason=premium_discount_result.reason
+                )
+
         stage_results["IFVG"] = ifvg_validation
         stages.append(self._stage(4, "IFVG", ifvg_validation, start))
         context = context.with_updates(selected_entry_zone=ifvg_result.selected_zone)
