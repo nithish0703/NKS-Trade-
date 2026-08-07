@@ -42,8 +42,12 @@ class TestDynamicPairDiscoverySettings:
         settings = Settings(_env_file=None)
         assert settings.pair_discovery_interval_seconds == 900
 
-    def test_default_maximum_pairs_is_none(self):
+    def test_default_maximum_pairs_is_top_100(self):
         settings = Settings(_env_file=None)
+        assert settings.pair_discovery_maximum_pairs == 100
+
+    def test_maximum_pairs_can_be_uncapped_via_blank_env(self):
+        settings = Settings(_env_file=None, PAIR_DISCOVERY_MAXIMUM_PAIRS="")
         assert settings.pair_discovery_maximum_pairs is None
 
     def test_can_enable_via_env_style_kwargs(self):

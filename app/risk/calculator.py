@@ -118,6 +118,8 @@ class RiskManagementCalculator:
             institutional_liquidity_levels,
             major_swings,
             fair_value_gaps,
+            atr=atr,
+            stop_loss_source=stop_loss_result.selected_source,
         )
         if not take_profit_result.valid:
             return self._invalid_plan(
@@ -126,11 +128,19 @@ class RiskManagementCalculator:
                 active_trade_count,
                 stop_loss_result=stop_loss_result,
                 take_profit_result=take_profit_result,
-                reason="No take-profit target meets the minimum risk-reward ratio.",
+                reason="No take-profit target meets the required risk-reward ratio and volatility ceiling.",
             )
 
         risk_reward_ratio = take_profit_result.risk_reward_ratio
-        rr_validation = validate_minimum_risk_reward(risk_reward_ratio, MIN_RISK_REWARD_RATIO)
+        # The take-profit calculator already validated against its own
+        # dynamic minimum (which scales with how structurally certain
+        # the selected stop-loss source is). Re-validate here against
+        # that same dynamic minimum -- falling back to the flat
+        # MIN_RISK_REWARD_RATIO only if it wasn't recorded -- rather
+        # than a single flat ratio, so this final gate can never be
+        # looser than what take-profit selection already required.
+        required_min_rr = take_profit_result.required_risk_reward_ratio or MIN_RISK_REWARD_RATIO
+        rr_validation = validate_minimum_risk_reward(risk_reward_ratio, required_min_rr)
         if not rr_validation.passed:
             return self._invalid_plan(
                 direction,
