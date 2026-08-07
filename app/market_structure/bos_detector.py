@@ -190,7 +190,11 @@ class BOSDetector:
         strong_close_beyond_structure = not wick_only
 
         break_id = make_break_id(
-            candle.symbol, candle.timeframe, StructureBreakType.BOS, broken_swing.swing_id, index
+            candle.symbol,
+            candle.timeframe,
+            StructureBreakType.BOS,
+            broken_swing.swing_id,
+            candle.timestamp.isoformat(),
         )
 
         return StructureBreakResult(

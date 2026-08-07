@@ -4,9 +4,44 @@ Duplicate institutional-setup suppression for the multi-pair scanner.
 
 import asyncio
 import hashlib
+import logging
 from datetime import datetime, timezone
 
 from app.scanner.pipeline_results import PipelineStatus, StrategyPipelineResult
+
+# Temporary DEBUG-only logger for duplicate-detection diagnostics.
+# Does not affect production behaviour: only emits when DEBUG level
+# is enabled, and no logic below reads from or branches on it.
+_debug_logger = logging.getLogger(__name__)
+
+
+def _log_duplicate_debug(
+    *,
+    symbol: str,
+    setup_key: str,
+    retention_seconds: int,
+    first_seen_time: datetime,
+    current_time: datetime,
+    remaining_seconds: float,
+) -> None:
+    """DEBUG-only diagnostic print for a duplicate detected by DuplicateSignalGuard."""
+    _debug_logger.debug(
+        "\n-----------------------------------------\n"
+        "Symbol: %s\n"
+        "Generated setup_key: %s\n"
+        "Duplicate detected at: Scanner DuplicateGuard\n"
+        "retention_seconds: %s\n"
+        "first_seen_time: %s\n"
+        "current_time: %s\n"
+        "remaining_seconds: %s\n"
+        "-----------------------------------------",
+        symbol,
+        setup_key,
+        retention_seconds,
+        first_seen_time.isoformat(),
+        current_time.isoformat(),
+        remaining_seconds,
+    )
 
 
 class DuplicateGuardError(Exception):
@@ -131,6 +166,17 @@ class DuplicateSignalGuard:
             is_duplicate = registered_at is not None and not self._is_expired(
                 registered_at, current_time_utc
             )
+            if is_duplicate:
+                elapsed = (current_time_utc - registered_at).total_seconds()
+                remaining_seconds = max(self._retention_seconds - elapsed, 0)
+                _log_duplicate_debug(
+                    symbol=pipeline_result.symbol,
+                    setup_key=setup_key,
+                    retention_seconds=self._retention_seconds,
+                    first_seen_time=registered_at,
+                    current_time=current_time_utc,
+                    remaining_seconds=remaining_seconds,
+                )
             self._entries[setup_key] = current_time_utc
             self._enforce_maximum_entries_locked()
 

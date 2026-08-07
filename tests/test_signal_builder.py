@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from app.config.thresholds import MIN_RISK_REWARD_RATIO
 from app.models.signal import Direction, SignalStatus
 from app.risk.results import (
     CorrelationResult,
@@ -234,6 +235,17 @@ class TestSignalBuilderSuccess:
         builder.build(pair_result)
         assert pair_result.symbol == original_symbol
 
+    def test_rr_at_1_85_builds_successfully(self):
+        # Regression test: RiskManagementCalculator validates and passes
+        # a RiskPlan at RR >= MIN_RISK_REWARD_RATIO (1.80), so
+        # signal_builder must accept RR=1.85 rather than silently
+        # discarding it against a stale hardcoded 2.0 cutoff.
+        assert MIN_RISK_REWARD_RATIO == 1.80
+        builder = InstitutionalSignalBuilder()
+        risk_plan = _real_risk_plan(rr=1.85)
+        signal = builder.build(_pair_scan_result(_valid_pipeline_result(risk_plan=risk_plan)))
+        assert signal.risk_reward_ratio == 1.85
+
 
 class TestSignalBuilderFailures:
     def test_missing_risk_plan_fails(self):
@@ -339,6 +351,17 @@ class TestSignalBuilderFailures:
             error_type=None,
             metadata=None,
         )
+        with pytest.raises(SignalBuildError):
+            builder.build(pair_result)
+
+    def test_rr_below_minimum_fails(self):
+        # Guards against the minimum RR being loosened by accident:
+        # RR=1.79 is below MIN_RISK_REWARD_RATIO (1.80) and must still
+        # raise SignalBuildError.
+        assert MIN_RISK_REWARD_RATIO == 1.80
+        builder = InstitutionalSignalBuilder()
+        risk_plan = _real_risk_plan(rr=1.79)
+        pair_result = _pair_scan_result(_valid_pipeline_result(risk_plan=risk_plan))
         with pytest.raises(SignalBuildError):
             builder.build(pair_result)
 

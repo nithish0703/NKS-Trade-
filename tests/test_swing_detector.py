@@ -169,6 +169,41 @@ class TestDetectSwings:
             SwingDetector(left_strength=3, right_strength=3, equality_tolerance=-0.01)
 
 
+class TestDeterministicSwingId:
+    def test_swing_id_stable_across_shifted_window(self):
+        """
+        DuplicateGuard lifecycle regression: the same real swing candle
+        must produce the same swing_id whether it's near the start or
+        the end of the fetched candle window -- since the window rolls
+        forward every scan cycle, a swing_id tied to array position
+        (rather than the candle's own timestamp) would make the same
+        real setup look "new" on every scan and defeat duplicate
+        suppression.
+        """
+        highs = [100, 99, 98, 97, 110, 97, 98, 99, 100, 101, 102, 103]
+        lows = [h - 10 for h in highs]
+        base_candles = [_candle(i, h, l) for i, (h, l) in enumerate(zip(highs, lows))]
+
+        # Same real candles, but "window 2" starts one candle later than
+        # "window 1" -- simulating a later scan cycle's freshly fetched,
+        # rolled-forward window. Both windows keep enough left/right
+        # context around the peak candle to still confirm it as a swing.
+        window_one = base_candles[0:9]
+        window_two = base_candles[1:10]
+
+        detector = _make_detector(left=3, right=3)
+        swings_one = detector.detect_swings(window_one)
+        swings_two = detector.detect_swings(window_two)
+
+        by_timestamp_one = {s.timestamp: s.swing_id for s in swings_one}
+        by_timestamp_two = {s.timestamp: s.swing_id for s in swings_two}
+        common_timestamps = set(by_timestamp_one) & set(by_timestamp_two)
+
+        assert common_timestamps, "expected at least one swing common to both windows"
+        for timestamp in common_timestamps:
+            assert by_timestamp_one[timestamp] == by_timestamp_two[timestamp]
+
+
 class TestLatestSwings:
     def test_latest_confirmed_swing_high(self):
         highs = [100, 101, 102, 110, 90, 91, 92, 105, 93, 94, 95]

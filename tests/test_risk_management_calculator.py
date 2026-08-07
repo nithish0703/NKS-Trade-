@@ -128,10 +128,12 @@ class TestRiskManagementCalculator:
     def test_complete_valid_risk_plan(self):
         zone = _zone()
         sweep = _sweep()
-        # Selected stop is the sweep-based candidate (~84.96), so the
-        # target must be far enough above entry to clear RR >= 2.0
-        # against that ~15-point risk distance.
-        level = _liquidity_level(160.0)
+        # Selected stop is the ATR fallback candidate (~97.0, the only
+        # candidate inside the ATR volatility band for this fixture),
+        # so a target within the ATR volatility ceiling (atr * 8 = 16)
+        # is used; it still comfortably clears the dynamic minimum RR
+        # required for an ATR-sourced stop (2.50).
+        level = _liquidity_level(112.0)
         candidate_candles = _candles([100 + i for i in range(10)])
 
         plan = _make_calculator().calculate(
@@ -325,8 +327,10 @@ class TestRiskManagementCalculator:
     def test_exactly_one_tp_retained(self):
         zone = _zone()
         sweep = _sweep()
-        level_a = _liquidity_level(160.0)
-        level_b = _liquidity_level(170.0)
+        # Both levels must stay within the ATR volatility ceiling
+        # (atr * 8 = 16 here) to be realistically reachable.
+        level_a = _liquidity_level(112.0)
+        level_b = _liquidity_level(115.0)
         plan = _make_calculator().calculate(
             "BUY",
             entry_price=100.0,

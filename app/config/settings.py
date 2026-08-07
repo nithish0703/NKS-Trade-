@@ -84,11 +84,14 @@ class Settings(BaseSettings):
         default=PAIR_DISCOVERY_MINIMUM_TURNOVER_24H_USDT,
         alias="PAIR_DISCOVERY_MINIMUM_TURNOVER_24H_USDT",
     )
-    # `None` (the default) means no cap: every coin passing both filters
-    # is included. Set to a positive integer to re-enable a "top N"
-    # limit (ranked by turnover, highest first).
+    # Caps the dynamic pair-discovery list to the top N coins by 24h
+    # turnover (after the OI/turnover filters already applied) so the
+    # scanner only ever watches the most liquid, most reliably-tradable
+    # names. Set to a different positive integer, or leave unset/blank
+    # via the PAIR_DISCOVERY_MAXIMUM_PAIRS env var, to change or remove
+    # the cap without a code change.
     pair_discovery_maximum_pairs: Optional[int] = Field(
-        default=None, alias="PAIR_DISCOVERY_MAXIMUM_PAIRS"
+        default=100, alias="PAIR_DISCOVERY_MAXIMUM_PAIRS"
     )
 
     # Minimum normalized (0-100) confidence score for a signal to be

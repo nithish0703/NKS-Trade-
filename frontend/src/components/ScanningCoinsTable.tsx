@@ -84,6 +84,25 @@ function statusLabel(coin: ScanningCoin): string {
   return coin.status;
 }
 
+const MAX_INLINE_REASON_LENGTH = 90;
+
+// The full, untruncated reason always remains available in the cell's
+// `title` tooltip (see scoreTooltip); this is only a compact inline
+// summary so the dashboard doesn't need a hover to see *why* a coin
+// was rejected or errored.
+function inlineReason(coin: ScanningCoin): string | null {
+  if (coin.status !== "REJECTED" && coin.status !== "ERROR") {
+    return null;
+  }
+  if (!coin.reason) {
+    return null;
+  }
+  if (coin.reason.length <= MAX_INLINE_REASON_LENGTH) {
+    return coin.reason;
+  }
+  return `${coin.reason.slice(0, MAX_INLINE_REASON_LENGTH - 1).trimEnd()}…`;
+}
+
 function statusColorClassName(status: ScanningCoin["status"]): string {
   switch (status) {
     case "READY":
@@ -214,7 +233,12 @@ export function ScanningCoinsTable({ coins }: ScanningCoinsTableProps) {
                       className={`py-1 text-xs ${statusColorClassName(coin.status)}`}
                       title={scoreTooltip(coin)}
                     >
-                      {statusLabel(coin)}
+                      <div>{statusLabel(coin)}</div>
+                      {inlineReason(coin) ? (
+                        <div className="mt-0.5 max-w-[220px] whitespace-normal text-[11px] font-normal leading-snug text-slate-400">
+                          {inlineReason(coin)}
+                        </div>
+                      ) : null}
                     </td>
                   </tr>
                 );

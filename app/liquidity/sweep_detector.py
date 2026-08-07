@@ -160,7 +160,9 @@ class LiquiditySweepDetector:
 
         if not reclaimed:
             return LiquiditySweepResult(
-                sweep_id=make_sweep_id(level.symbol, level.timeframe, level.liquidity_id, index),
+                sweep_id=make_sweep_id(
+                    level.symbol, level.timeframe, level.liquidity_id, candle.timestamp.isoformat()
+                ),
                 symbol=level.symbol,
                 timeframe=level.timeframe,
                 direction=SweepDirection.BEARISH,
@@ -177,7 +179,9 @@ class LiquiditySweepDetector:
             )
 
         return LiquiditySweepResult(
-            sweep_id=make_sweep_id(level.symbol, level.timeframe, level.liquidity_id, index),
+            sweep_id=make_sweep_id(
+                level.symbol, level.timeframe, level.liquidity_id, candle.timestamp.isoformat()
+            ),
             symbol=level.symbol,
             timeframe=level.timeframe,
             direction=SweepDirection.BEARISH,
@@ -228,7 +232,9 @@ class LiquiditySweepDetector:
 
         if not reclaimed:
             return LiquiditySweepResult(
-                sweep_id=make_sweep_id(level.symbol, level.timeframe, level.liquidity_id, index),
+                sweep_id=make_sweep_id(
+                    level.symbol, level.timeframe, level.liquidity_id, candle.timestamp.isoformat()
+                ),
                 symbol=level.symbol,
                 timeframe=level.timeframe,
                 direction=SweepDirection.BULLISH,
@@ -245,7 +251,9 @@ class LiquiditySweepDetector:
             )
 
         return LiquiditySweepResult(
-            sweep_id=make_sweep_id(level.symbol, level.timeframe, level.liquidity_id, index),
+            sweep_id=make_sweep_id(
+                level.symbol, level.timeframe, level.liquidity_id, candle.timestamp.isoformat()
+            ),
             symbol=level.symbol,
             timeframe=level.timeframe,
             direction=SweepDirection.BULLISH,

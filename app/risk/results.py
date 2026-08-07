@@ -131,7 +131,15 @@ class TakeProfitCandidate(BaseModel):
 
 
 class TakeProfitResult(BaseModel):
-    """Result of single take-profit selection, retaining all candidates for audit."""
+    """
+    Result of take-profit selection, retaining all candidates for audit.
+
+    `selected_take_profit` remains the full/final target (== `tp2_price`
+    when valid) for backward compatibility. `tp1_price` is an earlier,
+    fixed-RR partial-exit level for locking in a conservative slice of
+    the position; `tp2_price` is the structurally selected, volatility-
+    aware final target for the remainder.
+    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -142,6 +150,13 @@ class TakeProfitResult(BaseModel):
     selected_source: Optional[TakeProfitSource] = None
     selected_target_id: Optional[str] = None
     risk_reward_ratio: Optional[float] = None
+    required_risk_reward_ratio: Optional[float] = None
+    tp1_price: Optional[float] = None
+    tp1_risk_reward_ratio: Optional[float] = None
+    tp1_exit_percentage: Optional[float] = None
+    tp2_price: Optional[float] = None
+    tp2_risk_reward_ratio: Optional[float] = None
+    tp2_exit_percentage: Optional[float] = None
     candidates: list[TakeProfitCandidate]
     valid: bool
     reason: str

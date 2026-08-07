@@ -136,6 +136,10 @@ def build_scanner_service(*, on_event=None, on_cycle_result=None, on_pair_result
                 database_manager, enabled=settings.enable_rejection_analytics
             ),
             settings=settings,
+            # Same DuplicateSignalGuard instance used by PairScanner to
+            # check for duplicates during scanning; SignalStorageService
+            # only marks a setup as seen in it after a successful save.
+            duplicate_guard=duplicate_guard,
         )
 
     notification_service = None

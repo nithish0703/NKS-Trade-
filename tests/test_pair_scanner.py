@@ -138,7 +138,12 @@ class TestPairScannerOutcomes:
         result = await _scan(scanner)
         assert result.status == PairScanStatus.ERROR
 
-    async def test_duplicate_valid_result(self):
+    async def test_valid_result_does_not_mark_duplicate_guard(self):
+        # PairScanner only CHECKS DuplicateGuard; it must never mark a
+        # setup as seen itself -- that only happens after the resulting
+        # signal is successfully persisted (see SignalStorageService).
+        # So scanning the exact same setup twice in a row, with nothing
+        # ever persisted in between, must be VALID both times.
         engine = MagicMock()
         engine.analyze_symbol = AsyncMock(return_value=_valid_pipeline_result())
         guard = DuplicateSignalGuard(retention_seconds=3600, maximum_entries=1000)
@@ -146,6 +151,23 @@ class TestPairScannerOutcomes:
         first = await _scan(scanner)
         second = await _scan(scanner)
         assert first.status == PairScanStatus.VALID
+        assert second.status == PairScanStatus.VALID
+        assert second.duplicate is False
+
+    async def test_duplicate_valid_result_after_guard_marked(self):
+        # Once the setup has actually been marked in DuplicateGuard (as
+        # SignalStorageService does after a successful save), a later
+        # scan of the same setup within the retention window must be
+        # reported as DUPLICATE.
+        engine = MagicMock()
+        engine.analyze_symbol = AsyncMock(return_value=_valid_pipeline_result())
+        guard = DuplicateSignalGuard(retention_seconds=3600, maximum_entries=1000)
+        scanner = _build_scanner(strategy_engine=engine, duplicate_guard=guard)
+        first = await _scan(scanner)
+        assert first.status == PairScanStatus.VALID
+        await guard.register(first.duplicate_key, UTC_NOW)
+
+        second = await _scan(scanner)
         assert second.status == PairScanStatus.DUPLICATE
         assert second.duplicate is True
 

@@ -2,6 +2,7 @@
 Builds structured signal objects from validated setups.
 """
 
+from app.config.thresholds import MIN_RISK_REWARD_RATIO
 from app.models.signal import Direction, Signal, SignalStatus
 from app.risk.results import RiskPlanStatus
 from app.scanner.pipeline_results import PipelineStatus, StrategyPipelineResult
@@ -53,8 +54,10 @@ class InstitutionalSignalBuilder:
             raise SignalBuildError("RiskPlan has no selected take profit.")
 
         risk_reward_ratio = risk_plan.risk_reward_ratio
-        if risk_reward_ratio is None or risk_reward_ratio < 2.0:
-            raise SignalBuildError("RiskPlan risk_reward_ratio must be at least 2.0.")
+        if risk_reward_ratio is None or risk_reward_ratio < MIN_RISK_REWARD_RATIO:
+            raise SignalBuildError(
+                f"RiskPlan risk_reward_ratio must be at least {MIN_RISK_REWARD_RATIO}."
+            )
 
         setup_key = make_setup_key(
             symbol=pipeline_result.symbol,

@@ -94,7 +94,11 @@ class EqualHighLowDetector:
     ) -> LiquidityLevel:
         mean_price = sum(s.price for s in group) / len(group)
         source_timestamps = [s.timestamp for s in group]
-        source_key = "-".join(str(s.candle_index) for s in group)
+        # Keyed on each swing's timestamp (not its candle_index, which is
+        # only that swing's position within whatever window this scan
+        # happened to fetch) so the same real group of swings always
+        # produces the same liquidity_id across scan cycles.
+        source_key = "-".join(s.timestamp.isoformat() for s in group)
 
         return LiquidityLevel(
             liquidity_id=make_liquidity_id(

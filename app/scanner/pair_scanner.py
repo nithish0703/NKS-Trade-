@@ -174,10 +174,15 @@ class PairScanner:
         # condition satisfied for VALID); having fallen through the two
         # checks above, status is guaranteed VALID here, so no separate
         # score/tier re-check is needed.
+        #
+        # This only CHECKS for a duplicate setup -- it never marks the
+        # setup as seen. Marking happens only after the resulting signal
+        # is successfully persisted (see SignalStorageService), so a
+        # setup that fails to build or save is never mistaken for a
+        # duplicate on a later scan.
         try:
-            duplicate, setup_key = await self._duplicate_guard.check_and_register(
-                pipeline_result, detection_time_utc
-            )
+            setup_key = self._duplicate_guard.build_setup_key(pipeline_result)
+            duplicate = await self._duplicate_guard.is_duplicate(setup_key, detection_time_utc)
         except DuplicateGuardError as exc:
             return self._build_error_result(
                 symbol=symbol,

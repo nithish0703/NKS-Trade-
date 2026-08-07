@@ -19,7 +19,7 @@ EMA_TREND_PERIOD: Final[int] = 200
 
 # Risk management
 MAX_RISK_PER_TRADE: Final[float] = 0.01
-MIN_RISK_REWARD_RATIO: Final[float] = 2.0
+MIN_RISK_REWARD_RATIO: Final[float] = 1.80
 MAX_ACTIVE_TRADES: Final[int] = 5
 ATR_STOP_LOSS_MULTIPLIER: Final[float] = 1.5
 
@@ -116,6 +116,45 @@ STOP_LOSS_STRUCTURAL_BUFFER_RATIO: Final[float] = 0.0005
 MAXIMUM_ALLOWED_POSITION_CORRELATION: Final[float] = 0.80
 CORRELATION_MINIMUM_OBSERVATIONS: Final[int] = 30
 
+# Stop-loss volatility gating. A candidate closer to entry than
+# MIN_STOP_ATR_MULTIPLIER * ATR sits inside normal market noise and is
+# routinely swept by wicks that never actually invalidate the setup --
+# this is what produces "stopped out then went straight to target"
+# false signals. A candidate farther than MAX_STOP_ATR_MULTIPLIER * ATR
+# is rejected as unreasonably wide (bad position sizing / RR math).
+# ATR_STOP_LOSS_MULTIPLIER (1.5) is kept strictly between these two so
+# the raw-ATR candidate itself always lands inside the accepted band.
+MIN_STOP_ATR_MULTIPLIER: Final[float] = 0.75
+MAX_STOP_ATR_MULTIPLIER: Final[float] = 3.0
+
+# Take-profit volatility ceiling. A target farther than this many ATRs
+# from entry is not realistically reachable within the setup's expected
+# holding period and is rejected as "unrealistically far" rather than
+# silently selected just because its RR number looks attractive.
+MAX_TAKE_PROFIT_ATR_MULTIPLIER: Final[float] = 8.0
+
+# Dynamic minimum risk-reward, keyed by which stop-loss source was
+# selected. A stop anchored to the swept liquidity extreme is the most
+# structurally certain invalidation point (price already proved it by
+# sweeping there), so it keeps the base minimum. A stop anchored only
+# to the entry-zone boundary is less certain and is required to earn a
+# bit more reward. A stop that fell back to raw ATR (no structural
+# confirmation at all) is required to earn the most, since there is no
+# structural reason to believe that level actually invalidates the idea.
+MIN_RISK_REWARD_BY_STOP_SOURCE: Final[dict] = {
+    "LIQUIDITY_SWEEP": 1.80,
+    "ENTRY_ZONE": 2.00,
+    "ATR": 2.50,
+}
+
+# Partial exits. TP1 locks in a conservative slice of the position at a
+# fixed, modest risk-reward so a trade that reverses after moving in
+# favor still books a partial win; TP2 is the full, structurally
+# selected target for the remainder of the position.
+PARTIAL_EXIT_TP1_RISK_REWARD_RATIO: Final[float] = 1.0
+PARTIAL_EXIT_TP1_PERCENTAGE: Final[float] = 0.50
+PARTIAL_EXIT_TP2_PERCENTAGE: Final[float] = 0.50
+
 # Confidence scoring layer weights (must sum to SCORE_MAXIMUM_RAW)
 # Hard-mandatory layers (pipeline gates; failure rejects before scoring runs):
 SCORE_MARKET_REGIME: Final[int] = 15
@@ -139,3 +178,23 @@ MEDIUM_SIGNAL_MINIMUM_SCORE: Final[float] = 70.0
 # app.config.settings.Settings.min_publishable_confidence_score so
 # signal frequency can be tuned via the MIN_PUBLISHABLE_CONFIDENCE_SCORE
 # env var without a code change/redeploy. Default is unchanged (80.0).
+
+# Stage 5 (Order Flow) Open Interest fetch retry configuration. The
+# provider itself never raises (it swallows every failure into an
+# empty list), so an empty result -- not an exception -- is the
+# retryable signal: API delay is often transient, so it's worth a
+# short retry before treating OI confirmation as UNAVAILABLE for this
+# scan. Kept small (well under the scan cycle interval) so a
+# persistently unavailable OI feed never meaningfully slows scanning.
+OPEN_INTEREST_FETCH_MAX_ATTEMPTS: Final[int] = 2
+OPEN_INTEREST_FETCH_RETRY_BACKOFF_SECONDS: Final[float] = 0.5
+
+# Stage 4 (IFVG) validity windows, in candles after a confirmed BOS's
+# break_candle_index. N1 bounds how long the tighter IFVG flip+retest
+# path (Grade A) is looked for before falling back to the wider,
+# coarser BOS-zone retest path (Grade B), which gets its own,
+# independent allowance N2 -- a coarser zone can reasonably be granted
+# a different (typically longer) window than the tighter IFVG zone
+# without the two being coupled to the same constant.
+IFVG_VALIDITY_WINDOW_CANDLES: Final[int] = 12
+BOS_ZONE_RETEST_VALIDITY_WINDOW_CANDLES: Final[int] = 20

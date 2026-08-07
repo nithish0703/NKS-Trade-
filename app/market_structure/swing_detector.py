@@ -19,10 +19,19 @@ def _make_swing_id(
     timeframe: str,
     timestamp,
     swing_type: SwingType,
-    candle_index: int,
 ) -> str:
-    """Generate a stable, deterministic swing ID."""
-    raw = f"{symbol}|{timeframe}|{timestamp.isoformat()}|{swing_type.value}|{candle_index}"
+    """
+    Generate a stable, deterministic swing ID.
+
+    Deliberately keyed on the swing candle's timestamp (not its
+    position/index within whatever candle window happened to be fetched
+    for this scan) so the same real swing always produces the same ID
+    across scan cycles, even as the fetched candle window rolls forward.
+    Candle timestamps are already validated as strictly ascending and
+    therefore unique per symbol/timeframe, so timestamp alone identifies
+    the candle just as precisely as index did.
+    """
+    raw = f"{symbol}|{timeframe}|{timestamp.isoformat()}|{swing_type.value}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
 
 
@@ -128,7 +137,7 @@ class SwingDetector:
                 swings.append(
                     SwingPoint(
                         swing_id=_make_swing_id(
-                            symbol, timeframe, candle.timestamp, SwingType.HIGH, index
+                            symbol, timeframe, candle.timestamp, SwingType.HIGH
                         ),
                         symbol=symbol,
                         timeframe=timeframe,
@@ -146,7 +155,7 @@ class SwingDetector:
                 swings.append(
                     SwingPoint(
                         swing_id=_make_swing_id(
-                            symbol, timeframe, candle.timestamp, SwingType.LOW, index
+                            symbol, timeframe, candle.timestamp, SwingType.LOW
                         ),
                         symbol=symbol,
                         timeframe=timeframe,
