@@ -179,15 +179,28 @@ MEDIUM_SIGNAL_MINIMUM_SCORE: Final[float] = 70.0
 # signal frequency can be tuned via the MIN_PUBLISHABLE_CONFIDENCE_SCORE
 # env var without a code change/redeploy. Default is unchanged (80.0).
 
-# Stage 5 (Order Flow) Open Interest fetch retry configuration. The
-# provider itself never raises (it swallows every failure into an
-# empty list), so an empty result -- not an exception -- is the
-# retryable signal: API delay is often transient, so it's worth a
-# short retry before treating OI confirmation as UNAVAILABLE for this
-# scan. Kept small (well under the scan cycle interval) so a
-# persistently unavailable OI feed never meaningfully slows scanning.
-OPEN_INTEREST_FETCH_MAX_ATTEMPTS: Final[int] = 2
-OPEN_INTEREST_FETCH_RETRY_BACKOFF_SECONDS: Final[float] = 0.5
+# Stage 5 (Order Flow) Volume Profile confirmation configuration. The
+# profile is built entirely from already-fetched entry-timeframe
+# candles (no additional market-data fetch), over the most recent
+# `lookback` candles, split into `bins` equal-width price buckets.
+# `value_area` is the percentage of total volume the Value Area
+# (VAH/VAL) is expanded to hold, expanding outward from the POC bin.
+VOLUME_PROFILE_ENABLED: Final[bool] = True
+VOLUME_PROFILE_LOOKBACK: Final[int] = 200
+VOLUME_PROFILE_BINS: Final[int] = 100
+VOLUME_PROFILE_VALUE_AREA_PERCENT: Final[float] = 70.0
+
+# A bin is classified a High Volume Node when its volume is at least
+# this fraction of the profile's busiest (POC) bin, and a Low Volume
+# Node when at or below this fraction -- both only among bins that
+# carried any volume at all, so an untraded bin is never mistaken for
+# a genuine low-volume node.
+VOLUME_PROFILE_HVN_THRESHOLD_RATIO: Final[float] = 0.70
+VOLUME_PROFILE_LVN_THRESHOLD_RATIO: Final[float] = 0.15
+
+# How close current price must be to a node/POC/VAH/VAL to count as
+# "at" it, expressed as a fraction of current price.
+VOLUME_PROFILE_PROXIMITY_RATIO: Final[float] = 0.002
 
 # Stage 4 (IFVG) validity windows, in candles after a confirmed BOS's
 # break_candle_index. N1 bounds how long the tighter IFVG flip+retest

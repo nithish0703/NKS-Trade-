@@ -5,8 +5,8 @@ Unit tests for app.strategy_pipeline.cvd.
 from datetime import datetime, timedelta, timezone
 
 from app.models.candle import Candle
+from app.strategy_pipeline.confirmation_status import ConfirmationStatus
 from app.strategy_pipeline.cvd import calculate_cvd_series, evaluate_cvd_confirmation
-from app.strategy_pipeline.open_interest import ConfirmationStatus
 
 UTC_NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)
 

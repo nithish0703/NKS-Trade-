@@ -130,72 +130,6 @@ class TestMarketDataUnavailable:
             await _analyze(engine)
 
 
-class TestFetchOpenInterestWithRetry:
-    """
-    Unit tests for PipelineStrategyEngine._fetch_open_interest_with_retry
-    in isolation (Stage 5's OI fetch retry/tracking), independent of the
-    rest of the pipeline chain.
-    """
-
-    async def test_immediate_success_returns_history_and_no_failure_flag(self):
-        provider = MagicMock()
-        provider.fetch_open_interest_history = AsyncMock(return_value=["point"])
-        engine = _build_engine(market_data_provider=provider)
-
-        history, fetch_failed = await engine._fetch_open_interest_with_retry("BTC-USDT")
-
-        assert history == ["point"]
-        assert fetch_failed is False
-        assert provider.fetch_open_interest_history.await_count == 1
-
-    async def test_retries_once_on_empty_result_then_succeeds(self):
-        provider = MagicMock()
-        provider.fetch_open_interest_history = AsyncMock(side_effect=[[], ["point"]])
-        engine = _build_engine(market_data_provider=provider)
-
-        history, fetch_failed = await engine._fetch_open_interest_with_retry("BTC-USDT")
-
-        assert history == ["point"]
-        assert fetch_failed is False
-        assert provider.fetch_open_interest_history.await_count == 2
-
-    async def test_exhausts_retries_and_reports_fetch_failed(self):
-        provider = MagicMock()
-        provider.fetch_open_interest_history = AsyncMock(return_value=[])
-        engine = _build_engine(market_data_provider=provider)
-
-        history, fetch_failed = await engine._fetch_open_interest_with_retry("BTC-USDT")
-
-        assert history == []
-        assert fetch_failed is True
-        assert provider.fetch_open_interest_history.await_count == 2  # OPEN_INTEREST_FETCH_MAX_ATTEMPTS
-
-    async def test_exception_is_treated_the_same_as_empty_result(self):
-        # The provider contract never raises in production, but a
-        # caught exception here must still be handled as a retryable
-        # empty result rather than propagating and crashing the scan.
-        provider = MagicMock()
-        provider.fetch_open_interest_history = AsyncMock(side_effect=RuntimeError("boom"))
-        engine = _build_engine(market_data_provider=provider)
-
-        history, fetch_failed = await engine._fetch_open_interest_with_retry("BTC-USDT")
-
-        assert history == []
-        assert fetch_failed is True
-        assert provider.fetch_open_interest_history.await_count == 2
-
-    async def test_does_not_retry_after_first_success(self):
-        provider = MagicMock()
-        provider.fetch_open_interest_history = AsyncMock(return_value=["a", "b"])
-        engine = _build_engine(market_data_provider=provider)
-
-        history, fetch_failed = await engine._fetch_open_interest_with_retry("BTC-USDT")
-
-        assert history == ["a", "b"]
-        assert fetch_failed is False
-        assert provider.fetch_open_interest_history.await_count == 1
-
-
 def _entry_candle(index: int, open_: float, high: float, low: float, close: float, volume: float = 10.0) -> Candle:
     return Candle(
         timestamp=UTC_NOW + timedelta(minutes=index),
@@ -318,18 +252,21 @@ class TestGradeBIntegration:
             entry_candles.append(_entry_candle(len(entry_candles), 110.0, 111.0, 109.0, 110.0))
         entry_candles[bos_zone_retest_index] = _entry_candle(bos_zone_retest_index, 104.0, 104.5, 103.0, 104.0)
 
-        # A few extra trailing candles for Stage 5's CVD/OI sub-checks,
-        # engineered so both directional checks agree with BUY: net
-        # price rise, and a CVD higher-low swing pattern (two clearly
-        # separated dip cycles, spaced for evaluate_order_flow's default
+        # A few extra trailing candles for Stage 5's CVD/Volume Profile
+        # sub-checks, engineered so both directional checks agree with
+        # BUY: a CVD higher-low swing pattern (two clearly separated dip
+        # cycles, spaced for evaluate_order_flow's default
         # left_strength=3/right_strength=3 swing detection -- unlike
         # test_cvd.py/test_order_flow.py's own fixtures, this engine
         # test cannot override those strengths since engine.py always
         # calls evaluate_order_flow with its defaults) via the
-        # bullish/bearish volume-delta proxy (see app.strategy_pipeline.cvd).
+        # bullish/bearish volume-delta proxy (see app.strategy_pipeline.cvd),
+        # and a price level (108.0) that lands the resulting Volume
+        # Profile's dominant HVN directly under the final close, so the
+        # default-config Volume Profile sub-check also confirms BUY.
         cvd_start = len(entry_candles)
         deltas = [6, 6, 6, -10, -10, -10, -10, -10, 6, 6, 6, 6, 6, 6, -5, -5, -5, -5, -5, 6, 6, 6]
-        price = 120.0
+        price = 108.0
         for offset, delta in enumerate(deltas):
             index = cvd_start + offset
             if delta > 0:
@@ -508,13 +445,6 @@ class TestGradeBIntegration:
                 HTF_SECONDARY: [htf_candle],
                 HTF_PRIMARY: [htf_candle],
             }
-        )
-        # Confirms OI for BUY: price up and OI up over the window.
-        provider.fetch_open_interest_history = AsyncMock(
-            return_value=[
-                MagicMock(open_interest=1000.0),
-                MagicMock(open_interest=1100.0),
-            ]
         )
 
         engine = _build_engine(

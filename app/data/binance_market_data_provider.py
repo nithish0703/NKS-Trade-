@@ -29,7 +29,6 @@ from app.data.market_data_errors import (
     MarketDataResponseError,
     MarketDataValidationError,
 )
-from app.data.open_interest_point import OpenInterestPoint
 from app.data.provider_base import MarketDataProvider
 from app.data.ticker_snapshot import TickerSnapshot
 from app.models.candle import Candle
@@ -38,15 +37,7 @@ KLINE_ENDPOINT = "/fapi/v1/klines"
 TICKER_24HR_ENDPOINT = "/fapi/v1/ticker/24hr"
 TICKER_PRICE_ENDPOINT = "/fapi/v1/ticker/price"
 OPEN_INTEREST_ENDPOINT = "/fapi/v1/openInterest"
-OPEN_INTEREST_HISTORY_ENDPOINT = "/futures/data/openInterestHist"
 MAX_CANDLE_LIMIT = 1500
-MAX_OPEN_INTEREST_LIMIT = 500
-
-# Binance Futures' supported Open Interest statistics granularities
-# (GET /futures/data/openInterestHist `period` parameter).
-_VALID_OPEN_INTEREST_INTERVALS = frozenset(
-    {"5m", "15m", "30m", "1h", "2h", "4h", "6h", "12h", "1d"}
-)
 
 # Binance Futures kline row layout (a list of 12 fields):
 # [openTime, open, high, low, close, volume, closeTime, quoteVolume,
@@ -937,92 +928,3 @@ class BinanceFuturesMarketDataProvider(MarketDataProvider):
             return None
 
         return _to_optional_float(payload.get("openInterest"))
-
-    async def fetch_open_interest_history(
-        self, symbol: str, interval: str, limit: int
-    ) -> list[OpenInterestPoint]:
-        """
-        Fetch a recent Open Interest time series for a single symbol
-        from Binance Futures' public Open Interest statistics endpoint,
-        for Open Interest Confirmation.
-
-        `interval` must be one of Binance's supported granularities
-        ("5m", "15m", "30m", "1h", "2h", "4h", "6h", "12h", "1d"). Uses
-        only public market data (no API keys). Never raises: on any
-        request, response, or validation failure -- including an
-        unsupported `interval` or non-positive `limit` -- this returns
-        an empty list so callers can treat OI confirmation as
-        unavailable rather than fabricating a rising/falling signal.
-        Returned points are in ascending chronological order (Binance
-        already returns oldest-first).
-        """
-        if interval not in _VALID_OPEN_INTEREST_INTERVALS:
-            return []
-        if limit <= 0 or limit > MAX_OPEN_INTEREST_LIMIT:
-            return []
-
-        try:
-            validated_symbol = self._validate_symbol(symbol)
-        except ValueError:
-            return []
-
-        binance_symbol = _to_binance_symbol(validated_symbol)
-
-        try:
-            response = await self._client.get(
-                OPEN_INTEREST_HISTORY_ENDPOINT,
-                params={"symbol": binance_symbol, "period": interval, "limit": str(limit)},
-            )
-        except httpx.HTTPError:
-            return []
-
-        if response.status_code != 200:
-            return []
-
-        try:
-            payload = response.json()
-        except ValueError:
-            return []
-
-        if not isinstance(payload, list):
-            return []
-
-        points: list[OpenInterestPoint] = []
-        for row in payload:
-            point = _parse_open_interest_history_row(row, validated_symbol)
-            if point is not None:
-                points.append(point)
-
-        points.sort(key=lambda p: p.timestamp)
-        return points
-
-
-def _parse_open_interest_history_row(row: object, symbol: str) -> Optional[OpenInterestPoint]:
-    """
-    Parse a single row from Binance's Open Interest history response
-    into an OpenInterestPoint. Never raises; a malformed row is skipped
-    rather than failing the whole batch.
-
-    Binance's `sumOpenInterestValue` field is already denominated in the
-    quote asset (USDT for a USDT-M pair), matching this application's
-    `open_interest` field (expected in USDT) directly -- no
-    contracts-to-USDT conversion is needed here, unlike the current
-    per-symbol snapshot used by `fetch_all_linear_tickers`.
-    """
-    if not isinstance(row, dict):
-        return None
-
-    open_interest = _to_optional_float(row.get("sumOpenInterestValue"))
-    if open_interest is None:
-        return None
-
-    timestamp_ms = row.get("timestamp")
-    try:
-        timestamp = datetime.fromtimestamp(int(timestamp_ms) / 1000, tz=timezone.utc)
-    except (TypeError, ValueError):
-        return None
-
-    try:
-        return OpenInterestPoint(symbol=symbol, timestamp=timestamp, open_interest=open_interest)
-    except ValueError:
-        return None

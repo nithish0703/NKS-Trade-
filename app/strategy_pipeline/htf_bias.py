@@ -7,7 +7,7 @@ requires 4H+1H agreement), this stage reads the 1H timeframe alone.
 
 This stage is the pipeline's direction-setter: it runs first and its
 `permitted_direction` becomes the only trade direction every later
-stage (Liquidity Sweep, BOS, IFVG, OI+CVD) is evaluated against. A
+stage (Liquidity Sweep, BOS, IFVG, Volume Profile+CVD) is evaluated against. A
 RANGE/UNKNOWN 1H trend permits no direction at all, so the symbol is
 skipped for this scan.
 """

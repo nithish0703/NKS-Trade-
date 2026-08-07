@@ -2,7 +2,7 @@
 Stage decision: aggregates the 5 pipeline stages' pass/fail outcomes
 into a single binary CONFIRMED/REJECTED decision.
 
-All 5 stages (HTF Bias, Liquidity Sweep, BOS, IFVG, OI+CVD) are
+All 5 stages (HTF Bias, Liquidity Sweep, BOS, IFVG, Volume Profile+CVD) are
 hard-mandatory gates -- the calling pipeline only reaches this
 aggregation once every stage has already been evaluated. There is no
 numeric score, percentage, or confidence tier anywhere in this module:

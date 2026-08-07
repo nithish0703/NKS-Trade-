@@ -11,7 +11,7 @@ Flow:
         v
     IFVG (Good entry location?)
         v
-    OI + CVD (Order flow agrees?)
+    Volume Profile + CVD (Order flow agrees?)
         v
     Signal
 

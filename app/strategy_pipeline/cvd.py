@@ -1,5 +1,5 @@
 """
-CVD (Cumulative Volume Delta) sub-check, part of Stage 5 (OI + CVD).
+CVD (Cumulative Volume Delta) sub-check, part of Stage 5 (Volume Profile + CVD).
 
   BUY:  CVD higher low
   SELL: CVD lower high
@@ -19,7 +19,7 @@ from typing import Optional, Sequence
 from pydantic import BaseModel, ConfigDict
 
 from app.models.candle import Candle
-from app.strategy_pipeline.open_interest import ConfirmationStatus
+from app.strategy_pipeline.confirmation_status import ConfirmationStatus
 
 
 class CvdPoint(BaseModel):

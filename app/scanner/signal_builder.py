@@ -141,8 +141,8 @@ class InstitutionalSignalBuilder:
         return (
             f"{direction} bias confirmed by a {liquidity_type} liquidity sweep and a "
             f"{structure_type} structure break (BOS). Entry at an inverted Fair Value "
-            f"Gap ({zone_type}) that flipped and was retested, with order flow (OI + CVD) "
-            f"agreeing with the trade direction. "
+            f"Gap ({zone_type}) that flipped and was retested, with order flow "
+            f"(Volume Profile + CVD) agreeing with the trade direction. "
             f"Stop loss sourced from {stop_loss_source_text}, take profit sourced from "
             f"{take_profit_source_text}, risk-reward ratio {risk_reward_ratio:.2f}. "
             f"This reflects confirmed setup facts only and is not a guarantee of outcome."
