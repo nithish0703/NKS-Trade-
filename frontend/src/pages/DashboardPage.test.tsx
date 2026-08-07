@@ -311,6 +311,8 @@ describe("DashboardPage", () => {
         validation_progress_max_score: 6,
         validation_progress_percentage: 33,
         last_executed_layer: "HTF_BIAS",
+        order_flow_confidence: null,
+        order_flow_reason: null,
       },
     ]);
 

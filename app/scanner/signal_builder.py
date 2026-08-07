@@ -19,13 +19,15 @@ class InstitutionalSignalBuilder:
     Builds a final, immutable Signal from a VALID PairScanResult,
     reusing only already-computed pipeline/risk results.
 
-    A Signal is built whenever every required strategy condition
-    (all hard-mandatory pipeline stages: HTF Bias, Liquidity Sweep,
-    BOS, IFVG, Order Flow, Risk Management) has passed -- there is no
-    intermediate score or confidence tier gating this. Never
-    recalculates market structure, indicators, liquidity, zones, or
-    risk management, and never builds a signal from a rejected,
-    duplicate, or errored scanner result.
+    A Signal is built whenever every hard-mandatory pipeline stage
+    (HTF Bias, Liquidity Sweep, BOS, IFVG, Risk Management) has passed.
+    Order Flow (Volume Profile + CVD) is a soft confidence layer, not
+    a gate -- it never blocks a Signal from being built, and its
+    HIGH/MEDIUM/LOW confidence tier is only reported in the signal's
+    `institutional_reason` text, never used to reject or score the
+    setup. Never recalculates market structure, indicators, liquidity,
+    zones, or risk management, and never builds a signal from a
+    rejected, duplicate, or errored scanner result.
     """
 
     def build(self, pair_scan_result: PairScanResult) -> Signal:
@@ -137,12 +139,13 @@ class InstitutionalSignalBuilder:
         take_profit_source_text = (
             take_profit_source.value if take_profit_source is not None else "UNKNOWN"
         )
+        order_flow_confidence_text = pipeline_result.order_flow_confidence or "UNKNOWN"
 
         return (
             f"{direction} bias confirmed by a {liquidity_type} liquidity sweep and a "
             f"{structure_type} structure break (BOS). Entry at an inverted Fair Value "
             f"Gap ({zone_type}) that flipped and was retested, with order flow "
-            f"(Volume Profile + CVD) agreeing with the trade direction. "
+            f"(Volume Profile + CVD) confidence: {order_flow_confidence_text}. "
             f"Stop loss sourced from {stop_loss_source_text}, take profit sourced from "
             f"{take_profit_source_text}, risk-reward ratio {risk_reward_ratio:.2f}. "
             f"This reflects confirmed setup facts only and is not a guarantee of outcome."

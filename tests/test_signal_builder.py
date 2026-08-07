@@ -199,6 +199,28 @@ class TestSignalBuilderSuccess:
         assert signal_one.institutional_reason == signal_two.institutional_reason
         assert "guarantee" not in signal_one.institutional_reason.lower() or "not a guarantee" in signal_one.institutional_reason.lower()
 
+    def test_signal_is_built_even_with_low_order_flow_confidence(self):
+        # Order Flow (Volume Profile + CVD) is a soft confidence layer:
+        # a Signal must still be built when confidence is LOW, and the
+        # reason text must report the actual tier honestly rather than
+        # claiming order flow "agreed".
+        builder = InstitutionalSignalBuilder()
+        pipeline_result = _valid_pipeline_result().model_copy(
+            update={"order_flow_confidence": "LOW", "order_flow_reason": "LOW_CONFIDENCE: neither confirmed."}
+        )
+        signal = builder.build(_pair_scan_result(pipeline_result))
+        assert signal.status == SignalStatus.CONFIRMED
+        assert "LOW" in signal.institutional_reason
+        assert "agreeing with the trade direction" not in signal.institutional_reason
+
+    def test_institutional_reason_reports_high_confidence(self):
+        builder = InstitutionalSignalBuilder()
+        pipeline_result = _valid_pipeline_result().model_copy(
+            update={"order_flow_confidence": "HIGH", "order_flow_reason": "HIGH_CONFIDENCE: both confirmed."}
+        )
+        signal = builder.build(_pair_scan_result(pipeline_result))
+        assert "HIGH" in signal.institutional_reason
+
     def test_dynamic_sl_retained(self):
         builder = InstitutionalSignalBuilder()
         risk_plan = _real_risk_plan(stop_loss=93.5)

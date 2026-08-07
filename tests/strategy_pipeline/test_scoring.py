@@ -68,8 +68,8 @@ class TestCalculatePipelineDecision:
             assert outcome.passed is True
 
     def test_failed_stage_outcome_carries_its_reason(self):
-        result = calculate_pipeline_decision(_with_failure("ORDER_FLOW"))
-        failed_outcome = next(o for o in result.stage_outcomes if o.stage_name == "ORDER_FLOW")
+        result = calculate_pipeline_decision(_with_failure("IFVG"))
+        failed_outcome = next(o for o in result.stage_outcomes if o.stage_name == "IFVG")
         assert failed_outcome.passed is False
         assert failed_outcome.reason == "fail"
 
@@ -87,3 +87,26 @@ class TestCalculatePipelineDecision:
         assert not hasattr(result, "normalized_score")
         assert not hasattr(result, "classification")
         assert not hasattr(result, "publishable")
+
+
+class TestOrderFlowIsNotAHardGate:
+    """
+    ORDER_FLOW (Volume Profile + CVD) is a soft confidence layer, not
+    one of the 4 hard-mandatory gates this module tracks.
+    """
+
+    def test_order_flow_is_not_in_stage_names(self):
+        assert "ORDER_FLOW" not in STAGE_NAMES
+        assert set(STAGE_NAMES) == {"HTF_BIAS", "LIQUIDITY_SWEEP", "BOS", "IFVG"}
+
+    def test_a_failing_order_flow_entry_is_ignored(self):
+        # engine.py always populates an "ORDER_FLOW" entry in
+        # stage_results (with passed=True, since it never blocks), but
+        # even a hypothetical failing entry must never affect the
+        # binary decision -- it simply isn't one of STAGE_NAMES.
+        results = dict(ALL_PASSING)
+        results["ORDER_FLOW"] = ValidationResult.failure(layer_name="ORDER_FLOW", reason="low confidence")
+        result = calculate_pipeline_decision(results)
+        assert result.confirmed is True
+        assert result.failed_stages == []
+        assert all(outcome.stage_name != "ORDER_FLOW" for outcome in result.stage_outcomes)

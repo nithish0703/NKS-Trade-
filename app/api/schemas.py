@@ -60,6 +60,14 @@ class ScanningCoin(BaseModel):
     validation_progress_percentage: Optional[float] = None
     last_executed_layer: Optional[str] = None
 
+    # Stage 5 (Volume Profile + CVD) confidence tier ("HIGH"/"MEDIUM"/
+    # "LOW") and its human-readable reasoning. A soft confidence signal
+    # only -- `failed_layer` can never be "ORDER_FLOW" (it is not a
+    # gate), and these fields are None until Stage 5 has run (i.e. once
+    # HTF Bias, Liquidity Sweep, BOS, and IFVG have all passed).
+    order_flow_confidence: Optional[str] = None
+    order_flow_reason: Optional[str] = None
+
     # Dashboard-only visual cue: raw price direction of the most recent
     # completed entry-timeframe candle vs. the one before it. A pure
     # chart observation -- never HTF-bias-derived, never a substitute

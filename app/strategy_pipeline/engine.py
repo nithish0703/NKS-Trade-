@@ -12,7 +12,7 @@ Flow:
         v
     IFVG (Good entry location?)
         v
-    Volume Profile + CVD (Order flow agrees?)
+    Volume Profile + CVD (Order flow confidence -- soft, non-blocking)
         v
     Signal
 
@@ -55,17 +55,21 @@ from app.strategy_pipeline.ema_trend import evaluate_ema_trend
 from app.strategy_pipeline.htf_bias import HtfBiasDirection, evaluate_htf_bias
 from app.strategy_pipeline.ifvg import evaluate_ifvg
 from app.strategy_pipeline.liquidity_sweep import validate_liquidity_sweep
-from app.strategy_pipeline.order_flow import evaluate_order_flow
+from app.strategy_pipeline.order_flow import OrderFlowResult, evaluate_order_flow
 from app.strategy_pipeline.premium_discount import evaluate_premium_discount_zone
 from app.strategy_pipeline.scoring import calculate_pipeline_decision
 
 _REQUIRED_TIMEFRAMES = (ENTRY_TIMEFRAME, HTF_SECONDARY, HTF_PRIMARY)
 
-# (stage_order, layer_name). All 5 stages are hard-mandatory: failure at
-# any stage rejects the pipeline immediately, matching the diagram's
-# sequential arrows -- there is no soft-scoring stage in this pipeline,
-# and no scoring/classification stage either: the final decision is
-# purely binary CONFIRMED/REJECTED.
+# (stage_order, layer_name). All stages except ORDER_FLOW are
+# hard-mandatory: failure at any of those rejects the pipeline
+# immediately, matching the diagram's sequential arrows. ORDER_FLOW
+# (Volume Profile + CVD) is a soft confidence layer -- it always
+# executes once reached and never rejects the pipeline by itself; its
+# outcome is a HIGH/MEDIUM/LOW confidence tier carried on the result,
+# not a pass/fail gate. There is no numeric score/classification stage
+# either: the final gate decision is purely binary CONFIRMED/REJECTED,
+# independent of ORDER_FLOW's confidence tier.
 _STAGE_DEFINITIONS: tuple[tuple[int, str], ...] = (
     (1, "HTF_BIAS"),
     (2, "LIQUIDITY_SWEEP"),
@@ -74,7 +78,7 @@ _STAGE_DEFINITIONS: tuple[tuple[int, str], ...] = (
     (5, "ORDER_FLOW"),
     (6, "RISK_MANAGEMENT"),
 )
-_MANDATORY_STAGES = frozenset(name for _, name in _STAGE_DEFINITIONS)
+_MANDATORY_STAGES = frozenset(name for _, name in _STAGE_DEFINITIONS if name != "ORDER_FLOW")
 
 
 def _now_ms() -> float:
@@ -83,8 +87,10 @@ def _now_ms() -> float:
 
 class PipelineStrategyEngine:
     """
-    Orchestrates the 5-stage strategy pipeline (HTF Bias, Liquidity
-    Sweep, BOS, IFVG, Volume Profile+CVD) for a single symbol.
+    Orchestrates the strategy pipeline (HTF Bias, Liquidity Sweep, BOS,
+    IFVG as hard-mandatory gates; Volume Profile+CVD as a soft
+    confidence layer; Risk Management as the final hard-mandatory
+    gate) for a single symbol.
     """
 
     def __init__(
@@ -344,19 +350,35 @@ class PipelineStrategyEngine:
         if not ifvg_validation.passed:
             return self._build_rejected_result(context, expected_direction, stages, "IFVG", ifvg_validation)
 
-        # Stage 5: VOLUME_PROFILE + CVD (order flow agrees?)
+        # Stage 5: VOLUME_PROFILE + CVD (order flow confidence -- soft,
+        # non-blocking). Always executes once reached and never rejects
+        # the pipeline: Stages 1-4 above are the hard-mandatory gate,
+        # and the pipeline always continues to Stage 6 from here. The
+        # resulting HIGH/MEDIUM/LOW confidence tier is carried on the
+        # result for display/notification only.
         start = _now_ms()
         order_flow_result = evaluate_order_flow(
             entry_candles,
             expected_direction=expected_direction,
         )
         order_flow_validation = ValidationResult(
-            passed=order_flow_result.passed, layer_name="ORDER_FLOW", reason=order_flow_result.reason
+            passed=True, layer_name="ORDER_FLOW", reason=order_flow_result.reason
         )
         stage_results["ORDER_FLOW"] = order_flow_validation
-        stages.append(self._stage(5, "ORDER_FLOW", order_flow_validation, start))
-        if not order_flow_validation.passed:
-            return self._build_rejected_result(context, expected_direction, stages, "ORDER_FLOW", order_flow_validation)
+        stages.append(
+            self._stage(
+                5,
+                "ORDER_FLOW",
+                order_flow_validation,
+                start,
+                mandatory=False,
+                metadata={
+                    "confidence": order_flow_result.confidence.value,
+                    "volume_profile_passed": order_flow_result.volume_profile.passed,
+                    "cvd_passed": order_flow_result.cvd.passed,
+                },
+            )
+        )
 
         # Stage 6: RISK_MANAGEMENT
         start = _now_ms()
@@ -368,7 +390,14 @@ class PipelineStrategyEngine:
                 reason="Entry zone or ATR is unavailable for risk calculation.",
             )
             stages.append(self._stage(6, "RISK_MANAGEMENT", risk_validation, start, mandatory=True))
-            return self._build_rejected_result(context, expected_direction, stages, "RISK_MANAGEMENT", risk_validation)
+            return self._build_rejected_result(
+                context,
+                expected_direction,
+                stages,
+                "RISK_MANAGEMENT",
+                risk_validation,
+                order_flow_result=order_flow_result,
+            )
 
         entry_price = entry_candles[-1].close
         risk_plan = self._risk_management_calculator.calculate(
@@ -393,14 +422,23 @@ class PipelineStrategyEngine:
         stages.append(self._stage(6, "RISK_MANAGEMENT", risk_validation, start))
         context = context.with_updates(risk_plan=risk_plan)
         if not risk_plan.valid:
-            return self._build_rejected_result(context, expected_direction, stages, "RISK_MANAGEMENT", risk_validation)
+            return self._build_rejected_result(
+                context,
+                expected_direction,
+                stages,
+                "RISK_MANAGEMENT",
+                risk_validation,
+                order_flow_result=order_flow_result,
+            )
 
-        # Final binary decision: every stage above already rejected
-        # immediately on its own failure, so by construction every
-        # stage_results entry is passed=True here. This aggregation is
-        # kept as an explicit audit record ("all required conditions
-        # were satisfied") rather than inlining a bare True -- it never
-        # computes or exposes a score, percentage, or confidence tier.
+        # Final binary decision: every hard-mandatory stage above
+        # already rejected immediately on its own failure, so by
+        # construction every stage_results entry is passed=True here
+        # (ORDER_FLOW's soft confidence tier never contributes a
+        # failure). This aggregation is kept as an explicit audit
+        # record ("all required conditions were satisfied") rather than
+        # inlining a bare True -- it never computes or exposes a score,
+        # percentage, or classification tier of its own.
         pipeline_decision = calculate_pipeline_decision(stage_results)
 
         return StrategyPipelineResult(
@@ -418,6 +456,8 @@ class PipelineStrategyEngine:
             selected_structure_break=bos_result.structure_break,
             selected_entry_zone=entry_zone,
             risk_plan=risk_plan,
+            order_flow_confidence=order_flow_result.confidence.value,
+            order_flow_reason=order_flow_result.reason,
         )
 
     @staticmethod
@@ -443,6 +483,7 @@ class PipelineStrategyEngine:
         validation_result: ValidationResult,
         start_ms: float,
         mandatory: bool = True,
+        metadata: Optional[dict] = None,
     ) -> PipelineStageResult:
         duration = max(0.0, _now_ms() - start_ms) if start_ms else 0.0
         return PipelineStageResult(
@@ -454,6 +495,7 @@ class PipelineStrategyEngine:
             reason=validation_result.reason,
             validation_result=validation_result,
             duration_ms=duration,
+            metadata=metadata,
         )
 
     def _build_rejected_result(
@@ -463,6 +505,7 @@ class PipelineStrategyEngine:
         stages: list[PipelineStageResult],
         failed_layer: str,
         failed_validation: ValidationResult,
+        order_flow_result: Optional[OrderFlowResult] = None,
     ) -> StrategyPipelineResult:
         executed_orders = {s.stage_order for s in stages}
         remaining_stages = list(stages)
@@ -493,4 +536,6 @@ class PipelineStrategyEngine:
             rejection_reason=failed_validation.reason or f"{failed_layer} validation failed.",
             market_context=context,
             stages=remaining_stages,
+            order_flow_confidence=order_flow_result.confidence.value if order_flow_result else None,
+            order_flow_reason=order_flow_result.reason if order_flow_result else None,
         )

@@ -1,12 +1,16 @@
 """
-Stage decision: aggregates the 5 pipeline stages' pass/fail outcomes
-into a single binary CONFIRMED/REJECTED decision.
+Stage decision: aggregates the 4 hard-mandatory pipeline stages'
+pass/fail outcomes into a single binary CONFIRMED/REJECTED decision.
 
-All 5 stages (HTF Bias, Liquidity Sweep, BOS, IFVG, Volume Profile+CVD) are
-hard-mandatory gates -- the calling pipeline only reaches this
-aggregation once every stage has already been evaluated. There is no
-numeric score, percentage, or confidence tier anywhere in this module:
-a setup is CONFIRMED only when every stage passed, and REJECTED
+HTF Bias, Liquidity Sweep, BOS, and IFVG are hard-mandatory gates --
+the calling pipeline only reaches this aggregation once every one of
+them has already been evaluated. ORDER_FLOW (Volume Profile + CVD) is
+deliberately excluded here: it is a soft confidence layer that never
+gates CONFIRMED/REJECTED (see app.strategy_pipeline.order_flow), so it
+is tracked separately via StrategyPipelineResult.order_flow_confidence
+rather than through this binary aggregator. There is no numeric score,
+percentage, or confidence tier anywhere in this module: a setup is
+CONFIRMED only when every tracked stage passed, and REJECTED
 otherwise, with the specific failing stage(s) reported for diagnostics.
 """
 
@@ -21,7 +25,6 @@ STAGE_NAMES: tuple[str, ...] = (
     "LIQUIDITY_SWEEP",
     "BOS",
     "IFVG",
-    "ORDER_FLOW",
 )
 
 
@@ -37,9 +40,10 @@ class PipelineStageOutcome(BaseModel):
 
 class PipelineDecisionResult(BaseModel):
     """
-    Aggregated binary decision across all 5 pipeline stages for a
-    single setup. Carries no raw/normalized score, percentage, or
-    classification tier -- `confirmed` is the only outcome field.
+    Aggregated binary decision across the 4 hard-mandatory pipeline
+    stages for a single setup. Carries no raw/normalized score,
+    percentage, or classification tier -- `confirmed` is the only
+    outcome field.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -60,13 +64,15 @@ class PipelineDecisionResult(BaseModel):
 
 def calculate_pipeline_decision(stage_results: Mapping[str, ValidationResult]) -> PipelineDecisionResult:
     """
-    Aggregate the pipeline's 5 stage outcomes into a single binary
-    CONFIRMED/REJECTED decision.
+    Aggregate the pipeline's 4 hard-mandatory stage outcomes into a
+    single binary CONFIRMED/REJECTED decision.
 
-    Every one of the 5 stages (HTF_BIAS, LIQUIDITY_SWEEP, BOS, IFVG,
-    ORDER_FLOW) must be present in `stage_results`. A setup is
-    CONFIRMED only when every stage passed; any single failure rejects
-    it -- there is no partial credit, weighting, or intermediate tier.
+    Every one of the 4 stages (HTF_BIAS, LIQUIDITY_SWEEP, BOS, IFVG)
+    must be present in `stage_results`. A setup is CONFIRMED only when
+    every stage passed; any single failure rejects it -- there is no
+    partial credit, weighting, or intermediate tier. ORDER_FLOW may
+    also be present in `stage_results` (the caller always populates
+    it), but it is ignored here since it is not one of STAGE_NAMES.
 
     Raises:
         ValueError: If any required stage is missing from

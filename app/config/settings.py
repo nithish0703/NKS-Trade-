@@ -18,8 +18,6 @@ from app.config.thresholds import (
 )
 from app.utils.chat_ids import parse_chat_ids as _parse_chat_ids
 
-_DEFAULT_MIN_PUBLISHABLE_CONFIDENCE_SCORE = 80.0
-
 load_dotenv()
 
 
@@ -92,17 +90,6 @@ class Settings(BaseSettings):
     # the cap without a code change.
     pair_discovery_maximum_pairs: Optional[int] = Field(
         default=100, alias="PAIR_DISCOVERY_MAXIMUM_PAIRS"
-    )
-
-    # Minimum normalized (0-100) confidence score for a signal to be
-    # considered publishable (STRONG classification's lower bound; a
-    # score at or above PREMIUM_SIGNAL_MINIMUM_SCORE in app.config
-    # .thresholds is always publishable too). Lowering this via env var
-    # surfaces more MEDIUM-adjacent setups without a code change; it
-    # never needs to exceed PREMIUM_SIGNAL_MINIMUM_SCORE (90.0).
-    min_publishable_confidence_score: float = Field(
-        default=_DEFAULT_MIN_PUBLISHABLE_CONFIDENCE_SCORE,
-        alias="MIN_PUBLISHABLE_CONFIDENCE_SCORE",
     )
 
     telegram_enabled: bool = Field(default=False, alias="TELEGRAM_ENABLED")

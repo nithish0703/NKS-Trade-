@@ -384,6 +384,61 @@ class TestScanningCoins:
         assert eth.score is None
         assert eth.failed_layer == "HTF_BIAS"
 
+    async def test_order_flow_confidence_is_exposed_and_failed_layer_is_never_order_flow(self):
+        # ORDER_FLOW (Volume Profile + CVD) is a soft confidence layer:
+        # it can never be the reason a coin shows REJECTED, but its
+        # HIGH/MEDIUM/LOW tier and reasoning must still reach the
+        # dashboard for display.
+        runtime_store = DashboardRuntimeStore()
+        risk_plan = _real_risk_plan()
+        pipeline_result = StrategyPipelineResult(
+            symbol="BTC-USDT",
+            expected_direction="BUY",
+            detection_time_utc=UTC_NOW,
+            status=PipelineStatus.VALID,
+            passed=True,
+            stages=_stages("RISK_MANAGEMENT"),
+            risk_plan=risk_plan,
+            order_flow_confidence="MEDIUM",
+            order_flow_reason="MEDIUM_CONFIDENCE: CVD confirms the BUY trade idea; Volume Profile does not.",
+        )
+        pair_result = PairScanResult(
+            symbol="BTC-USDT",
+            status=PairScanStatus.VALID,
+            pipeline_result=pipeline_result,
+            started_at_utc=UTC_NOW,
+            completed_at_utc=UTC_NOW,
+            duration_ms=1.0,
+        )
+        cycle_result = ScanCycleResult(
+            cycle_id="c1",
+            started_at_utc=UTC_NOW,
+            completed_at_utc=UTC_NOW,
+            duration_ms=1.0,
+            configured_pairs=["BTC-USDT"],
+            attempted_pairs=["BTC-USDT"],
+            valid_results=[pair_result],
+            rejected_results=[],
+            duplicate_results=[],
+            error_results=[],
+            skipped_results=[],
+            pair_results=[pair_result],
+            total_pairs=1,
+            valid_count=1,
+            rejected_count=0,
+            duplicate_count=0,
+            error_count=0,
+            skipped_count=0,
+        )
+        await runtime_store.record_cycle_result(cycle_result)
+        service = _build_service(runtime_store=runtime_store)
+
+        coins = await service.get_scanning_coins()
+        btc = next(c for c in coins if c.coin == "BTC-USDT")
+        assert btc.order_flow_confidence == "MEDIUM"
+        assert btc.order_flow_reason == pipeline_result.order_flow_reason
+        assert btc.failed_layer != "ORDER_FLOW"
+
 
 class TestChartTrend:
     def _candle(self, close: float, symbol="BTC-USDT", timeframe="15m", minutes_ago=0) -> Candle:
@@ -599,6 +654,9 @@ class TestPairScanUpdatedEvents:
             "last_executed_layer": "LIQUIDITY_SWEEP",
             "failed_layer": "LIQUIDITY_SWEEP",
             "reason": "Institutional liquidity sweep missing",
+            # Rejected before Stage 5 (ORDER_FLOW never ran): both None.
+            "order_flow_confidence": None,
+            "order_flow_reason": None,
         }
 
     def test_no_secrets_candles_or_stack_traces_in_event_data(self):

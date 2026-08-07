@@ -46,6 +46,13 @@ export interface ScanningCoin {
   validation_progress_max_score: number | null;
   validation_progress_percentage: number | null;
   last_executed_layer: string | null;
+  // Stage 5 (Volume Profile + CVD) confidence tier ("HIGH"/"MEDIUM"/
+  // "LOW") and its reasoning. A soft confidence signal only -- never a
+  // gate, so `failed_layer` can never be "ORDER_FLOW". Null until
+  // Stage 5 has run (i.e. once HTF Bias, Liquidity Sweep, BOS, and
+  // IFVG have all passed).
+  order_flow_confidence: string | null;
+  order_flow_reason: string | null;
 }
 
 export interface ActiveSignal {

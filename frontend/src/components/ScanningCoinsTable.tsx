@@ -52,7 +52,46 @@ function scoreTooltip(coin: ScanningCoin): string {
     `Failed layer: ${coin.failed_layer ?? "—"}`,
     `Reason: ${coin.reason ?? "—"}`,
   ];
+  if (coin.order_flow_confidence) {
+    lines.push(
+      `Order flow confidence: ${coin.order_flow_confidence}`,
+      `Order flow reasoning: ${coin.order_flow_reason ?? "—"}`,
+    );
+  }
   return lines.join("\n");
+}
+
+// Volume Profile + CVD confidence tier: a soft confluence signal, not
+// a pass/fail gate -- a REJECTED or ERROR coin can still show a
+// confidence tier if the pipeline reached Stage 5 before stopping
+// later (e.g. at Risk Management).
+function confidenceColorClassName(confidence: string): string {
+  switch (confidence) {
+    case "HIGH":
+      return "bg-emerald-50 text-emerald-700";
+    case "MEDIUM":
+      return "bg-amber-50 text-amber-700";
+    case "LOW":
+      return "bg-slate-100 text-slate-500";
+    default:
+      return "bg-slate-100 text-slate-500";
+  }
+}
+
+function ConfidenceBadge({ coin }: { coin: ScanningCoin }) {
+  if (!coin.order_flow_confidence) {
+    return null;
+  }
+  return (
+    <div
+      className={`mt-1 inline-block rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${confidenceColorClassName(
+        coin.order_flow_confidence,
+      )}`}
+      title={coin.order_flow_reason ?? undefined}
+    >
+      {coin.order_flow_confidence} confidence
+    </div>
+  );
 }
 
 const INSUFFICIENT_CANDLES_PATTERN = /insufficient candles.*?a (\d+)-period (\w+)/i;
@@ -239,6 +278,7 @@ export function ScanningCoinsTable({ coins }: ScanningCoinsTableProps) {
                           {inlineReason(coin)}
                         </div>
                       ) : null}
+                      <ConfidenceBadge coin={coin} />
                     </td>
                   </tr>
                 );

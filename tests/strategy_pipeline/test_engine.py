@@ -479,3 +479,270 @@ class TestGradeBIntegration:
         assert result.selected_entry_zone.lower_price == 102.0
         assert result.selected_entry_zone.upper_price == 105.0
         assert result.market_context.selected_entry_zone == result.selected_entry_zone
+
+        # ORDER_FLOW is a soft confidence layer: it always ran (Stages
+        # 1-4 passed) and reports HIGH here since this fixture's
+        # trailing candles were engineered so both Volume Profile and
+        # CVD agree, but it never contributed to the VALID/REJECTED
+        # decision above -- see test_low_order_flow_confidence_still_
+        # reaches_valid below for the case where it disagrees entirely.
+        order_flow_stage = next(s for s in result.stages if s.layer_name == "ORDER_FLOW")
+        assert order_flow_stage.passed is True
+        assert order_flow_stage.mandatory is False
+        assert result.order_flow_confidence == "HIGH"
+
+    async def test_low_order_flow_confidence_still_reaches_valid(self):
+        """
+        The exact scenario this refactor exists to prove: Volume
+        Profile and CVD disagreeing entirely (LOW confidence) must
+        NOT reject an otherwise-valid setup -- the pipeline still
+        reaches Stage 6 and VALID, because Stages 1-4 (the real
+        hard-mandatory gate) all passed. Identical fixture to
+        test_grade_b_pass_reaches_valid_with_bos_zone_as_entry_zone
+        except for the trailing candles, which are engineered so
+        neither Volume Profile nor CVD confirms BUY.
+        """
+        entry_candles = [_entry_candle(i, 100.0, 101.0, 99.0, 100.0) for i in range(3)]
+        sweep_candle = _entry_candle(3, 100.0, 100.5, 95.0, 100.2)
+        entry_candles.append(sweep_candle)
+
+        break_candle_index = 4
+        break_candle = _entry_candle(break_candle_index, 100.2, 106.0, 100.0, 105.0)
+        entry_candles.append(break_candle)
+
+        for i in range(break_candle_index + 1, break_candle_index + 1 + IFVG_VALIDITY_WINDOW_CANDLES + 2):
+            entry_candles.append(_entry_candle(i, 110.0, 111.0, 109.0, 110.0))
+        bos_zone_retest_index = break_candle_index + BOS_ZONE_RETEST_VALIDITY_WINDOW_CANDLES
+        while len(entry_candles) <= bos_zone_retest_index:
+            entry_candles.append(_entry_candle(len(entry_candles), 110.0, 111.0, 109.0, 110.0))
+        entry_candles[bos_zone_retest_index] = _entry_candle(bos_zone_retest_index, 104.0, 104.5, 103.0, 104.0)
+
+        # Trailing candles engineered for the opposite outcome of the
+        # HIGH-confidence fixture above: a CVD lower-low pattern (a
+        # genuine directional disagreement for BUY) at a price level
+        # (110.0) that also leaves Volume Profile's dominant HVN away
+        # from the final close -- neither sub-check confirms BUY.
+        cvd_start = len(entry_candles)
+        deltas = [6, 6, 6, -10, -10, -10, -10, -10, 6, 6, 6, 6, 6, 6, -12, -12, -12, -12, -12, 6, 6, 6]
+        price = 110.0
+        for offset, delta in enumerate(deltas):
+            index = cvd_start + offset
+            if delta > 0:
+                entry_candles.append(_entry_candle(index, price, price + 1.0, price - 0.5, price + 1.0, volume=delta))
+            else:
+                entry_candles.append(_entry_candle(index, price + 1.0, price + 1.5, price - 0.5, price, volume=-delta))
+            price += 0.1
+
+        broken_swing = SwingPoint(
+            swing_id="swing-bullish",
+            symbol=BTC_SYMBOL,
+            timeframe=ENTRY_TIMEFRAME,
+            timestamp=UTC_NOW - timedelta(minutes=20),
+            candle_index=3,
+            swing_type=SwingType.HIGH,
+            price=102.0,
+            left_strength=3,
+            right_strength=3,
+            confirmed=True,
+        )
+        displacement = DisplacementResult(
+            symbol=BTC_SYMBOL,
+            timeframe=ENTRY_TIMEFRAME,
+            candle_timestamp=break_candle.timestamp,
+            candle_index=break_candle_index,
+            direction=BreakDirection.BULLISH,
+            body_ratio=0.8,
+            candle_range=break_candle.candle_range,
+            body_size=break_candle.body_size,
+            close_location_value=0.9,
+            volume_confirmed=True,
+            strong_close=True,
+            confirmed=True,
+            reason="test displacement",
+        )
+
+        from app.liquidity.results import (
+            LiquidityLevel,
+            LiquiditySide,
+            LiquidityStrength,
+            LiquiditySweepResult,
+            LiquidityType,
+            SweepDirection,
+        )
+
+        liquidity_level = LiquidityLevel(
+            liquidity_id="level-99",
+            symbol=BTC_SYMBOL,
+            timeframe=ENTRY_TIMEFRAME,
+            liquidity_type=LiquidityType.EQUAL_LOW,
+            liquidity_side=LiquiditySide.SELL_SIDE,
+            price=99.0,
+            start_timestamp=UTC_NOW - timedelta(minutes=30),
+            end_timestamp=UTC_NOW - timedelta(minutes=30),
+            source_timestamps=[UTC_NOW - timedelta(minutes=30)],
+            touch_count=2,
+            strength=LiquidityStrength.STRONG,
+            active=True,
+        )
+        confirmed_sweep = LiquiditySweepResult(
+            sweep_id="sweep-bullish",
+            symbol=BTC_SYMBOL,
+            timeframe=ENTRY_TIMEFRAME,
+            direction=SweepDirection.BULLISH,
+            liquidity_level=liquidity_level,
+            sweep_candle_timestamp=sweep_candle.timestamp,
+            sweep_candle_index=3,
+            sweep_price=95.0,
+            close_price=100.2,
+            penetration_distance=1.0,
+            penetration_ratio=0.01,
+            reclaimed_level=True,
+            confirmed=True,
+            reason="test sweep",
+        )
+
+        structure_break = StructureBreakResult(
+            break_id="break-bullish-0",
+            symbol=BTC_SYMBOL,
+            timeframe=ENTRY_TIMEFRAME,
+            break_type="BOS",
+            direction=BreakDirection.BULLISH,
+            broken_swing=broken_swing,
+            break_candle_timestamp=break_candle.timestamp,
+            break_candle_index=break_candle_index,
+            break_price=102.0,
+            close_price=105.0,
+            displacement=displacement,
+            preceding_liquidity_sweep=confirmed_sweep,
+            strong_close_beyond_structure=True,
+            wick_only_break=False,
+            confirmation=BreakConfirmation.CONFIRMED,
+            reason="test BOS",
+        )
+
+        liquidity_detection_result = LiquidityDetectionResult(
+            symbol=BTC_SYMBOL,
+            timeframe=ENTRY_TIMEFRAME,
+            equal_highs=[],
+            equal_lows=[liquidity_level],
+            previous_day_levels=[],
+            previous_week_levels=[],
+            major_swing_levels=[],
+            session_levels=[],
+            all_levels=[liquidity_level],
+            active_levels=[liquidity_level],
+        )
+
+        entry_snapshot = MagicMock(volume_ema20=5.0, atr=1.0, ema200_slope_direction="BULLISH")
+        indicator_calculator = MagicMock()
+        indicator_calculator.calculate_multiple_timeframes = MagicMock(
+            return_value={
+                ENTRY_TIMEFRAME: entry_snapshot,
+                HTF_SECONDARY: MagicMock(),
+                HTF_PRIMARY: MagicMock(),
+            }
+        )
+
+        market_structure_calculator = MagicMock()
+        discount_zone_swing_high = SwingPoint(
+            swing_id="swing-range-high",
+            symbol=BTC_SYMBOL,
+            timeframe=ENTRY_TIMEFRAME,
+            timestamp=UTC_NOW - timedelta(minutes=40),
+            candle_index=10,
+            swing_type=SwingType.HIGH,
+            price=150.0,
+            left_strength=3,
+            right_strength=3,
+            confirmed=True,
+        )
+        discount_zone_swing_low = SwingPoint(
+            swing_id="swing-range-low",
+            symbol=BTC_SYMBOL,
+            timeframe=ENTRY_TIMEFRAME,
+            timestamp=UTC_NOW - timedelta(minutes=41),
+            candle_index=10,
+            swing_type=SwingType.LOW,
+            price=100.0,
+            left_strength=3,
+            right_strength=3,
+            confirmed=True,
+        )
+        entry_structure = MagicMock(
+            swings=[broken_swing],
+            latest_swing_high=discount_zone_swing_high,
+            latest_swing_low=discount_zone_swing_low,
+        )
+        market_structure_calculator.calculate_multiple_timeframes = MagicMock(
+            return_value={
+                ENTRY_TIMEFRAME: entry_structure,
+                HTF_SECONDARY: _htf_structure(TrendDirection.BULLISH),
+                HTF_PRIMARY: _htf_structure(TrendDirection.BULLISH),
+            }
+        )
+
+        liquidity_calculator = MagicMock()
+        liquidity_calculator.detect_levels = MagicMock(return_value=liquidity_detection_result)
+        liquidity_calculator.detect_sweeps = MagicMock(return_value=[confirmed_sweep])
+
+        bos_detector = MagicMock()
+        bos_detector.detect = MagicMock(return_value=[structure_break])
+
+        fair_value_gap_detector = MagicMock()
+        fair_value_gap_detector.detect = MagicMock(return_value=[])  # Grade A can never confirm
+
+        risk_management_calculator = MagicMock()
+        risk_plan = _real_risk_plan(direction="BUY", entry_price=entry_candles[-1].close)
+        risk_management_calculator.calculate = MagicMock(return_value=risk_plan)
+
+        htf_candle = _entry_candle(0, 100.0, 101.0, 99.0, 100.0)
+        provider = MagicMock()
+        provider.fetch_symbol_market_data = AsyncMock(
+            return_value={
+                ENTRY_TIMEFRAME: entry_candles,
+                HTF_SECONDARY: [htf_candle],
+                HTF_PRIMARY: [htf_candle],
+            }
+        )
+
+        engine = _build_engine(
+            market_data_provider=provider,
+            indicator_calculator=indicator_calculator,
+            market_structure_calculator=market_structure_calculator,
+            liquidity_calculator=liquidity_calculator,
+            bos_detector=bos_detector,
+            fair_value_gap_detector=fair_value_gap_detector,
+            risk_management_calculator=risk_management_calculator,
+        )
+
+        detection_time_utc = entry_candles[-1].timestamp + timedelta(minutes=1)
+        result = await engine.analyze_symbol(
+            symbol="BTC-USDT",
+            account_balance=10_000.0,
+            active_trade_count=0,
+            active_positions=[],
+            active_position_candles={},
+            detection_time_utc=detection_time_utc,
+        )
+
+        # The headline assertion: LOW order-flow confidence did NOT
+        # reject this otherwise-valid setup.
+        assert result.status == PipelineStatus.VALID
+        assert result.selected_entry_zone is not None
+        assert result.failed_layer is None
+        assert result.rejection_reason is None
+
+        risk_stage = next(s for s in result.stages if s.layer_name == "RISK_MANAGEMENT")
+        assert risk_stage.passed is True
+
+        order_flow_stage = next(s for s in result.stages if s.layer_name == "ORDER_FLOW")
+        assert order_flow_stage.passed is True  # never blocks, regardless of confidence
+        assert order_flow_stage.mandatory is False
+        assert order_flow_stage.metadata is not None
+        assert order_flow_stage.metadata["confidence"] == "LOW"
+        assert order_flow_stage.metadata["volume_profile_passed"] is False
+        assert order_flow_stage.metadata["cvd_passed"] is False
+
+        assert result.order_flow_confidence == "LOW"
+        assert result.order_flow_reason is not None
+        assert "LOW_CONFIDENCE" in result.order_flow_reason

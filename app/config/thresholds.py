@@ -52,11 +52,6 @@ PAIR_DISCOVERY_MINIMUM_TURNOVER_24H_USDT: Final[float] = 10_000_000.0
 PAIR_WARMUP_MAX_REQUEST_ATTEMPTS: Final[int] = 5
 PAIR_WARMUP_RETRY_BACKOFF_SCHEDULE_SECONDS: Final[tuple[float, ...]] = (2.0, 4.0, 8.0, 15.0)
 
-# Signal scoring
-PREMIUM_SIGNAL_MIN_SCORE: Final[float] = 90.0
-STRONG_SIGNAL_MIN_SCORE: Final[float] = 80.0
-MEDIUM_SIGNAL_MIN_SCORE: Final[float] = 70.0
-
 # Indicator calculation configuration
 ATR_PERIOD: Final[int] = 14
 ADX_PERIOD: Final[int] = 14
@@ -154,30 +149,6 @@ MIN_RISK_REWARD_BY_STOP_SOURCE: Final[dict] = {
 PARTIAL_EXIT_TP1_RISK_REWARD_RATIO: Final[float] = 1.0
 PARTIAL_EXIT_TP1_PERCENTAGE: Final[float] = 0.50
 PARTIAL_EXIT_TP2_PERCENTAGE: Final[float] = 0.50
-
-# Confidence scoring layer weights (must sum to SCORE_MAXIMUM_RAW)
-# Hard-mandatory layers (pipeline gates; failure rejects before scoring runs):
-SCORE_MARKET_REGIME: Final[int] = 15
-SCORE_HTF_BIAS: Final[int] = 25
-SCORE_LIQUIDITY_SWEEP: Final[int] = 15
-SCORE_STRUCTURE_SHIFT: Final[int] = 15
-SCORE_VOLUME_CONFIRMATION: Final[int] = 10
-SCORE_ENTRY_ZONE: Final[int] = 10
-# Soft-scoring layers (never reject; failure awards zero points only):
-SCORE_PREMIUM_DISCOUNT: Final[int] = 5
-SCORE_RETEST_CONFIRMATION: Final[int] = 5
-SCORE_SESSION: Final[int] = 5
-SCORE_BTC_ALIGNMENT: Final[int] = 5
-SCORE_FAKE_BREAKOUT: Final[int] = 5
-SCORE_MAXIMUM_RAW: Final[int] = 115
-
-# Confidence classification thresholds
-PREMIUM_SIGNAL_MINIMUM_SCORE: Final[float] = 90.0
-MEDIUM_SIGNAL_MINIMUM_SCORE: Final[float] = 70.0
-# STRONG_SIGNAL_MINIMUM_SCORE (the publishable-signal cutoff) moved to
-# app.config.settings.Settings.min_publishable_confidence_score so
-# signal frequency can be tuned via the MIN_PUBLISHABLE_CONFIDENCE_SCORE
-# env var without a code change/redeploy. Default is unchanged (80.0).
 
 # Stage 5 (Order Flow) Volume Profile confirmation configuration. The
 # profile is built entirely from already-fetched entry-timeframe

@@ -102,9 +102,10 @@ def build_pair_scan_updated_event(pair_result: PairScanResult) -> ScannerEvent:
 
     Carries only the same safe fields the scanning-coins REST response
     already exposes (coin, direction, validation-progress percentage,
-    last/failed layer, reason). Never includes candles, secrets, tokens,
-    or chat IDs, and never affects strategy, storage, or notification
-    behaviour — this is a pure, read-only projection of one pair result.
+    last/failed layer, reason, order-flow confidence/reason). Never
+    includes candles, secrets, tokens, or chat IDs, and never affects
+    strategy, storage, or notification behaviour — this is a pure,
+    read-only projection of one pair result.
     """
     pipeline_result = pair_result.pipeline_result
     direction = pipeline_result.expected_direction if pipeline_result is not None else None
@@ -112,6 +113,8 @@ def build_pair_scan_updated_event(pair_result: PairScanResult) -> ScannerEvent:
     stages_passed, stages_total, last_executed_layer = calculate_validation_progress(stages)
     percentage = round((stages_passed / stages_total) * 100) if stages_total else None
     failed_layer = pipeline_result.failed_layer if pipeline_result is not None else None
+    order_flow_confidence = pipeline_result.order_flow_confidence if pipeline_result is not None else None
+    order_flow_reason = pipeline_result.order_flow_reason if pipeline_result is not None else None
 
     return ScannerEvent(
         event=ScannerEventType.PAIR_SCAN_UPDATED,
@@ -123,6 +126,8 @@ def build_pair_scan_updated_event(pair_result: PairScanResult) -> ScannerEvent:
             "last_executed_layer": last_executed_layer,
             "failed_layer": failed_layer,
             "reason": pair_result.reason,
+            "order_flow_confidence": order_flow_confidence,
+            "order_flow_reason": order_flow_reason,
         },
     )
 
@@ -267,6 +272,8 @@ class DashboardService:
                         validation_progress_percentage=None,
                         last_executed_layer=None,
                         chart_trend=None,
+                        order_flow_confidence=None,
+                        order_flow_reason=None,
                     )
                 )
                 continue
@@ -289,6 +296,8 @@ class DashboardService:
 
         failed_layer = pipeline_result.failed_layer if pipeline_result is not None else None
         reason = pair_result.reason
+        order_flow_confidence = pipeline_result.order_flow_confidence if pipeline_result is not None else None
+        order_flow_reason = pipeline_result.order_flow_reason if pipeline_result is not None else None
 
         stages = pipeline_result.stages if pipeline_result is not None else None
         stages_passed, stages_total, last_executed_layer = calculate_validation_progress(stages)
@@ -316,6 +325,8 @@ class DashboardService:
             validation_progress_percentage=percentage,
             last_executed_layer=last_executed_layer,
             chart_trend=chart_trend,
+            order_flow_confidence=order_flow_confidence,
+            order_flow_reason=order_flow_reason,
         )
 
     async def get_active_signals(

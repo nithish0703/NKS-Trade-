@@ -88,6 +88,13 @@ class StrategyPipelineResult(BaseModel):
     selected_structure_break: Optional[Any] = None
     selected_entry_zone: Optional[Any] = None
     risk_plan: Optional[RiskPlan] = None
+    # Stage 5 (Volume Profile + CVD) confidence tier ("HIGH"/"MEDIUM"/
+    # "LOW") and its human-readable reasoning. A soft confidence signal
+    # only -- never gates VALID/REJECTED status, so both remain None
+    # whenever the pipeline never reached Stage 5 (rejected at HTF
+    # Bias, Liquidity Sweep, BOS, or IFVG).
+    order_flow_confidence: Optional[str] = None
+    order_flow_reason: Optional[str] = None
     metadata: Optional[dict[str, Any]] = None
 
     @field_validator("detection_time_utc")

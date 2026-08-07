@@ -17,11 +17,32 @@ function coin(overrides: Partial<ScanningCoin> = {}): ScanningCoin {
     validation_progress_max_score: 6,
     validation_progress_percentage: 100,
     last_executed_layer: "RISK_MANAGEMENT",
+    order_flow_confidence: null,
+    order_flow_reason: null,
     ...overrides,
   };
 }
 
 describe("ScanningCoinsTable", () => {
+  it("shows an order-flow confidence badge when present", () => {
+    render(<ScanningCoinsTable coins={[coin({ order_flow_confidence: "MEDIUM", order_flow_reason: "CVD only" })]} />);
+    expect(screen.getByText("MEDIUM confidence")).toBeInTheDocument();
+  });
+
+  it("shows no confidence badge when order flow has not run yet", () => {
+    render(<ScanningCoinsTable coins={[coin({ order_flow_confidence: null })]} />);
+    expect(screen.queryByText(/confidence$/)).not.toBeInTheDocument();
+  });
+
+  it("never renders ORDER_FLOW as a failed layer (soft layer, not a gate)", () => {
+    render(
+      <ScanningCoinsTable
+        coins={[coin({ status: "REJECTED", failed_layer: "HTF_BIAS", order_flow_confidence: null })]}
+      />,
+    );
+    expect(screen.queryByText(/ORDER_FLOW/)).not.toBeInTheDocument();
+  });
+
   it("renders a row per coin", () => {
     render(<ScanningCoinsTable coins={[coin(), coin({ coin: "ETH-USDT" })]} />);
     expect(screen.getByText("BTC-USDT")).toBeInTheDocument();
