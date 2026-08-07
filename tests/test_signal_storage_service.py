@@ -109,16 +109,33 @@ def _skipped_pair_result(symbol="BTC-USDT") -> PairScanResult:
 def _build_service(signal_builder=None, signal_repository=None, analytics_repository=None):
     return SignalStorageService(
         signal_builder=signal_builder or MagicMock(build=MagicMock(return_value=_signal())),
-        signal_repository=signal_repository or MagicMock(save=AsyncMock(side_effect=lambda s: s)),
+        signal_repository=signal_repository or _repo(),
         analytics_repository=analytics_repository or MagicMock(save_rejection=AsyncMock()),
         settings=MagicMock(),
     )
 
 
+def _repo(**overrides):
+    """
+    Build a signal_repository mock with sensible defaults:
+    - save() echoes back whatever Signal it was given
+    - list_recent_with_status() reports no existing ACTIVE signal for the
+      coin (i.e. the new "already active" skip in SignalStorageService
+      never triggers unless a test explicitly asks it to)
+    Any attribute can be overridden by passing it as a keyword.
+    """
+    defaults = dict(
+        save=AsyncMock(side_effect=lambda s: s),
+        list_recent_with_status=AsyncMock(return_value=[]),
+    )
+    defaults.update(overrides)
+    return MagicMock(**defaults)
+
+
 class TestProcessPairResult:
     async def test_valid_pair_result_builds_and_stores_signal(self):
         signal_builder = MagicMock(build=MagicMock(return_value=_signal()))
-        signal_repository = MagicMock(save=AsyncMock(side_effect=lambda s: s))
+        signal_repository = _repo()
         service = _build_service(signal_builder=signal_builder, signal_repository=signal_repository)
 
         result = await service.process_pair_result(_valid_pair_result())
@@ -129,9 +146,7 @@ class TestProcessPairResult:
         signal_repository.save.assert_awaited_once()
 
     async def test_duplicate_storage_handled(self):
-        signal_repository = MagicMock(
-            save=AsyncMock(side_effect=DuplicateSignalStorageError("already exists"))
-        )
+        signal_repository = _repo(save=AsyncMock(side_effect=DuplicateSignalStorageError("already exists")))
         service = _build_service(signal_repository=signal_repository)
 
         result = await service.process_pair_result(_valid_pair_result())
@@ -188,16 +203,14 @@ class TestProcessPairResult:
         assert result.signal is None
 
     async def test_storage_failure_surfaced_safely(self):
-        signal_repository = MagicMock(
-            save=AsyncMock(side_effect=DatabaseOperationError("disk full"))
-        )
+        signal_repository = _repo(save=AsyncMock(side_effect=DatabaseOperationError("disk full")))
         service = _build_service(signal_repository=signal_repository)
 
         with pytest.raises(DatabaseOperationError):
             await service.process_pair_result(_valid_pair_result())
 
     async def test_no_side_effects_beyond_repositories(self):
-        signal_repository = MagicMock(save=AsyncMock(side_effect=lambda s: s))
+        signal_repository = _repo()
         service = _build_service(signal_repository=signal_repository)
 
         await service.process_pair_result(_valid_pair_result())
@@ -206,6 +219,42 @@ class TestProcessPairResult:
         for call in signal_repository.method_calls:
             assert "telegram" not in call[0].lower()
             assert "broadcast" not in call[0].lower()
+
+    async def test_skips_new_signal_when_coin_already_active(self):
+        # An ACTIVE dashboard signal already exists for this coin, so no
+        # new signal should be built/saved, and DuplicateGuard must not
+        # be marked (nothing was persisted).
+        existing_active = MagicMock()
+        signal_repository = _repo(list_recent_with_status=AsyncMock(return_value=[existing_active]))
+        duplicate_guard = MagicMock(register=AsyncMock())
+        service = SignalStorageService(
+            signal_builder=MagicMock(build=MagicMock(return_value=_signal())),
+            signal_repository=signal_repository,
+            analytics_repository=MagicMock(save_rejection=AsyncMock()),
+            settings=MagicMock(),
+            duplicate_guard=duplicate_guard,
+        )
+
+        result = await service.process_pair_result(_valid_pair_result())
+
+        assert result.stored is False
+        assert result.duplicate is False
+        assert result.signal is not None
+        assert "ACTIVE" in result.reason
+        signal_repository.list_recent_with_status.assert_awaited_once_with(
+            limit=1, symbol="BTC-USDT", dashboard_status="ACTIVE"
+        )
+        signal_repository.save.assert_not_awaited()
+        duplicate_guard.register.assert_not_awaited()
+
+    async def test_saves_new_signal_when_coin_not_active(self):
+        signal_repository = _repo(list_recent_with_status=AsyncMock(return_value=[]))
+        service = _build_service(signal_repository=signal_repository)
+
+        result = await service.process_pair_result(_valid_pair_result())
+
+        assert result.stored is True
+        signal_repository.save.assert_awaited_once()
 
 
 class TestProcessCycle:
@@ -218,7 +267,7 @@ class TestProcessCycle:
         cycle_result = MagicMock(spec=ScanCycleResult)
         cycle_result.pair_results = pair_results
 
-        signal_repository = MagicMock(save=AsyncMock(side_effect=lambda s: s))
+        signal_repository = _repo()
         analytics_repository = MagicMock(save_rejection=AsyncMock())
         service = _build_service(
             signal_repository=signal_repository, analytics_repository=analytics_repository

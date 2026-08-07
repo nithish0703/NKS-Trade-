@@ -15,7 +15,11 @@ from app.scanner.scan_results import PairScanResult, PairScanStatus, ScanCycleRe
 from app.scanner.signal_builder import InstitutionalSignalBuilder, SignalBuildError
 from app.storage.analytics_repository import AnalyticsRepository
 from app.storage.database import DatabaseOperationError, StorageError
-from app.storage.signal_repository import DuplicateSignalStorageError, SignalRepository
+from app.storage.signal_repository import (
+    DASHBOARD_STATUS_ACTIVE,
+    DuplicateSignalStorageError,
+    SignalRepository,
+)
 
 # Temporary DEBUG-only logger for the DuplicateGuard lifecycle audit.
 # Does not affect production behaviour: only emits when DEBUG level
@@ -102,6 +106,24 @@ class SignalStorageService:
             return SignalStorageResult(signal=None, stored=False, duplicate=False, reason=str(exc))
 
         _debug_logger.debug("Signal created: trade_id=%s setup_key=%s", signal.trade_id, signal.setup_key)
+
+        # Skip generating a new signal for a coin that already has an
+        # ACTIVE signal on the dashboard, regardless of whether that
+        # active trade is currently winning or losing. Read-only check;
+        # does not alter risk management, TP/SL, or duplicate matching.
+        already_active = await self._signal_repository.list_recent_with_status(
+            limit=1, symbol=signal.coin, dashboard_status=DASHBOARD_STATUS_ACTIVE
+        )
+        if already_active:
+            reason = (
+                f"An ACTIVE signal already exists for {signal.coin}; "
+                "new signal skipped until it is closed."
+            )
+            self._logger.info(
+                "Signal skipped for %s: an ACTIVE signal already exists for this coin.",
+                signal.coin,
+            )
+            return SignalStorageResult(signal=signal, stored=False, duplicate=False, reason=reason)
 
         try:
             stored_signal = await self._signal_repository.save(signal)
