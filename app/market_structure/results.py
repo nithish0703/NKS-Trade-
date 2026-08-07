@@ -1,6 +1,6 @@
 """
-Immutable typed result models for swing detection, trend structure
-classification, and higher-timeframe bias analysis.
+Immutable typed result models for swing detection and trend structure
+classification.
 """
 
 from datetime import datetime, timezone
@@ -35,15 +35,6 @@ class TrendDirection(str, Enum):
     BULLISH = "BULLISH"
     BEARISH = "BEARISH"
     RANGE = "RANGE"
-    UNKNOWN = "UNKNOWN"
-
-
-class HigherTimeframeBias(str, Enum):
-    """Final higher-timeframe bias classification."""
-
-    BULLISH = "BULLISH"
-    BEARISH = "BEARISH"
-    MIXED = "MIXED"
     UNKNOWN = "UNKNOWN"
 
 
@@ -143,25 +134,3 @@ class MarketStructureResult(BaseModel):
     equal_high_count: int
     equal_low_count: int
     confidence_notes: Optional[str] = None
-
-
-class HigherTimeframeBiasResult(BaseModel):
-    """
-    Result of higher-timeframe bias analysis combining 4H and 1H market
-    structure with EMA200 slope direction.
-
-    This model reports alignment only; it does not contain trade
-    execution fields.
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    primary_timeframe: str
-    secondary_timeframe: str
-    primary_trend: TrendDirection
-    secondary_trend: TrendDirection
-    primary_ema200_direction: Optional[str] = None
-    secondary_ema200_direction: Optional[str] = None
-    final_bias: HigherTimeframeBias
-    aligned: bool
-    reason: str

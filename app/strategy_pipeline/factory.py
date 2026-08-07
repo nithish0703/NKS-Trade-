@@ -6,7 +6,6 @@ application settings and thresholds.
 from app.config import thresholds
 from app.config.settings import get_settings
 from app.data.binance_market_data_provider import BinanceFuturesMarketDataProvider
-from app.data.candle_repository import CandleRepository
 from app.indicators.calculator import IndicatorCalculator
 from app.liquidity.calculator import LiquidityCalculator
 from app.liquidity.equal_high_low import EqualHighLowDetector
@@ -18,7 +17,6 @@ from app.liquidity.swing_liquidity import SwingLiquidityDetector
 from app.market_structure.bos_detector import BOSDetector
 from app.market_structure.calculator import MarketStructureCalculator
 from app.market_structure.displacement import DisplacementDetector
-from app.market_structure.htf_bias import HigherTimeframeBiasAnalyzer
 from app.market_structure.swing_detector import SwingDetector
 from app.market_structure.trend_structure import TrendStructureAnalyzer
 from app.risk.active_trade_guard import ActiveTradeGuard
@@ -40,7 +38,7 @@ def build_pipeline_strategy_engine() -> PipelineStrategyEngine:
 
     Does not make any API call, start scanning, or create global
     mutable singleton state; each call returns an independent engine
-    instance with its own CandleRepository and market-data provider.
+    instance with its own market-data provider.
     """
     settings = get_settings()
 
@@ -48,7 +46,6 @@ def build_pipeline_strategy_engine() -> PipelineStrategyEngine:
         base_url=settings.exchange_base_url,
         request_timeout_seconds=settings.request_timeout_seconds,
     )
-    candle_repository = CandleRepository()
 
     indicator_calculator = IndicatorCalculator(
         ema_fast_period=thresholds.EMA_FAST_PERIOD,
@@ -74,7 +71,6 @@ def build_pipeline_strategy_engine() -> PipelineStrategyEngine:
     market_structure_calculator = MarketStructureCalculator(
         swing_detector=swing_detector,
         trend_structure_analyzer=trend_structure_analyzer,
-        higher_timeframe_bias_analyzer=HigherTimeframeBiasAnalyzer(),
     )
 
     liquidity_calculator = LiquidityCalculator(
@@ -120,7 +116,6 @@ def build_pipeline_strategy_engine() -> PipelineStrategyEngine:
 
     return PipelineStrategyEngine(
         market_data_provider=market_data_provider,
-        candle_repository=candle_repository,
         indicator_calculator=indicator_calculator,
         market_structure_calculator=market_structure_calculator,
         liquidity_calculator=liquidity_calculator,

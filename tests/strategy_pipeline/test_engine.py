@@ -50,11 +50,8 @@ UTC_NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
 
 def _build_engine(**overrides) -> PipelineStrategyEngine:
-    from app.data.candle_repository import CandleRepository
-
     defaults = dict(
         market_data_provider=MagicMock(),
-        candle_repository=CandleRepository(),
         indicator_calculator=MagicMock(),
         market_structure_calculator=MagicMock(),
         liquidity_calculator=MagicMock(),

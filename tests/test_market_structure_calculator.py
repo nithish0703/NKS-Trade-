@@ -7,8 +7,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from app.market_structure.calculator import MarketStructureCalculator
-from app.market_structure.htf_bias import HigherTimeframeBiasAnalyzer
-from app.market_structure.results import HigherTimeframeBiasResult, MarketStructureResult
+from app.market_structure.results import MarketStructureResult
 from app.market_structure.swing_detector import (
     MarketStructureCalculationError,
     SwingDetector,
@@ -51,7 +50,6 @@ def _make_calculator() -> MarketStructureCalculator:
         trend_structure_analyzer=TrendStructureAnalyzer(
             equality_tolerance=0.001, minimum_confirmed_swings=4
         ),
-        higher_timeframe_bias_analyzer=HigherTimeframeBiasAnalyzer(),
     )
 
 
@@ -108,28 +106,3 @@ class TestCalculateMultipleTimeframes:
         }
         with pytest.raises(MarketStructureCalculationError):
             _make_calculator().calculate_multiple_timeframes(candles_by_timeframe)
-
-
-class TestCalculateHigherTimeframeBias:
-    def test_higher_timeframe_bias_calculation_using_4h_and_1h(self):
-        candles_by_timeframe = {
-            "4h": _make_zigzag_candles(60, "4h"),
-            "1h": _make_zigzag_candles(60, "1h"),
-        }
-        indicators_by_timeframe = {}  # missing indicators -> UNKNOWN, but must not error
-        result = _make_calculator().calculate_higher_timeframe_bias(
-            candles_by_timeframe, indicators_by_timeframe
-        )
-        assert isinstance(result, HigherTimeframeBiasResult)
-
-    def test_15m_not_required_for_higher_timeframe_bias(self):
-        candles_by_timeframe = {
-            "4h": _make_zigzag_candles(60, "4h"),
-            "1h": _make_zigzag_candles(60, "1h"),
-            "15m": [],
-        }
-        # Should not raise despite 15m candles being empty/invalid.
-        result = _make_calculator().calculate_higher_timeframe_bias(
-            candles_by_timeframe, {}
-        )
-        assert isinstance(result, HigherTimeframeBiasResult)

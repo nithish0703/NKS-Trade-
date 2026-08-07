@@ -55,38 +55,6 @@ class CandleRepository:
 
         self._store[key] = merged
 
-    def get_candles(
-        self, symbol: str, timeframe: str, limit: Optional[int] = None
-    ) -> list[Candle]:
-        """
-        Return a copy of stored candles for (symbol, timeframe) in
-        ascending chronological order.
-
-        If `limit` is provided, only the latest `limit` candles are
-        returned.
-
-        Raises:
-            ValueError: If limit is provided and is not positive.
-        """
-        if limit is not None and limit <= 0:
-            raise ValueError(f"limit must be greater than zero, got {limit}.")
-
-        candles = self._store.get((symbol, timeframe), [])
-        if limit is not None:
-            candles = candles[-limit:]
-        return list(candles)
-
-    def get_latest_candle(self, symbol: str, timeframe: str) -> Optional[Candle]:
-        """Return the most recent candle for (symbol, timeframe), or None."""
-        candles = self._store.get((symbol, timeframe))
-        if not candles:
-            return None
-        return candles[-1]
-
-    def has_data(self, symbol: str, timeframe: str) -> bool:
-        """Return whether any candles are stored for (symbol, timeframe)."""
-        return bool(self._store.get((symbol, timeframe)))
-
     def clear(
         self, symbol: Optional[str] = None, timeframe: Optional[str] = None
     ) -> None:

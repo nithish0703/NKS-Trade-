@@ -1,19 +1,13 @@
 """
-Orchestrates swing detection, trend structure classification, and
-higher-timeframe bias analysis across one or more timeframes.
+Orchestrates swing detection and trend structure classification across
+one or more timeframes.
 """
 
 from typing import Mapping, Sequence
 
-from app.indicators.results import IndicatorSnapshot
 from app.models.candle import Candle
 
-from app.market_structure.htf_bias import (
-    PRIMARY_TIMEFRAME,
-    SECONDARY_TIMEFRAME,
-    HigherTimeframeBiasAnalyzer,
-)
-from app.market_structure.results import HigherTimeframeBiasResult, MarketStructureResult
+from app.market_structure.results import MarketStructureResult
 from app.market_structure.swing_detector import (
     MarketStructureCalculationError,
     SwingDetector,
@@ -23,19 +17,17 @@ from app.market_structure.trend_structure import TrendStructureAnalyzer
 
 class MarketStructureCalculator:
     """
-    Coordinates swing detection, trend structure classification, and
-    higher-timeframe bias analysis for one or more timeframes.
+    Coordinates swing detection and trend structure classification for
+    one or more timeframes.
     """
 
     def __init__(
         self,
         swing_detector: SwingDetector,
         trend_structure_analyzer: TrendStructureAnalyzer,
-        higher_timeframe_bias_analyzer: HigherTimeframeBiasAnalyzer,
     ) -> None:
         self._swing_detector = swing_detector
         self._trend_structure_analyzer = trend_structure_analyzer
-        self._higher_timeframe_bias_analyzer = higher_timeframe_bias_analyzer
 
     def calculate_timeframe(self, candles: Sequence[Candle]) -> MarketStructureResult:
         """
@@ -78,27 +70,3 @@ class MarketStructureCalculator:
             )
 
         return results
-
-    def calculate_higher_timeframe_bias(
-        self,
-        candles_by_timeframe: Mapping[str, Sequence[Candle]],
-        indicators_by_timeframe: Mapping[str, IndicatorSnapshot],
-    ) -> HigherTimeframeBiasResult:
-        """
-        Calculate 4H and 1H market structure and combine it with 4H/1H
-        indicator snapshots to produce a HigherTimeframeBiasResult.
-
-        Only the primary (4h) and secondary (1h) timeframes are required;
-        15m entry-timeframe data is not used here.
-        """
-        required_candles = {
-            timeframe: candles_by_timeframe[timeframe]
-            for timeframe in (PRIMARY_TIMEFRAME, SECONDARY_TIMEFRAME)
-            if timeframe in candles_by_timeframe
-        }
-
-        structures = self.calculate_multiple_timeframes(required_candles)
-
-        return self._higher_timeframe_bias_analyzer.analyze(
-            structures, indicators_by_timeframe
-        )

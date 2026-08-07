@@ -11,7 +11,6 @@ class TestEngineFactory:
         engine = build_strategy_engine()
         assert isinstance(engine, PipelineStrategyEngine)
         assert engine._market_data_provider is not None
-        assert engine._candle_repository is not None
         assert engine._indicator_calculator is not None
         assert engine._market_structure_calculator is not None
         assert engine._liquidity_calculator is not None
@@ -40,7 +39,7 @@ class TestEngineFactory:
         engine_one = build_strategy_engine()
         engine_two = build_strategy_engine()
         assert engine_one is not engine_two
-        assert engine_one._candle_repository is not engine_two._candle_repository
+        assert engine_one._market_structure_calculator is not engine_two._market_structure_calculator
 
     def test_separate_factory_calls_create_independent_engine_instances(self):
         engine_one = build_strategy_engine()

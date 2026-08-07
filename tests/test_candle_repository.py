@@ -27,13 +27,17 @@ def _make_candle(offset_minutes: int, **overrides) -> Candle:
     return Candle(**fields)
 
 
+def _stored(repo: CandleRepository, symbol: str, timeframe: str) -> list[Candle]:
+    """Read back what save_candles()/clear() left behind, via the internal store."""
+    return repo._store.get((symbol, timeframe), [])
+
+
 def test_save_and_retrieve_candles():
     repo = CandleRepository()
     candles = [_make_candle(0), _make_candle(15)]
     repo.save_candles("BTC-USDT", "15m", candles)
 
-    result = repo.get_candles("BTC-USDT", "15m")
-    assert len(result) == 2
+    assert len(_stored(repo, "BTC-USDT", "15m")) == 2
 
 
 def test_candles_remain_ascending():
@@ -41,8 +45,7 @@ def test_candles_remain_ascending():
     repo.save_candles("BTC-USDT", "15m", [_make_candle(15)])
     repo.save_candles("BTC-USDT", "15m", [_make_candle(0)])
 
-    result = repo.get_candles("BTC-USDT", "15m")
-    timestamps = [c.timestamp for c in result]
+    timestamps = [c.timestamp for c in _stored(repo, "BTC-USDT", "15m")]
     assert timestamps == sorted(timestamps)
 
 
@@ -54,51 +57,9 @@ def test_duplicate_timestamps_are_replaced():
     updated = _make_candle(0, close=108.0, high=120.0)
     repo.save_candles("BTC-USDT", "15m", [updated])
 
-    result = repo.get_candles("BTC-USDT", "15m")
+    result = _stored(repo, "BTC-USDT", "15m")
     assert len(result) == 1
     assert result[0].close == 108.0
-
-
-def test_latest_candle_retrieval():
-    repo = CandleRepository()
-    repo.save_candles("BTC-USDT", "15m", [_make_candle(0), _make_candle(15)])
-
-    latest = repo.get_latest_candle("BTC-USDT", "15m")
-    assert latest is not None
-    assert latest.timestamp == UTC_NOW + timedelta(minutes=15)
-
-
-def test_latest_candle_none_when_empty():
-    repo = CandleRepository()
-    assert repo.get_latest_candle("BTC-USDT", "15m") is None
-
-
-def test_limit_returns_latest_candles():
-    repo = CandleRepository()
-    candles = [_make_candle(offset) for offset in range(0, 60, 15)]
-    repo.save_candles("BTC-USDT", "15m", candles)
-
-    result = repo.get_candles("BTC-USDT", "15m", limit=2)
-    assert len(result) == 2
-    assert result[-1].timestamp == candles[-1].timestamp
-
-
-def test_get_candles_rejects_non_positive_limit():
-    repo = CandleRepository()
-    repo.save_candles("BTC-USDT", "15m", [_make_candle(0)])
-
-    with pytest.raises(ValueError):
-        repo.get_candles("BTC-USDT", "15m", limit=0)
-
-
-def test_returned_list_cannot_mutate_internal_state():
-    repo = CandleRepository()
-    repo.save_candles("BTC-USDT", "15m", [_make_candle(0)])
-
-    result = repo.get_candles("BTC-USDT", "15m")
-    result.append(_make_candle(999))
-
-    assert len(repo.get_candles("BTC-USDT", "15m")) == 1
 
 
 def test_maximum_storage_size_is_enforced():
@@ -106,17 +67,9 @@ def test_maximum_storage_size_is_enforced():
     candles = [_make_candle(offset) for offset in range(0, 60, 15)]
     repo.save_candles("BTC-USDT", "15m", candles)
 
-    result = repo.get_candles("BTC-USDT", "15m")
+    result = _stored(repo, "BTC-USDT", "15m")
     assert len(result) == 3
     assert result[-1].timestamp == candles[-1].timestamp
-
-
-def test_has_data():
-    repo = CandleRepository()
-    assert repo.has_data("BTC-USDT", "15m") is False
-
-    repo.save_candles("BTC-USDT", "15m", [_make_candle(0)])
-    assert repo.has_data("BTC-USDT", "15m") is True
 
 
 def test_clear_one_symbol_and_timeframe():
@@ -126,8 +79,8 @@ def test_clear_one_symbol_and_timeframe():
 
     repo.clear(symbol="BTC-USDT", timeframe="15m")
 
-    assert repo.has_data("BTC-USDT", "15m") is False
-    assert repo.has_data("BTC-USDT", "1h") is True
+    assert _stored(repo, "BTC-USDT", "15m") == []
+    assert len(_stored(repo, "BTC-USDT", "1h")) == 1
 
 
 def test_clear_all_timeframes_for_one_symbol():
@@ -138,9 +91,9 @@ def test_clear_all_timeframes_for_one_symbol():
 
     repo.clear(symbol="BTC-USDT")
 
-    assert repo.has_data("BTC-USDT", "15m") is False
-    assert repo.has_data("BTC-USDT", "1h") is False
-    assert repo.has_data("ETH-USDT", "15m") is True
+    assert _stored(repo, "BTC-USDT", "15m") == []
+    assert _stored(repo, "BTC-USDT", "1h") == []
+    assert len(_stored(repo, "ETH-USDT", "15m")) == 1
 
 
 def test_clear_entire_repository():
@@ -150,8 +103,8 @@ def test_clear_entire_repository():
 
     repo.clear()
 
-    assert repo.has_data("BTC-USDT", "15m") is False
-    assert repo.has_data("ETH-USDT", "1h") is False
+    assert _stored(repo, "BTC-USDT", "15m") == []
+    assert _stored(repo, "ETH-USDT", "1h") == []
 
 
 def test_timeframe_only_clear_raises_value_error():

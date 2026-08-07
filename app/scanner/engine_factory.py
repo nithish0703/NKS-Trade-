@@ -33,7 +33,7 @@ def build_strategy_engine() -> PipelineStrategyEngine:
 
     Does not make any API call, start scanning, or create global
     mutable singleton state; each call returns an independent engine
-    instance with its own CandleRepository and market-data provider.
+    instance with its own market-data provider.
     """
     return build_pipeline_strategy_engine()
 

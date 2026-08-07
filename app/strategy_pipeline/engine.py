@@ -29,7 +29,6 @@ from typing import Mapping, Optional, Sequence
 
 from app.config.pairs import validate_pair_symbol
 from app.config.timeframes import ENTRY_TIMEFRAME, HTF_PRIMARY, HTF_SECONDARY
-from app.data.candle_repository import CandleRepository
 from app.data.market_data_errors import MarketDataError
 from app.data.provider_base import MarketDataProvider
 from app.indicators.calculator import IndicatorCalculator
@@ -91,7 +90,6 @@ class PipelineStrategyEngine:
     def __init__(
         self,
         market_data_provider: MarketDataProvider,
-        candle_repository: CandleRepository,
         indicator_calculator: IndicatorCalculator,
         market_structure_calculator: MarketStructureCalculator,
         liquidity_calculator: LiquidityCalculator,
@@ -101,7 +99,6 @@ class PipelineStrategyEngine:
         risk_management_calculator: RiskManagementCalculator,
     ) -> None:
         self._market_data_provider = market_data_provider
-        self._candle_repository = candle_repository
         self._indicator_calculator = indicator_calculator
         self._market_structure_calculator = market_structure_calculator
         self._liquidity_calculator = liquidity_calculator
@@ -175,7 +172,7 @@ class PipelineStrategyEngine:
         )
 
     async def _prepare_market_context(self, symbol: str, detection_time_utc: datetime) -> MarketContext:
-        """Fetch candles, persist them, and calculate indicators/structures for the 1H HTF Bias stage."""
+        """Fetch candles and calculate indicators/structures for the 1H HTF Bias stage."""
         symbol_candles = await self._market_data_provider.fetch_symbol_market_data(symbol)
 
         for timeframe in _REQUIRED_TIMEFRAMES:
@@ -186,7 +183,6 @@ class PipelineStrategyEngine:
                     symbol=symbol,
                     reason=f"No candles available for required timeframe '{timeframe}'.",
                 )
-            self._candle_repository.save_candles(symbol, timeframe, candles)
 
         indicators_by_timeframe = self._indicator_calculator.calculate_multiple_timeframes(symbol_candles)
         structures_by_timeframe = self._market_structure_calculator.calculate_multiple_timeframes(
