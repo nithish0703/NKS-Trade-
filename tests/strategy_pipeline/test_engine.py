@@ -438,7 +438,7 @@ class TestGradeBIntegration:
             active_levels=[liquidity_level],
         )
 
-        entry_snapshot = MagicMock(volume_ema20=5.0, atr=1.0)
+        entry_snapshot = MagicMock(volume_ema20=5.0, atr=1.0, ema200_slope_direction="BULLISH")
         indicator_calculator = MagicMock()
         indicator_calculator.calculate_multiple_timeframes = MagicMock(
             return_value={
@@ -449,7 +449,35 @@ class TestGradeBIntegration:
         )
 
         market_structure_calculator = MagicMock()
-        entry_structure = MagicMock(swings=[broken_swing])
+        discount_zone_swing_high = SwingPoint(
+            swing_id="swing-range-high",
+            symbol=BTC_SYMBOL,
+            timeframe=ENTRY_TIMEFRAME,
+            timestamp=UTC_NOW - timedelta(minutes=40),
+            candle_index=10,
+            swing_type=SwingType.HIGH,
+            price=150.0,
+            left_strength=3,
+            right_strength=3,
+            confirmed=True,
+        )
+        discount_zone_swing_low = SwingPoint(
+            swing_id="swing-range-low",
+            symbol=BTC_SYMBOL,
+            timeframe=ENTRY_TIMEFRAME,
+            timestamp=UTC_NOW - timedelta(minutes=41),
+            candle_index=10,
+            swing_type=SwingType.LOW,
+            price=100.0,
+            left_strength=3,
+            right_strength=3,
+            confirmed=True,
+        )
+        entry_structure = MagicMock(
+            swings=[broken_swing],
+            latest_swing_high=discount_zone_swing_high,
+            latest_swing_low=discount_zone_swing_low,
+        )
         market_structure_calculator.calculate_multiple_timeframes = MagicMock(
             return_value={
                 ENTRY_TIMEFRAME: entry_structure,
