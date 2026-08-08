@@ -1,20 +1,33 @@
 """
 Entry point for the Institutional Smart Money Concepts trading engine.
 
-This module provides five manual, development-facing CLI modes:
+This module provides manual, development-facing CLI modes:
 
-    python main.py analyze BTC-USDT               # one-symbol pipeline analysis
-    python main.py scan-once                      # one full multi-pair scan cycle
-    python main.py scan                           # continuous 15-second scanner
-    python main.py signals --symbol BTC-USDT       # list locally stored signals
-    python main.py telegram-test                  # send one Telegram test message to every configured chat
+    python main.py analyze BTC-USDT                   # one-symbol pipeline analysis
+    python main.py scan-once                          # one full multi-pair scan cycle
+    python main.py scan                                # continuous scanner (see SCANNER_INTERVAL_SECONDS)
+    python main.py signals --symbol BTC-USDT           # list locally stored signals
+    python main.py telegram-test                       # send one Telegram test message to every configured chat
+    python main.py funnel [--days N]                   # rejection-funnel report (default: last 7 days)
+    python main.py performance [--days N]              # win-rate/expectancy report (default: last 7 days)
+    python main.py baseline --save <name> [--days N]   # save a timestamped baseline snapshot to data/baselines/
 
-None of these modes implement a dashboard, WebSocket broadcasting, live
-trading, or TradingView integration. `scan-once` and `scan` persist
-CONFIRMED signals to local SQLite storage only when persistence is
-enabled, and send a Telegram notification for each newly stored,
-non-duplicate signal to every chat ID configured in TELEGRAM_CHAT_IDS,
-only when Telegram is enabled in settings.
+None of these modes implement a dashboard or WebSocket broadcasting.
+`scan-once` and `scan` persist CONFIRMED signals to local SQLite
+storage only when persistence is enabled, and send a Telegram
+notification for each newly stored, non-duplicate signal to every chat
+ID configured in TELEGRAM_CHAT_IDS, only when Telegram is enabled in
+settings. `scan` additionally runs a standalone SignalOutcomeMonitor
+(see app.monitoring.signal_outcome_monitor) whenever persistence and
+SIGNAL_OUTCOME_MONITOR_ENABLED are both on, so a `python main.py scan`
+run tracks WIN/LOSS/TIMEOUT outcomes for every CONFIRMED signal on its
+own -- no dashboard API process is required for outcome tracking to
+work. If the dashboard API is also run against the same database, a
+DB-backed lease (app.storage.monitor_lease) ensures only one of the two
+processes' monitors does the polling work in any given cycle.
+`funnel`, `performance`, and `baseline` are read-only analysis modes:
+they never modify strategy behaviour and never write anything except
+(for `baseline`) the snapshot JSON file itself.
 """
 
 import asyncio
@@ -23,6 +36,7 @@ import sys
 from typing import Optional
 
 from app.config.pairs import BTC_SYMBOL
+from app.config.thresholds import SIGNAL_OUTCOME_MONITOR_LEASE_DURATION_MULTIPLIER
 from app.data.market_data_errors import MarketDataError
 from app.scanner.engine_factory import (
     build_scanner_service,
@@ -34,11 +48,24 @@ from app.scanner.pipeline_exceptions import StrategyPipelineError
 from app.scanner.pipeline_results import PipelineStatus
 from app.scanner.scan_results import PairScanStatus, ScanCycleResult
 from app.storage.database import DatabaseManager
+from app.storage.monitor_lease import MonitorLeaseGuard
 from app.storage.signal_repository import SignalRepository
+
+_SIGNAL_OUTCOME_MONITOR_LEASE_NAME = "signal_outcome_monitor"
 
 _DEFAULT_DEVELOPMENT_BALANCE = 10_000.0
 _DEFAULT_MODE = "analyze"
-_VALID_MODES = ("analyze", "scan-once", "scan", "signals", "telegram-test")
+_VALID_MODES = (
+    "analyze",
+    "scan-once",
+    "scan",
+    "signals",
+    "telegram-test",
+    "funnel",
+    "performance",
+    "baseline",
+)
+_DEFAULT_REPORT_WINDOW_DAYS = 7
 
 
 def _parse_args(argv: list[str]) -> tuple[str, float]:
@@ -144,15 +171,65 @@ async def _run_scan_once(account_balance: float) -> None:
         await _dispose_scanner_storage(service)
 
 
+def _build_signal_outcome_monitor(service):
+    """
+    Build a SignalOutcomeMonitor standalone for `python main.py scan`,
+    when signal persistence and the monitor are both enabled. Returns
+    None otherwise (nothing to track, or the operator opted out).
+
+    Shares the same DB-backed lease name/duration as the dashboard
+    API's monitor (see app.api.main.lifespan) so at most one of the two
+    processes does outcome-tracking work per cycle if both are ever run
+    against the same database at once.
+    """
+    signal_storage_service = service.signal_storage_service
+    if signal_storage_service is None:
+        return None
+
+    from app.config.settings import get_settings
+    from app.data.binance_market_data_provider import BinanceFuturesMarketDataProvider
+    from app.monitoring.signal_outcome_monitor import SignalOutcomeMonitor
+
+    settings = get_settings()
+    if not settings.signal_outcome_monitor_enabled:
+        return None
+
+    market_data_provider = BinanceFuturesMarketDataProvider(
+        base_url=settings.exchange_base_url,
+        request_timeout_seconds=settings.request_timeout_seconds,
+    )
+    lease_guard = MonitorLeaseGuard(
+        signal_storage_service.database_manager,
+        lease_name=_SIGNAL_OUTCOME_MONITOR_LEASE_NAME,
+        lease_duration_seconds=(
+            settings.signal_outcome_monitor_interval_seconds
+            * SIGNAL_OUTCOME_MONITOR_LEASE_DURATION_MULTIPLIER
+        ),
+    )
+    return SignalOutcomeMonitor(
+        signal_repository=signal_storage_service.signal_repository,
+        market_data_provider=market_data_provider,
+        interval_seconds=settings.signal_outcome_monitor_interval_seconds,
+        lease_guard=lease_guard,
+    )
+
+
 async def _run_scan_forever(account_balance: float) -> None:
     """Start the continuous 15-second multi-pair scanner until Ctrl+C."""
     service = build_scanner_service()
     await initialize_scanner_storage(service)
     loop = asyncio.get_running_loop()
 
+    signal_outcome_monitor = _build_signal_outcome_monitor(service)
+    signal_outcome_monitor_task = None
+    if signal_outcome_monitor is not None:
+        signal_outcome_monitor_task = asyncio.create_task(signal_outcome_monitor.run_forever())
+
     def _handle_shutdown_signal() -> None:
         print("Shutdown requested; finishing current scan cycle...")
         service.request_shutdown()
+        if signal_outcome_monitor is not None:
+            signal_outcome_monitor.request_shutdown()
 
     registered_signals: list[int] = []
     for sig in (signal.SIGINT, signal.SIGTERM):
@@ -173,6 +250,9 @@ async def _run_scan_forever(account_balance: float) -> None:
     finally:
         for sig in registered_signals:
             loop.remove_signal_handler(sig)
+        if signal_outcome_monitor_task is not None:
+            signal_outcome_monitor.request_shutdown()
+            await asyncio.wait_for(signal_outcome_monitor_task, timeout=30.0)
         await _dispose_scanner_storage(service)
 
     status = service.get_runtime_status()
@@ -285,8 +365,105 @@ async def _run_telegram_test() -> None:
         await telegram_client.close()
 
 
+def _parse_window_days_arg(argv: list[str], default: int = _DEFAULT_REPORT_WINDOW_DAYS) -> int:
+    """Parse an optional --days N flag, defaulting to `default` on absence or a bad value."""
+    days = default
+    index = 1
+    while index < len(argv):
+        if argv[index] == "--days" and index + 1 < len(argv):
+            try:
+                days = int(argv[index + 1])
+            except ValueError:
+                days = default
+            index += 2
+        else:
+            index += 1
+    return days
+
+
+async def _run_funnel(window_days: int) -> None:
+    """Print the rejection-funnel report for the last `window_days` days."""
+    from app.analytics.funnel_report import format_funnel_report, generate_funnel_report
+    from app.config.settings import get_settings
+    from app.storage.analytics_repository import AnalyticsRepository
+
+    settings = get_settings()
+    database_manager = DatabaseManager(settings.database_url)
+    await database_manager.initialize()
+    try:
+        analytics_repository = AnalyticsRepository(database_manager, enabled=settings.enable_rejection_analytics)
+        report = await generate_funnel_report(analytics_repository, window_days=window_days)
+        print(format_funnel_report(report))
+    finally:
+        await database_manager.dispose()
+
+
+async def _run_performance(window_days: int) -> None:
+    """Print the performance/expectancy report for the last `window_days` days."""
+    from app.analytics.performance_report import format_performance_report, generate_performance_report
+    from app.config.settings import get_settings
+
+    settings = get_settings()
+    database_manager = DatabaseManager(settings.database_url)
+    await database_manager.initialize()
+    try:
+        signal_repository = SignalRepository(database_manager)
+        report = await generate_performance_report(signal_repository, window_days=window_days)
+        print(format_performance_report(report))
+    finally:
+        await database_manager.dispose()
+
+
+def _parse_baseline_args(argv: list[str]) -> tuple[Optional[str], int]:
+    """Parse --save <name> and an optional --days N flag for the baseline CLI mode."""
+    name: Optional[str] = None
+    days = _DEFAULT_REPORT_WINDOW_DAYS
+    index = 1
+    while index < len(argv):
+        if argv[index] == "--save" and index + 1 < len(argv):
+            name = argv[index + 1]
+            index += 2
+        elif argv[index] == "--days" and index + 1 < len(argv):
+            try:
+                days = int(argv[index + 1])
+            except ValueError:
+                pass
+            index += 2
+        else:
+            index += 1
+    return name, days
+
+
+async def _run_baseline(name: Optional[str], window_days: int) -> None:
+    """Save a timestamped baseline snapshot (funnel + performance reports) to data/baselines/."""
+    from app.analytics.baseline import save_baseline
+    from app.config.settings import get_settings
+    from app.storage.analytics_repository import AnalyticsRepository
+
+    if not name:
+        print("status=ERROR")
+        print("reason=--save <name> is required, e.g. `python main.py baseline --save pre_changes`.")
+        return
+
+    settings = get_settings()
+    database_manager = DatabaseManager(settings.database_url)
+    await database_manager.initialize()
+    try:
+        analytics_repository = AnalyticsRepository(database_manager, enabled=settings.enable_rejection_analytics)
+        signal_repository = SignalRepository(database_manager)
+        file_path = await save_baseline(
+            name=name,
+            analytics_repository=analytics_repository,
+            signal_repository=signal_repository,
+            window_days=window_days,
+        )
+        print(f"baseline_saved={file_path}")
+    finally:
+        await database_manager.dispose()
+
+
 def main() -> None:
-    """Manual CLI entry point supporting analyze, scan-once, scan, signals, and telegram-test modes."""
+    """Manual CLI entry point supporting analyze, scan-once, scan, signals, telegram-test, funnel, performance, and baseline modes."""
     mode, remaining_argv = _parse_mode_and_args(sys.argv)
 
     if mode == "analyze":
@@ -303,6 +480,15 @@ def main() -> None:
         asyncio.run(_run_signals(symbol, limit))
     elif mode == "telegram-test":
         asyncio.run(_run_telegram_test())
+    elif mode == "funnel":
+        window_days = _parse_window_days_arg(remaining_argv)
+        asyncio.run(_run_funnel(window_days))
+    elif mode == "performance":
+        window_days = _parse_window_days_arg(remaining_argv)
+        asyncio.run(_run_performance(window_days))
+    elif mode == "baseline":
+        name, window_days = _parse_baseline_args(remaining_argv)
+        asyncio.run(_run_baseline(name, window_days))
 
 
 if __name__ == "__main__":

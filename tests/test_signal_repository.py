@@ -11,7 +11,15 @@ from app.models.signal import Direction, Signal, SignalStatus
 from app.storage.database import DatabaseManager
 from app.storage.signal_repository import (
     DASHBOARD_STATUS_ACTIVE,
+    DASHBOARD_STATUS_CLOSED_LOSS,
+    DASHBOARD_STATUS_CLOSED_WIN,
     DASHBOARD_STATUS_NEW,
+    OUTCOME_SOURCE_MANUAL_ACTIVATION,
+    OUTCOME_SOURCE_PASSIVE_TRACKING,
+    PASSIVE_OUTCOME_LOSS,
+    PASSIVE_OUTCOME_TIMEOUT,
+    PASSIVE_OUTCOME_UNRESOLVED,
+    PASSIVE_OUTCOME_WIN,
     DuplicateSignalStorageError,
     SignalNotFoundError,
     SignalRepository,
@@ -262,3 +270,189 @@ class TestDashboardStatus:
     async def test_get_by_trade_id_with_status_not_found(self, repository):
         result = await repository.get_by_trade_id_with_status("does-not-exist")
         assert result is None
+
+
+class TestAnalyticsFieldsOnSave:
+    async def test_analytics_fields_persisted(self, repository):
+        signal = _signal(trade_id="SMC-ANALYTICS", setup_key="setup-analytics")
+        await repository.save(
+            signal,
+            order_flow_confidence="HIGH",
+            entry_grade="A",
+            stop_loss_source="LIQUIDITY_SWEEP",
+        )
+        closed = await repository.close_passive(
+            "SMC-ANALYTICS", outcome=PASSIVE_OUTCOME_WIN, exit_price=110.0, closed_at_utc=UTC_NOW
+        )
+        assert closed.signal.trade_id == "SMC-ANALYTICS"
+        records = await repository.list_passively_closed()
+        record = next(r for r in records if r.signal.trade_id == "SMC-ANALYTICS")
+        assert record.order_flow_confidence == "HIGH"
+        assert record.entry_grade == "A"
+        assert record.stop_loss_source == "LIQUIDITY_SWEEP"
+
+    async def test_analytics_fields_default_to_none(self, repository):
+        signal = _signal(trade_id="SMC-NOANALYTICS", setup_key="setup-noanalytics")
+        await repository.save(signal)
+        await repository.close_passive(
+            "SMC-NOANALYTICS", outcome=PASSIVE_OUTCOME_LOSS, exit_price=95.0, closed_at_utc=UTC_NOW
+        )
+        records = await repository.list_passively_closed()
+        record = next(r for r in records if r.signal.trade_id == "SMC-NOANALYTICS")
+        assert record.order_flow_confidence is None
+        assert record.entry_grade is None
+        assert record.stop_loss_source is None
+
+
+class TestPassiveOutcomeTracking:
+    async def test_new_signal_is_not_passively_closed(self, repository):
+        await repository.save(_signal(trade_id="SMC-OPEN", setup_key="setup-open"))
+        open_signals = await repository.list_not_passively_closed()
+        assert any(s.trade_id == "SMC-OPEN" for s in open_signals)
+
+    async def test_close_passive_removes_from_not_closed_list(self, repository):
+        await repository.save(_signal(trade_id="SMC-CLOSE", setup_key="setup-close"))
+        await repository.close_passive(
+            "SMC-CLOSE", outcome=PASSIVE_OUTCOME_WIN, exit_price=110.0, closed_at_utc=UTC_NOW
+        )
+        open_signals = await repository.list_not_passively_closed()
+        assert all(s.trade_id != "SMC-CLOSE" for s in open_signals)
+
+    async def test_close_passive_leaves_never_activated_signal_as_new(self, repository):
+        # A signal that was never dashboard-ACTIVE must not be mirrored
+        # onto dashboard_status at all -- closing it passively leaves
+        # dashboard_status exactly as it was (NEW).
+        await repository.save(_signal(trade_id="SMC-INDEPENDENT", setup_key="setup-independent"))
+        result = await repository.close_passive(
+            "SMC-INDEPENDENT", outcome=PASSIVE_OUTCOME_WIN, exit_price=110.0, closed_at_utc=UTC_NOW
+        )
+        with_status = await repository.get_by_trade_id_with_status("SMC-INDEPENDENT")
+        assert with_status.dashboard_status == DASHBOARD_STATUS_NEW
+        assert result.outcome_source == OUTCOME_SOURCE_PASSIVE_TRACKING
+
+    async def test_close_passive_unknown_trade_id_raises(self, repository):
+        with pytest.raises(SignalNotFoundError):
+            await repository.close_passive(
+                "does-not-exist", outcome=PASSIVE_OUTCOME_WIN, exit_price=110.0, closed_at_utc=UTC_NOW
+            )
+
+    async def test_close_passive_rejects_invalid_outcome(self, repository):
+        await repository.save(_signal(trade_id="SMC-BADOUTCOME", setup_key="setup-badoutcome"))
+        with pytest.raises(ValueError):
+            await repository.close_passive(
+                "SMC-BADOUTCOME", outcome="MAYBE", exit_price=110.0, closed_at_utc=UTC_NOW
+            )
+
+    async def test_list_passively_closed_filters_by_since(self, repository):
+        early = UTC_NOW
+        late = UTC_NOW + timedelta(days=2)
+
+        await repository.save(_signal(trade_id="SMC-EARLY", setup_key="setup-early"))
+        await repository.close_passive(
+            "SMC-EARLY", outcome=PASSIVE_OUTCOME_WIN, exit_price=110.0, closed_at_utc=early
+        )
+        await repository.save(_signal(trade_id="SMC-LATE", setup_key="setup-late"))
+        await repository.close_passive(
+            "SMC-LATE", outcome=PASSIVE_OUTCOME_LOSS, exit_price=95.0, closed_at_utc=late
+        )
+
+        recent_only = await repository.list_passively_closed(since=UTC_NOW + timedelta(days=1))
+        assert {r.signal.trade_id for r in recent_only} == {"SMC-LATE"}
+
+        everything = await repository.list_passively_closed()
+        assert {r.signal.trade_id for r in everything} == {"SMC-EARLY", "SMC-LATE"}
+
+    async def test_active_signal_close_mirrors_onto_dashboard_status(self, repository):
+        # The merged-monitor contract: a signal that IS dashboard-ACTIVE
+        # at close time gets its WIN/LOSS mirrored onto dashboard_status/
+        # outcome/exit_price/closed_at_utc in the SAME write, and is
+        # tagged outcome_source=MANUAL_ACTIVATION -- there is no second,
+        # separately-scheduled close for the dashboard "Trade" workflow.
+        await repository.save(_signal(trade_id="SMC-ACTIVEANDPASSIVE", setup_key="setup-active-passive"))
+        await repository.mark_active("SMC-ACTIVEANDPASSIVE")
+        result = await repository.close_passive(
+            "SMC-ACTIVEANDPASSIVE", outcome=PASSIVE_OUTCOME_WIN, exit_price=110.0, closed_at_utc=UTC_NOW
+        )
+
+        assert result.outcome_source == OUTCOME_SOURCE_MANUAL_ACTIVATION
+        assert result.dashboard_status == DASHBOARD_STATUS_CLOSED_WIN
+
+        with_status = await repository.get_by_trade_id_with_status("SMC-ACTIVEANDPASSIVE")
+        assert with_status.dashboard_status == DASHBOARD_STATUS_CLOSED_WIN
+
+    async def test_active_signal_loss_mirrors_as_closed_loss(self, repository):
+        await repository.save(_signal(trade_id="SMC-ACTIVELOSS", setup_key="setup-active-loss"))
+        await repository.mark_active("SMC-ACTIVELOSS")
+        result = await repository.close_passive(
+            "SMC-ACTIVELOSS", outcome=PASSIVE_OUTCOME_LOSS, exit_price=95.0, closed_at_utc=UTC_NOW
+        )
+        assert result.dashboard_status == DASHBOARD_STATUS_CLOSED_LOSS
+
+    async def test_active_signal_timeout_is_never_mirrored_to_dashboard(self, repository):
+        # TIMEOUT has no dashboard_status equivalent: an ACTIVE signal
+        # that times out stays ACTIVE on the dashboard (still resolved
+        # for analytics via passive_outcome, just not reflected in the
+        # dashboard UI, which has no TIMEOUT concept).
+        await repository.save(_signal(trade_id="SMC-ACTIVETIMEOUT", setup_key="setup-active-timeout"))
+        await repository.mark_active("SMC-ACTIVETIMEOUT")
+        result = await repository.close_passive(
+            "SMC-ACTIVETIMEOUT", outcome=PASSIVE_OUTCOME_TIMEOUT, exit_price=100.0, closed_at_utc=UTC_NOW
+        )
+
+        assert result.dashboard_status == DASHBOARD_STATUS_ACTIVE
+        assert result.outcome_source == OUTCOME_SOURCE_MANUAL_ACTIVATION
+
+        with_status = await repository.get_by_trade_id_with_status("SMC-ACTIVETIMEOUT")
+        assert with_status.dashboard_status == DASHBOARD_STATUS_ACTIVE
+
+    async def test_close_passive_accepts_timeout_outcome(self, repository):
+        await repository.save(_signal(trade_id="SMC-TIMEOUT", setup_key="setup-timeout"))
+        result = await repository.close_passive(
+            "SMC-TIMEOUT", outcome=PASSIVE_OUTCOME_TIMEOUT, exit_price=100.0, closed_at_utc=UTC_NOW
+        )
+        assert result.passive_outcome == PASSIVE_OUTCOME_TIMEOUT
+
+    async def test_close_passive_accepts_unresolved_with_null_exit_price(self, repository):
+        await repository.save(_signal(trade_id="SMC-UNRESOLVED", setup_key="setup-unresolved"))
+        result = await repository.close_passive(
+            "SMC-UNRESOLVED", outcome=PASSIVE_OUTCOME_UNRESOLVED, exit_price=None, closed_at_utc=UTC_NOW
+        )
+        assert result.passive_outcome == PASSIVE_OUTCOME_UNRESOLVED
+
+        records = await repository.list_passively_closed()
+        record = next(r for r in records if r.signal.trade_id == "SMC-UNRESOLVED")
+        assert record.passive_exit_price is None
+
+    async def test_close_passive_requires_exit_price_for_non_unresolved_outcomes(self, repository):
+        await repository.save(_signal(trade_id="SMC-NOEXIT", setup_key="setup-noexit"))
+        with pytest.raises(ValueError):
+            await repository.close_passive(
+                "SMC-NOEXIT", outcome=PASSIVE_OUTCOME_WIN, exit_price=None, closed_at_utc=UTC_NOW
+            )
+
+    async def test_active_signal_unresolved_is_never_mirrored_to_dashboard(self, repository):
+        await repository.save(_signal(trade_id="SMC-ACTIVEUNRESOLVED", setup_key="setup-active-unresolved"))
+        await repository.mark_active("SMC-ACTIVEUNRESOLVED")
+        result = await repository.close_passive(
+            "SMC-ACTIVEUNRESOLVED",
+            outcome=PASSIVE_OUTCOME_UNRESOLVED,
+            exit_price=None,
+            closed_at_utc=UTC_NOW,
+        )
+        assert result.dashboard_status == DASHBOARD_STATUS_ACTIVE
+
+    async def test_list_not_passively_closed_orders_oldest_detected_first(self, repository):
+        # On overflow past `limit`, the oldest (closest to timing out)
+        # signals must be the ones guaranteed to be returned -- never an
+        # arbitrary DB-order subset.
+        newer = _signal(
+            trade_id="SMC-NEWER", setup_key="setup-newer", detection_time_utc=UTC_NOW + timedelta(hours=1)
+        )
+        older = _signal(trade_id="SMC-OLDER", setup_key="setup-older", detection_time_utc=UTC_NOW)
+        await repository.save(newer)
+        await repository.save(older)
+
+        limited = await repository.list_not_passively_closed(limit=1)
+
+        assert len(limited) == 1
+        assert limited[0].trade_id == "SMC-OLDER"

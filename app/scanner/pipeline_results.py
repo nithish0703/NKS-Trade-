@@ -95,6 +95,12 @@ class StrategyPipelineResult(BaseModel):
     # Bias, Liquidity Sweep, BOS, or IFVG).
     order_flow_confidence: Optional[str] = None
     order_flow_reason: Optional[str] = None
+    # Which IFVG path produced `selected_entry_zone`: "A" (tighter
+    # flip+retest) or "B" (wider BOS-zone retest fallback). Analytics
+    # only -- carried through unchanged from IfvgResult.entry_grade,
+    # never recalculated, never used by any stage's pass/fail logic.
+    # None whenever the pipeline never reached a passing IFVG result.
+    entry_grade: Optional[str] = None
     metadata: Optional[dict[str, Any]] = None
 
     @field_validator("detection_time_utc")

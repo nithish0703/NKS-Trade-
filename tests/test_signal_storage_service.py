@@ -49,6 +49,15 @@ def _valid_pair_result(symbol="BTC-USDT") -> PairScanResult:
     pair_result.status = PairScanStatus.VALID
     pair_result.pipeline_result = MagicMock(spec=StrategyPipelineResult)
     pair_result.pipeline_result.status = PipelineStatus.VALID
+    # MagicMock(spec=StrategyPipelineResult) only recognizes attributes
+    # present on the class object itself; pydantic instance fields
+    # (risk_plan, order_flow_confidence, entry_grade, stages) aren't
+    # visible to `spec` and must be set explicitly or every read raises
+    # AttributeError.
+    pair_result.pipeline_result.risk_plan = None
+    pair_result.pipeline_result.order_flow_confidence = None
+    pair_result.pipeline_result.entry_grade = None
+    pair_result.pipeline_result.stages = []
     return pair_result
 
 
@@ -78,6 +87,13 @@ def _duplicate_pair_result(symbol="BTC-USDT") -> PairScanResult:
     pair_result = MagicMock(spec=PairScanResult)
     pair_result.symbol = symbol
     pair_result.status = PairScanStatus.DUPLICATE
+    # A duplicate is still a genuine pipeline run underneath (the
+    # pipeline reached VALID again; PairScanner just recognized the
+    # setup as already-seen) -- stage analytics still get recorded for
+    # it, so `pipeline_result` must be present, not None.
+    pair_result.pipeline_result = MagicMock(spec=StrategyPipelineResult)
+    pair_result.pipeline_result.status = PipelineStatus.VALID
+    pair_result.pipeline_result.stages = []
     return pair_result
 
 
@@ -106,11 +122,26 @@ def _skipped_pair_result(symbol="BTC-USDT") -> PairScanResult:
     )
 
 
+def _analytics_repo(**overrides):
+    """
+    Build an analytics_repository mock with sensible defaults for both
+    save_rejection() (REJECTED results) and save_stage_results()
+    (every result that ran the pipeline). Any attribute can be
+    overridden by passing it as a keyword.
+    """
+    defaults = dict(
+        save_rejection=AsyncMock(),
+        save_stage_results=AsyncMock(),
+    )
+    defaults.update(overrides)
+    return MagicMock(**defaults)
+
+
 def _build_service(signal_builder=None, signal_repository=None, analytics_repository=None):
     return SignalStorageService(
         signal_builder=signal_builder or MagicMock(build=MagicMock(return_value=_signal())),
         signal_repository=signal_repository or _repo(),
-        analytics_repository=analytics_repository or MagicMock(save_rejection=AsyncMock()),
+        analytics_repository=analytics_repository or _analytics_repo(),
         settings=MagicMock(),
     )
 
@@ -125,7 +156,7 @@ def _repo(**overrides):
     Any attribute can be overridden by passing it as a keyword.
     """
     defaults = dict(
-        save=AsyncMock(side_effect=lambda s: s),
+        save=AsyncMock(side_effect=lambda s, **_kwargs: s),
         list_recent_with_status=AsyncMock(return_value=[]),
     )
     defaults.update(overrides)
@@ -155,7 +186,7 @@ class TestProcessPairResult:
         assert result.duplicate is True
 
     async def test_rejected_result_stored_only_as_analytics(self):
-        analytics_repository = MagicMock(save_rejection=AsyncMock())
+        analytics_repository = _analytics_repo()
         service = _build_service(analytics_repository=analytics_repository)
 
         result = await service.process_pair_result(_rejected_pair_result())
@@ -165,7 +196,7 @@ class TestProcessPairResult:
 
     async def test_scanner_duplicate_ignored(self):
         signal_builder = MagicMock(build=MagicMock())
-        analytics_repository = MagicMock(save_rejection=AsyncMock())
+        analytics_repository = _analytics_repo()
         service = _build_service(signal_builder=signal_builder, analytics_repository=analytics_repository)
 
         result = await service.process_pair_result(_duplicate_pair_result())
@@ -230,7 +261,7 @@ class TestProcessPairResult:
         service = SignalStorageService(
             signal_builder=MagicMock(build=MagicMock(return_value=_signal())),
             signal_repository=signal_repository,
-            analytics_repository=MagicMock(save_rejection=AsyncMock()),
+            analytics_repository=_analytics_repo(),
             settings=MagicMock(),
             duplicate_guard=duplicate_guard,
         )
@@ -268,7 +299,7 @@ class TestProcessCycle:
         cycle_result.pair_results = pair_results
 
         signal_repository = _repo()
-        analytics_repository = MagicMock(save_rejection=AsyncMock())
+        analytics_repository = _analytics_repo()
         service = _build_service(
             signal_repository=signal_repository, analytics_repository=analytics_repository
         )

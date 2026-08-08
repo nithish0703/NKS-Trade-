@@ -2,15 +2,16 @@
 Tests for app.storage.analytics_repository.AnalyticsRepository.
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import select
 
-from app.scanner.pipeline_results import PipelineStatus, StrategyPipelineResult
+from app.models.validation_result import ValidationResult
+from app.scanner.pipeline_results import PipelineStageResult, PipelineStatus, StrategyPipelineResult
 from app.storage.analytics_repository import AnalyticsRepository
 from app.storage.database import DatabaseManager
-from app.storage.models import RejectedAnalyticsRecord
+from app.storage.models import RejectedAnalyticsRecord, ScanStageAnalyticsRecord
 
 pytestmark = pytest.mark.asyncio
 
@@ -195,5 +196,152 @@ class TestAnalyticsRepository:
             records = await repository.list_recent(limit=10)
             record_fields = set(type(records[0]).model_fields.keys())
             assert record_fields.isdisjoint({"candles", "candle_data", "market_context"})
+        finally:
+            await manager.dispose()
+
+    async def test_list_rejections_since_filters_by_window(self, tmp_path):
+        manager = DatabaseManager(f"sqlite+aiosqlite:///{tmp_path / 'k.db'}")
+        await manager.initialize()
+        try:
+            repository = AnalyticsRepository(manager, enabled=True)
+            early = _rejected_pipeline_result(symbol="BTC-USDT").model_copy(
+                update={"detection_time_utc": UTC_NOW}
+            )
+            late = _rejected_pipeline_result(symbol="ETH-USDT").model_copy(
+                update={"detection_time_utc": UTC_NOW + timedelta(days=2)}
+            )
+            await repository.save_rejection(early)
+            await repository.save_rejection(late)
+
+            recent_only = await repository.list_rejections_since(UTC_NOW + timedelta(days=1))
+            assert {r.symbol for r in recent_only} == {"ETH-USDT"}
+
+            everything = await repository.list_rejections_since(UTC_NOW)
+            assert {r.symbol for r in everything} == {"BTC-USDT", "ETH-USDT"}
+        finally:
+            await manager.dispose()
+
+
+def _stage(
+    stage_order: int, layer_name: str, *, passed: bool, executed: bool = True, duration_ms: float = 1.0
+) -> PipelineStageResult:
+    validation_result = ValidationResult(passed=passed, layer_name=layer_name, reason="test")
+    return PipelineStageResult(
+        stage_order=stage_order,
+        layer_name=layer_name,
+        mandatory=True,
+        executed=executed,
+        passed=passed if executed else False,
+        reason="test",
+        validation_result=validation_result if executed else None,
+        duration_ms=duration_ms if executed else 0.0,
+    )
+
+
+def _pipeline_result_with_stages(symbol: str, stages: list[PipelineStageResult]) -> StrategyPipelineResult:
+    # Always REJECTED here regardless of the stages' own passed values --
+    # a VALID StrategyPipelineResult requires a real RiskPlan, which is
+    # irrelevant to these stage-analytics-storage tests. Reconciling
+    # CONFIRMED counts against a genuinely VALID result is covered
+    # separately in the funnel-report acceptance tests.
+    return StrategyPipelineResult(
+        symbol=symbol,
+        expected_direction=None,
+        detection_time_utc=UTC_NOW,
+        status=PipelineStatus.REJECTED,
+        passed=False,
+        failed_layer="TEST",
+        rejection_reason="test rejection",
+        stages=stages,
+    )
+
+
+class TestSaveStageResults:
+    async def test_stage_rows_recorded_for_executed_stages_only(self, tmp_path):
+        manager = DatabaseManager(f"sqlite+aiosqlite:///{tmp_path / 'stages_a.db'}")
+        await manager.initialize()
+        try:
+            repository = AnalyticsRepository(manager, enabled=True)
+            stages = [
+                _stage(1, "HTF_BIAS", passed=True),
+                _stage(2, "LIQUIDITY_SWEEP", passed=False),
+                _stage(3, "BOS", passed=False, executed=False),
+            ]
+            pipeline_result = _pipeline_result_with_stages("BTC-USDT", stages)
+            await repository.save_stage_results(pipeline_result)
+
+            async with manager.session_scope() as session:
+                result = await session.execute(select(ScanStageAnalyticsRecord))
+                records = result.scalars().all()
+
+            assert len(records) == 2
+            assert {r.layer_name for r in records} == {"HTF_BIAS", "LIQUIDITY_SWEEP"}
+        finally:
+            await manager.dispose()
+
+    async def test_not_stored_when_disabled(self, tmp_path):
+        manager = DatabaseManager(f"sqlite+aiosqlite:///{tmp_path / 'stages_b.db'}")
+        await manager.initialize()
+        try:
+            repository = AnalyticsRepository(manager, enabled=False)
+            stages = [_stage(1, "HTF_BIAS", passed=True)]
+            await repository.save_stage_results(_pipeline_result_with_stages("BTC-USDT", stages))
+            async with manager.session_scope() as session:
+                result = await session.execute(select(ScanStageAnalyticsRecord))
+                records = result.scalars().all()
+            assert len(records) == 0
+        finally:
+            await manager.dispose()
+
+    async def test_no_stages_at_all_is_a_no_op(self, tmp_path):
+        manager = DatabaseManager(f"sqlite+aiosqlite:///{tmp_path / 'stages_c.db'}")
+        await manager.initialize()
+        try:
+            repository = AnalyticsRepository(manager, enabled=True)
+            await repository.save_stage_results(_pipeline_result_with_stages("BTC-USDT", []))
+            async with manager.session_scope() as session:
+                result = await session.execute(select(ScanStageAnalyticsRecord))
+                records = result.scalars().all()
+            assert len(records) == 0
+        finally:
+            await manager.dispose()
+
+    async def test_list_stage_results_since_filters_by_window(self, tmp_path):
+        manager = DatabaseManager(f"sqlite+aiosqlite:///{tmp_path / 'stages_d.db'}")
+        await manager.initialize()
+        try:
+            repository = AnalyticsRepository(manager, enabled=True)
+            early_stages = [_stage(1, "HTF_BIAS", passed=True)]
+            late_stages = [_stage(1, "HTF_BIAS", passed=True)]
+            early_result = _pipeline_result_with_stages("BTC-USDT", early_stages).model_copy(
+                update={"detection_time_utc": UTC_NOW}
+            )
+            late_result = _pipeline_result_with_stages("ETH-USDT", late_stages).model_copy(
+                update={"detection_time_utc": UTC_NOW + timedelta(days=2)}
+            )
+            await repository.save_stage_results(early_result)
+            await repository.save_stage_results(late_result)
+
+            recent_only = await repository.list_stage_results_since(UTC_NOW + timedelta(days=1))
+            assert {r.symbol for r in recent_only} == {"ETH-USDT"}
+
+            everything = await repository.list_stage_results_since(UTC_NOW)
+            assert {r.symbol for r in everything} == {"BTC-USDT", "ETH-USDT"}
+        finally:
+            await manager.dispose()
+
+    async def test_duration_and_passed_preserved(self, tmp_path):
+        manager = DatabaseManager(f"sqlite+aiosqlite:///{tmp_path / 'stages_e.db'}")
+        await manager.initialize()
+        try:
+            repository = AnalyticsRepository(manager, enabled=True)
+            stages = [_stage(1, "HTF_BIAS", passed=True, duration_ms=12.5)]
+            await repository.save_stage_results(_pipeline_result_with_stages("BTC-USDT", stages))
+
+            records = await repository.list_stage_results_since(UTC_NOW - timedelta(days=1))
+            assert len(records) == 1
+            assert records[0].passed is True
+            assert records[0].duration_ms == 12.5
+            assert records[0].stage_order == 1
         finally:
             await manager.dispose()

@@ -26,10 +26,44 @@ ATR_STOP_LOSS_MULTIPLIER: Final[float] = 1.5
 # Scanner
 SCANNER_INTERVAL_SECONDS: Final[int] = 300
 
-# Trade outcome monitor: how often ACTIVE (dashboard "Trade" button)
-# signals are re-checked against the latest exchange ticker price to
-# see if take_profit or stop_loss has been touched.
-TRADE_OUTCOME_MONITOR_INTERVAL_SECONDS: Final[int] = 60
+# Signal outcome monitor: how often EVERY CONFIRMED signal (regardless
+# of dashboard_status) is re-checked, via a single bulk ticker-price
+# fetch, against its take_profit/stop_loss to see if either has been
+# touched. Feeds the Phase 1 performance report's full-sample outcome
+# tracking; when a signal also happens to be dashboard-ACTIVE (the
+# "Trade" button workflow) at close time, the same pass also mirrors
+# the outcome onto dashboard_status. One shared schedule -- there is no
+# separate dashboard-only polling loop.
+SIGNAL_OUTCOME_MONITOR_INTERVAL_SECONDS: Final[int] = 60
+
+# A CONFIRMED signal that never touches take_profit or stop_loss is
+# force-closed as TIMEOUT after this many entry-timeframe (15m) candles
+# have elapsed since detection, matching the Phase 4 backtest's
+# MAX_TRADE_DURATION_CANDLES convention. 96 candles * 15m = 24 hours.
+# Without this, open signals accumulate forever and the performance
+# report's win-rate denominator excludes every signal that never
+# resolves, silently inflating the win rate.
+MAX_TRACKED_SIGNAL_DURATION_CANDLES: Final[int] = 96
+
+# If a cycle's bulk ticker fetch has no price at all for a signal's
+# symbol (delisted, temporarily absent from the response, etc.), the
+# signal is left open and retried on the next cycle rather than
+# force-closed immediately -- a single missing price must never be
+# recorded as a fabricated 0R break-even. Only after this many
+# *consecutive* cycles with no price for that symbol is it force-closed
+# as UNRESOLVED (a distinct outcome, excluded from performance-report
+# expectancy math, never counted as WIN/LOSS/TIMEOUT).
+MAX_CONSECUTIVE_MISSING_PRICE_CYCLES: Final[int] = 10
+
+# SignalOutcomeMonitor renews a DB-backed lease every cycle so at most
+# one process (e.g. `python main.py scan` and the dashboard API) does
+# outcome-tracking work at a time even when both point at the same
+# SQLite database. The lease is granted for this many multiples of the
+# monitor's poll interval, so a crashed holder's lease expires and the
+# other process can take over within a bounded number of missed cycles,
+# while a slow-but-alive single holder never loses its own lease
+# between renewals.
+SIGNAL_OUTCOME_MONITOR_LEASE_DURATION_MULTIPLIER: Final[int] = 3
 
 # Dynamic Liquidity + Open Interest coin-discovery configuration.
 # The refresh interval defaults to 15 minutes. Binance Futures' public

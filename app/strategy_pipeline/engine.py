@@ -458,6 +458,7 @@ class PipelineStrategyEngine:
             risk_plan=risk_plan,
             order_flow_confidence=order_flow_result.confidence.value,
             order_flow_reason=order_flow_result.reason,
+            entry_grade=ifvg_result.entry_grade,
         )
 
     @staticmethod

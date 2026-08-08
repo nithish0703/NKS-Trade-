@@ -25,8 +25,9 @@ from app.api.dashboard_service import (
 from app.api.runtime_store import DashboardRuntimeStore
 from app.api.websocket_manager import DashboardWebSocketManager
 from app.config.settings import get_settings
+from app.config.thresholds import SIGNAL_OUTCOME_MONITOR_LEASE_DURATION_MULTIPLIER
 from app.data.binance_market_data_provider import BinanceFuturesMarketDataProvider
-from app.monitoring.trade_outcome_monitor import TradeOutcomeMonitor
+from app.monitoring.signal_outcome_monitor import SignalOutcomeMonitor
 from app.scanner.engine_factory import (
     build_scanner_service,
     dispose_scanner_notifications,
@@ -34,12 +35,20 @@ from app.scanner.engine_factory import (
 )
 from app.storage.analytics_repository import AnalyticsRepository
 from app.storage.database import DatabaseManager
-from app.storage.signal_repository import SignalRepository
+from app.storage.monitor_lease import MonitorLeaseGuard
+from app.storage.signal_repository import (
+    OUTCOME_SOURCE_MANUAL_ACTIVATION,
+    SignalRepository,
+    SignalWithStatus,
+)
 from app.utils.logger import configure_logging
 
 logger = logging.getLogger(__name__)
 
 _DASHBOARD_ACCOUNT_BALANCE = 10_000.0
+# Must match main.py's _SIGNAL_OUTCOME_MONITOR_LEASE_NAME exactly -- the
+# same lease row coordinates both processes.
+_SIGNAL_OUTCOME_MONITOR_LEASE_NAME = "signal_outcome_monitor"
 
 # Configured at import time (before the lifespan context runs, and
 # before any scanner/discovery log call can happen) so every module's
@@ -87,7 +96,7 @@ async def lifespan(app: FastAPI):
     app.state.websocket_manager = websocket_manager
     app.state.dashboard_service = dashboard_service
     app.state.scanner_service = None
-    app.state.trade_outcome_monitor = None
+    app.state.signal_outcome_monitor = None
 
     scanner_task = None
     if settings.dashboard_api_enabled:
@@ -128,31 +137,48 @@ async def lifespan(app: FastAPI):
 
         scanner_task = asyncio.create_task(_run_scanner())
 
-    trade_outcome_monitor = None
-    trade_outcome_monitor_task = None
-    if settings.dashboard_api_enabled and settings.trade_outcome_monitor_enabled:
+    signal_outcome_monitor = None
+    signal_outcome_monitor_task = None
+    if settings.dashboard_api_enabled and settings.signal_outcome_monitor_enabled:
 
-        async def _on_trade_closed(closed_result) -> None:
-            if settings.dashboard_websocket_enabled:
+        async def _on_signal_closed(result) -> None:
+            # Only broadcast to the dashboard WebSocket when the close
+            # was also mirrored onto dashboard_status (the signal was
+            # ACTIVE) -- a pure background PASSIVE_TRACKING close (the
+            # vast majority of CONFIRMED signals, since most are never
+            # activated) has no dashboard-visible state change and must
+            # not spam the feed with closes the UI never showed as open.
+            if result.outcome_source == OUTCOME_SOURCE_MANUAL_ACTIVATION and settings.dashboard_websocket_enabled:
                 await websocket_manager.broadcast_event(
-                    build_trade_outcome_updated_event(closed_result)
+                    build_trade_outcome_updated_event(
+                        SignalWithStatus(signal=result.signal, dashboard_status=result.dashboard_status)
+                    )
                 )
 
-        trade_outcome_monitor = TradeOutcomeMonitor(
+        lease_guard = MonitorLeaseGuard(
+            database_manager,
+            lease_name=_SIGNAL_OUTCOME_MONITOR_LEASE_NAME,
+            lease_duration_seconds=(
+                settings.signal_outcome_monitor_interval_seconds
+                * SIGNAL_OUTCOME_MONITOR_LEASE_DURATION_MULTIPLIER
+            ),
+        )
+        signal_outcome_monitor = SignalOutcomeMonitor(
             signal_repository=signal_repository,
             market_data_provider=market_data_provider,
-            interval_seconds=settings.trade_outcome_monitor_interval_seconds,
-            on_signal_closed=_on_trade_closed,
+            interval_seconds=settings.signal_outcome_monitor_interval_seconds,
+            on_signal_closed=_on_signal_closed,
+            lease_guard=lease_guard,
         )
-        app.state.trade_outcome_monitor = trade_outcome_monitor
+        app.state.signal_outcome_monitor = signal_outcome_monitor
 
-        async def _run_trade_outcome_monitor() -> None:
+        async def _run_signal_outcome_monitor() -> None:
             try:
-                await trade_outcome_monitor.run_forever()
+                await signal_outcome_monitor.run_forever()
             except Exception as exc:  # noqa: BLE001 - keep the API process alive
-                logger.error("Trade outcome monitor background task stopped unexpectedly: %s", exc)
+                logger.error("Signal outcome monitor background task stopped unexpectedly: %s", exc)
 
-        trade_outcome_monitor_task = asyncio.create_task(_run_trade_outcome_monitor())
+        signal_outcome_monitor_task = asyncio.create_task(_run_signal_outcome_monitor())
 
     try:
         yield
@@ -165,9 +191,9 @@ async def lifespan(app: FastAPI):
             if scanner_service.signal_storage_service is not None:
                 await scanner_service.signal_storage_service.database_manager.dispose()
 
-        if trade_outcome_monitor_task is not None:
-            trade_outcome_monitor.request_shutdown()
-            await asyncio.wait_for(trade_outcome_monitor_task, timeout=30.0)
+        if signal_outcome_monitor_task is not None:
+            signal_outcome_monitor.request_shutdown()
+            await asyncio.wait_for(signal_outcome_monitor_task, timeout=30.0)
 
         await database_manager.dispose()
 

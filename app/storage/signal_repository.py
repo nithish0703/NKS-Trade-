@@ -48,13 +48,37 @@ def _log_duplicate_debug(
 
 DASHBOARD_STATUS_NEW = "NEW"
 DASHBOARD_STATUS_ACTIVE = "ACTIVE"
-# Set only by TradeOutcomeMonitor, once an ACTIVE signal's take_profit
-# or stop_loss price is touched. A closed signal is excluded from both
-# get_active_signals (dashboard_status != ACTIVE) and get_premium/
-# strong_signals (dashboard_status != NEW), so it naturally drops out
-# of every "still open" dashboard list once closed.
+# Set only by SignalOutcomeMonitor, and only for a signal that is
+# dashboard-ACTIVE at the moment it closes (mirrored in the same write
+# as the passive_* columns below -- see close_passive). A closed signal
+# is excluded from both get_active_signals (dashboard_status != ACTIVE)
+# and get_premium/strong_signals (dashboard_status != NEW), so it
+# naturally drops out of every "still open" dashboard list once closed.
 DASHBOARD_STATUS_CLOSED_WIN = "CLOSED_WIN"
 DASHBOARD_STATUS_CLOSED_LOSS = "CLOSED_LOSS"
+
+# Passive-outcome values stored in the `passive_outcome` column (see
+# close_passive below). WIN/LOSS deliberately reuse the exact same
+# strings as the dashboard_status CLOSED_WIN/CLOSED_LOSS constants
+# above, since evaluate_outcome() in app.monitoring.signal_outcome_monitor
+# is the single source of truth both the passive_* columns and (when
+# mirrored) dashboard_status agree on. TIMEOUT has no dashboard_status
+# equivalent -- it is never mirrored (see close_passive).
+PASSIVE_OUTCOME_WIN = DASHBOARD_STATUS_CLOSED_WIN
+PASSIVE_OUTCOME_LOSS = DASHBOARD_STATUS_CLOSED_LOSS
+PASSIVE_OUTCOME_TIMEOUT = "TIMEOUT"
+# A signal force-closed after MAX_CONSECUTIVE_MISSING_PRICE_CYCLES with
+# no observed price at all -- never a real WIN/LOSS/TIMEOUT observation,
+# so passive_exit_price is left NULL and this outcome is excluded from
+# the Phase 1 performance report's expectancy math (see
+# generate_performance_report), not counted as a fabricated 0R trade.
+PASSIVE_OUTCOME_UNRESOLVED = "UNRESOLVED"
+
+# Recorded in `outcome_source` alongside passive_outcome, so the Phase 1
+# performance report can distinguish full-background tracking from a
+# signal the user also actively watched on the dashboard.
+OUTCOME_SOURCE_MANUAL_ACTIVATION = "MANUAL_ACTIVATION"
+OUTCOME_SOURCE_PASSIVE_TRACKING = "PASSIVE_TRACKING"
 
 
 def _as_utc(value: datetime) -> datetime:
@@ -85,6 +109,40 @@ class SignalWithStatus(BaseModel):
     dashboard_status: str
 
 
+class ClosedTradeRecord(BaseModel):
+    """
+    A passively closed signal, with the analytics-only fields the Phase
+    1 performance report slices by. `signal` is the exact, unmodified
+    Signal as persisted.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    signal: Signal
+    order_flow_confidence: Optional[str]
+    entry_grade: Optional[str]
+    stop_loss_source: Optional[str]
+    passive_outcome: str
+    passive_exit_price: Optional[float]
+    passive_closed_at_utc: datetime
+    outcome_source: str
+
+
+class SignalOutcomeResult(BaseModel):
+    """
+    Result of close_passive(): the closed signal, its resulting
+    dashboard_status, and which path produced the outcome. `signal` is
+    the exact, unmodified Signal as persisted.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    signal: Signal
+    dashboard_status: str
+    outcome_source: str
+    passive_outcome: str
+
+
 class DuplicateSignalStorageError(Exception):
     """Raised when a Signal's trade_id or setup_key already exists in storage."""
 
@@ -103,16 +161,33 @@ class SignalRepository:
     def database_manager(self) -> DatabaseManager:
         return self._database_manager
 
-    async def save(self, signal: Signal) -> Signal:
+    async def save(
+        self,
+        signal: Signal,
+        *,
+        order_flow_confidence: Optional[str] = None,
+        entry_grade: Optional[str] = None,
+        stop_loss_source: Optional[str] = None,
+    ) -> Signal:
         """
         Insert a CONFIRMED signal. Raises DuplicateSignalStorageError
         if a record with the same trade_id or setup_key already exists;
         never silently inserts a duplicate.
+
+        `order_flow_confidence`, `entry_grade`, and `stop_loss_source`
+        are analytics-only fields (see SignalRecord), never part of the
+        Signal model itself and never shown on the Telegram/dashboard
+        signal -- purely for the Phase 1 performance-report slices.
         """
         if signal.status != SignalStatus.CONFIRMED:
             raise ValueError("Only CONFIRMED signals may be persisted.")
 
-        record = self._to_record(signal)
+        record = self._to_record(
+            signal,
+            order_flow_confidence=order_flow_confidence,
+            entry_grade=entry_grade,
+            stop_loss_source=stop_loss_source,
+        )
 
         async with self._database_manager.session_scope() as session:
             existing = await session.execute(
@@ -285,28 +360,95 @@ class SignalRepository:
 
             return SignalWithStatus(signal=self._to_signal(record), dashboard_status=record.dashboard_status)
 
-    async def close_signal(
-        self, trade_id: str, *, outcome: str, exit_price: float, closed_at_utc: datetime
-    ) -> SignalWithStatus:
+    async def list_not_passively_closed(self, limit: int = 10_000) -> list[Signal]:
         """
-        Record a trade outcome for a signal previously marked ACTIVE:
-        sets dashboard_status to CLOSED_WIN or CLOSED_LOSS and stores
-        exit_price/closed_at_utc. Called only by TradeOutcomeMonitor.
+        Return every CONFIRMED signal not yet closed (`passive_outcome
+        IS NULL`), regardless of `dashboard_status`. Used only by
+        SignalOutcomeMonitor. Unlike the dashboard "Trade" workflow,
+        this is never filtered to ACTIVE signals -- every signal the
+        pipeline ever confirmed is tracked here, and this is the single
+        query SignalOutcomeMonitor polls (there is no second,
+        ACTIVE-only query running on its own schedule).
 
-        Purely a dashboard/analytics state transition: never modifies
-        any of the signal's original trading fields (entry_price,
-        stop_loss, take_profit, etc.), never touches strategy, scoring,
-        risk, or notification logic, and never calls an exchange.
+        Ordered oldest-detected-first: if the number of open signals
+        ever exceeds `limit`, the oldest (closest to timing out) are the
+        ones guaranteed to be checked this cycle, not an arbitrary
+        DB-order subset -- the newest, still-far-from-timeout excess
+        simply waits for a future cycle rather than risking the
+        timeout logic silently starving on old signals.
+        """
+        if limit <= 0:
+            raise ValueError("limit must be positive.")
+
+        query = (
+            select(SignalRecord)
+            .where(SignalRecord.passive_outcome.is_(None))
+            .order_by(SignalRecord.detection_time_utc.asc())
+            .limit(limit)
+        )
+        async with self._database_manager.session_scope() as session:
+            try:
+                result = await session.execute(query)
+            except SQLAlchemyError as exc:
+                raise DatabaseOperationError(f"Failed to list not-passively-closed signals: {exc}") from exc
+            records = result.scalars().all()
+            return [self._to_signal(record) for record in records]
+
+    async def close_passive(
+        self,
+        trade_id: str,
+        *,
+        outcome: str,
+        exit_price: Optional[float],
+        closed_at_utc: datetime,
+    ) -> SignalOutcomeResult:
+        """
+        Record the outcome for `trade_id`: always sets
+        passive_outcome/passive_exit_price/passive_closed_at_utc and
+        outcome_source (the full-sample analytics ground truth used by
+        the Phase 1 performance report). Called only by
+        SignalOutcomeMonitor -- the single monitor and single ticker-
+        polling schedule that resolves every CONFIRMED signal.
+
+        When the signal is dashboard-ACTIVE (the "Trade" button
+        workflow) at the moment this is called AND `outcome` is WIN or
+        LOSS, the SAME write also mirrors onto dashboard_status/
+        outcome/exit_price/closed_at_utc (dashboard_status becomes
+        CLOSED_WIN/CLOSED_LOSS) and outcome_source is recorded as
+        MANUAL_ACTIVATION; otherwise outcome_source is PASSIVE_TRACKING
+        and the dashboard columns are left untouched. TIMEOUT and
+        UNRESOLVED are never mirrored to the dashboard (dashboard_status
+        has no equivalent concept for either, so an ACTIVE signal that
+        times out or goes unresolved simply stays ACTIVE there while
+        still being resolved for analytics purposes).
+
+        `exit_price` must be a real observed price for WIN/LOSS/TIMEOUT
+        (never fabricated). Only UNRESOLVED -- a signal for which no
+        price was ever observed across MAX_CONSECUTIVE_MISSING_PRICE_CYCLES
+        -- may pass `exit_price=None`, recorded as SQL NULL rather than
+        a fabricated value.
+
+        Never modifies any of the signal's original trading fields
+        (entry_price, stop_loss, take_profit, etc.).
 
         Raises:
             SignalNotFoundError: If no signal with `trade_id` exists.
-            ValueError: If `outcome` is not CLOSED_WIN or CLOSED_LOSS.
+            ValueError: If `outcome` is not a recognized outcome value,
+                or if `exit_price` is None for an outcome other than
+                UNRESOLVED.
         """
-        if outcome not in (DASHBOARD_STATUS_CLOSED_WIN, DASHBOARD_STATUS_CLOSED_LOSS):
+        if outcome not in (
+            PASSIVE_OUTCOME_WIN,
+            PASSIVE_OUTCOME_LOSS,
+            PASSIVE_OUTCOME_TIMEOUT,
+            PASSIVE_OUTCOME_UNRESOLVED,
+        ):
             raise ValueError(
-                f"outcome must be '{DASHBOARD_STATUS_CLOSED_WIN}' or "
-                f"'{DASHBOARD_STATUS_CLOSED_LOSS}', got '{outcome}'."
+                f"outcome must be one of '{PASSIVE_OUTCOME_WIN}', '{PASSIVE_OUTCOME_LOSS}', "
+                f"'{PASSIVE_OUTCOME_TIMEOUT}', or '{PASSIVE_OUTCOME_UNRESOLVED}', got '{outcome}'."
             )
+        if exit_price is None and outcome != PASSIVE_OUTCOME_UNRESOLVED:
+            raise ValueError(f"exit_price is required for outcome '{outcome}'.")
 
         async with self._database_manager.session_scope() as session:
             try:
@@ -320,17 +462,67 @@ class SignalRepository:
             if record is None:
                 raise SignalNotFoundError(f"No signal found with trade_id='{trade_id}'.")
 
-            record.dashboard_status = outcome
-            record.outcome = outcome
-            record.exit_price = exit_price
-            record.closed_at_utc = closed_at_utc
+            was_active = record.dashboard_status == DASHBOARD_STATUS_ACTIVE
+            source = OUTCOME_SOURCE_MANUAL_ACTIVATION if was_active else OUTCOME_SOURCE_PASSIVE_TRACKING
+
+            record.passive_outcome = outcome
+            record.passive_exit_price = exit_price
+            record.passive_closed_at_utc = closed_at_utc
+            record.outcome_source = source
+
+            if was_active and outcome in (PASSIVE_OUTCOME_WIN, PASSIVE_OUTCOME_LOSS):
+                record.dashboard_status = outcome  # aliases DASHBOARD_STATUS_CLOSED_WIN/LOSS
+                record.outcome = outcome
+                record.exit_price = exit_price
+                record.closed_at_utc = closed_at_utc
+
             try:
                 await session.commit()
             except SQLAlchemyError as exc:
                 await session.rollback()
-                raise DatabaseOperationError(f"Failed to close signal: {exc}") from exc
+                raise DatabaseOperationError(f"Failed to record signal outcome: {exc}") from exc
 
-            return SignalWithStatus(signal=self._to_signal(record), dashboard_status=record.dashboard_status)
+            return SignalOutcomeResult(
+                signal=self._to_signal(record),
+                dashboard_status=record.dashboard_status,
+                outcome_source=source,
+                passive_outcome=outcome,
+            )
+
+    async def list_passively_closed(self, since: Optional[datetime] = None) -> list[ClosedTradeRecord]:
+        """
+        Return every signal that has been passively closed (WIN, LOSS,
+        TIMEOUT, or UNRESOLVED), optionally restricted to those closed
+        at or after `since`. Used by the Phase 1 performance report --
+        this is the full-sample source (every CONFIRMED signal), unlike
+        the dashboard-only ACTIVE/CLOSED_WIN/CLOSED_LOSS workflow.
+        UNRESOLVED records have `passive_exit_price=None`; the caller
+        must exclude them from R-multiple/expectancy math rather than
+        treat a missing price as a fabricated value.
+        """
+        query = select(SignalRecord).where(SignalRecord.passive_outcome.is_not(None))
+        if since is not None:
+            query = query.where(SignalRecord.passive_closed_at_utc >= since)
+
+        async with self._database_manager.session_scope() as session:
+            try:
+                result = await session.execute(query)
+            except SQLAlchemyError as exc:
+                raise DatabaseOperationError(f"Failed to list passively closed signals: {exc}") from exc
+            records = result.scalars().all()
+            return [
+                ClosedTradeRecord(
+                    signal=self._to_signal(record),
+                    order_flow_confidence=record.order_flow_confidence,
+                    entry_grade=record.entry_grade,
+                    stop_loss_source=record.stop_loss_source,
+                    passive_outcome=record.passive_outcome,
+                    passive_exit_price=record.passive_exit_price,
+                    passive_closed_at_utc=_as_utc(record.passive_closed_at_utc),
+                    outcome_source=record.outcome_source,
+                )
+                for record in records
+            ]
 
     async def count_by_dashboard_status(self, dashboard_status: str) -> int:
         """Count signals currently in a given dashboard_status (e.g. ACTIVE, CLOSED_WIN)."""
@@ -352,7 +544,13 @@ class SignalRepository:
             return len(result.scalars().all())
 
     @staticmethod
-    def _to_record(signal: Signal) -> SignalRecord:
+    def _to_record(
+        signal: Signal,
+        *,
+        order_flow_confidence: Optional[str] = None,
+        entry_grade: Optional[str] = None,
+        stop_loss_source: Optional[str] = None,
+    ) -> SignalRecord:
         return SignalRecord(
             trade_id=signal.trade_id,
             setup_key=signal.setup_key,
@@ -372,6 +570,9 @@ class SignalRepository:
             structure_break_id=signal.structure_break_id,
             entry_zone_id=signal.entry_zone_id,
             created_at_utc=signal.created_at_utc,
+            order_flow_confidence=order_flow_confidence,
+            entry_grade=entry_grade,
+            stop_loss_source=stop_loss_source,
         )
 
     @staticmethod

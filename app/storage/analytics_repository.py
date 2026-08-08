@@ -11,7 +11,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from app.scanner.pipeline_results import PipelineStatus, StrategyPipelineResult
 from app.storage.database import DatabaseManager, DatabaseOperationError
-from app.storage.models import RejectedAnalyticsRecord
+from app.storage.models import RejectedAnalyticsRecord, ScanStageAnalyticsRecord
 
 
 def _as_utc(value: datetime) -> datetime:
@@ -32,11 +32,25 @@ class RejectionRecord(BaseModel):
     created_at_utc: datetime
 
 
+class StageAnalyticsRecord(BaseModel):
+    """A single stored per-stage scan-analytics record."""
+
+    model_config = ConfigDict(frozen=True)
+
+    symbol: str
+    stage_order: int
+    layer_name: str
+    passed: bool
+    duration_ms: float
+    scan_time_utc: datetime
+
+
 class AnalyticsRepository:
     """
-    Optionally persists REJECTED strategy pipeline results as internal
-    analytics records. Never stores full candle payloads or secrets,
-    and never turns a REJECTED result into a valid signal.
+    Optionally persists REJECTED strategy pipeline results and every
+    scan's per-stage outcomes as internal analytics records. Never
+    stores full candle payloads or secrets, and never turns a REJECTED
+    result into a valid signal.
     """
 
     def __init__(self, database_manager: DatabaseManager, *, enabled: bool) -> None:
@@ -101,6 +115,94 @@ class AnalyticsRepository:
                     rejection_reason=record.rejection_reason,
                     detection_time_utc=_as_utc(record.detection_time_utc),
                     created_at_utc=_as_utc(record.created_at_utc),
+                )
+                for record in records
+            ]
+
+    async def list_rejections_since(self, since: datetime) -> list[RejectionRecord]:
+        """
+        Return every rejection-analytics record with `detection_time_utc`
+        at or after `since`, in no particular order. Used by the Phase 1
+        funnel report's top-rejection-reasons breakdown.
+        """
+        query = select(RejectedAnalyticsRecord).where(
+            RejectedAnalyticsRecord.detection_time_utc >= since
+        )
+        async with self._database_manager.session_scope() as session:
+            try:
+                result = await session.execute(query)
+            except SQLAlchemyError as exc:
+                raise DatabaseOperationError(f"Failed to list rejection analytics since {since}: {exc}") from exc
+            records = result.scalars().all()
+            return [
+                RejectionRecord(
+                    symbol=record.symbol,
+                    failed_layer=record.failed_layer,
+                    rejection_reason=record.rejection_reason,
+                    detection_time_utc=_as_utc(record.detection_time_utc),
+                    created_at_utc=_as_utc(record.created_at_utc),
+                )
+                for record in records
+            ]
+
+    async def save_stage_results(self, pipeline_result: StrategyPipelineResult) -> None:
+        """
+        Store one stage-analytics record per *executed* stage in
+        `pipeline_result.stages`, for the Phase 1 rejection-funnel
+        report. A no-op when stage analytics are disabled or the result
+        has no executed stages (e.g. an ERROR result with no pipeline
+        run at all). Called for every scan that actually ran the
+        pipeline (VALID, REJECTED, or DUPLICATE), never for ERROR or
+        SKIPPED results.
+        """
+        if not self._enabled:
+            return
+
+        executed_stages = [stage for stage in pipeline_result.stages if stage.executed]
+        if not executed_stages:
+            return
+
+        now = datetime.now(timezone.utc)
+        async with self._database_manager.session_scope() as session:
+            for stage in executed_stages:
+                session.add(
+                    ScanStageAnalyticsRecord(
+                        symbol=pipeline_result.symbol,
+                        stage_order=stage.stage_order,
+                        layer_name=stage.layer_name,
+                        passed=stage.passed,
+                        duration_ms=stage.duration_ms,
+                        scan_time_utc=pipeline_result.detection_time_utc,
+                        created_at_utc=now,
+                    )
+                )
+            try:
+                await session.commit()
+            except SQLAlchemyError as exc:
+                await session.rollback()
+                raise DatabaseOperationError(f"Failed to save stage analytics: {exc}") from exc
+
+    async def list_stage_results_since(self, since: datetime) -> list[StageAnalyticsRecord]:
+        """
+        Return every stage-analytics record with `scan_time_utc` at or
+        after `since`, in no particular order. Used by the Phase 1
+        funnel report.
+        """
+        query = select(ScanStageAnalyticsRecord).where(ScanStageAnalyticsRecord.scan_time_utc >= since)
+        async with self._database_manager.session_scope() as session:
+            try:
+                result = await session.execute(query)
+            except SQLAlchemyError as exc:
+                raise DatabaseOperationError(f"Failed to list stage analytics since {since}: {exc}") from exc
+            records = result.scalars().all()
+            return [
+                StageAnalyticsRecord(
+                    symbol=record.symbol,
+                    stage_order=record.stage_order,
+                    layer_name=record.layer_name,
+                    passed=record.passed,
+                    duration_ms=record.duration_ms,
+                    scan_time_utc=_as_utc(record.scan_time_utc),
                 )
                 for record in records
             ]

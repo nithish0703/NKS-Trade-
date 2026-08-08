@@ -74,19 +74,33 @@ class SignalStorageService:
     def database_manager(self):
         return self._database_manager
 
+    @property
+    def signal_repository(self) -> SignalRepository:
+        return self._signal_repository
+
     async def process_pair_result(
         self, pair_scan_result: PairScanResult
     ) -> Optional[SignalStorageResult]:
         """
         Build and persist a Signal for a VALID PairScanResult, optionally
-        record rejection analytics for a REJECTED result, and otherwise
-        do nothing. Never mutates `pair_scan_result`.
+        record rejection analytics for a REJECTED result, record
+        per-stage funnel analytics for any result that actually ran the
+        pipeline (VALID, REJECTED, or DUPLICATE), and otherwise do
+        nothing. Never mutates `pair_scan_result`.
         """
+        pipeline_result = pair_scan_result.pipeline_result
+        if pipeline_result is not None:
+            try:
+                await self._analytics_repository.save_stage_results(pipeline_result)
+            except StorageError:
+                self._logger.warning(
+                    "Failed to save stage analytics for %s", pair_scan_result.symbol
+                )
+
         if pair_scan_result.status == PairScanStatus.VALID:
             return await self._process_valid_result(pair_scan_result)
 
         if pair_scan_result.status == PairScanStatus.REJECTED:
-            pipeline_result = pair_scan_result.pipeline_result
             if pipeline_result is not None and pipeline_result.status == PipelineStatus.REJECTED:
                 try:
                     await self._analytics_repository.save_rejection(pipeline_result)
@@ -96,7 +110,9 @@ class SignalStorageService:
                     )
             return None
 
-        # DUPLICATE, ERROR, and SKIPPED results are never rebuilt or stored.
+        # DUPLICATE, ERROR, and SKIPPED results are never rebuilt or stored
+        # as a Signal; DUPLICATE's stage analytics were already recorded
+        # above (a duplicate is still a genuine pipeline run this cycle).
         return None
 
     async def _process_valid_result(self, pair_scan_result: PairScanResult) -> SignalStorageResult:
@@ -125,8 +141,19 @@ class SignalStorageService:
             )
             return SignalStorageResult(signal=signal, stored=False, duplicate=False, reason=reason)
 
+        pipeline_result = pair_scan_result.pipeline_result
+        stop_loss_source = None
+        if pipeline_result is not None and pipeline_result.risk_plan is not None:
+            selected_source = pipeline_result.risk_plan.stop_loss_result.selected_source
+            stop_loss_source = selected_source.value if selected_source is not None else None
+
         try:
-            stored_signal = await self._signal_repository.save(signal)
+            stored_signal = await self._signal_repository.save(
+                signal,
+                order_flow_confidence=pipeline_result.order_flow_confidence if pipeline_result else None,
+                entry_grade=pipeline_result.entry_grade if pipeline_result else None,
+                stop_loss_source=stop_loss_source,
+            )
         except DuplicateSignalStorageError as exc:
             return SignalStorageResult(
                 signal=signal, stored=False, duplicate=True, reason=str(exc)

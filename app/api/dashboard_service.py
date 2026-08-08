@@ -147,12 +147,13 @@ def build_pair_scan_updated_events(cycle_result: ScanCycleResult) -> list[Scanne
 
 def build_trade_outcome_updated_event(closed_result: SignalWithStatus) -> ScannerEvent:
     """
-    Build a single TRADE_OUTCOME_UPDATED ScannerEvent for a signal
-    TradeOutcomeMonitor just closed out (WIN or LOSS), for dashboard
-    WebSocket visibility only. Carries only fields already exposed by
-    the REST active-signals/summary responses; never candles, secrets,
-    tokens, or chat IDs. Never affects strategy, storage, or
-    notification behaviour -- a pure, read-only projection.
+    Build a single TRADE_OUTCOME_UPDATED ScannerEvent for a
+    dashboard-ACTIVE signal SignalOutcomeMonitor just closed out (WIN
+    or LOSS), for dashboard WebSocket visibility only. Carries only
+    fields already exposed by the REST active-signals/summary
+    responses; never candles, secrets, tokens, or chat IDs. Never
+    affects strategy, storage, or notification behaviour -- a pure,
+    read-only projection.
     """
     signal = closed_result.signal
     return ScannerEvent(
@@ -215,10 +216,11 @@ class DashboardService:
         cycle_result = await self._runtime_store.get_latest_cycle_result()
         last_scan_time_utc = cycle_result.completed_at_utc if cycle_result is not None else None
 
-        # Wins/losses/open_signals are real counts from TradeOutcomeMonitor,
-        # which closes an ACTIVE (dashboard "Trade" button) signal out as
-        # CLOSED_WIN/CLOSED_LOSS once its take_profit/stop_loss is
-        # touched by the live price. A signal that was never activated,
+        # Wins/losses/open_signals are real counts from SignalOutcomeMonitor,
+        # which mirrors an ACTIVE (dashboard "Trade" button) signal's
+        # close onto dashboard_status as CLOSED_WIN/CLOSED_LOSS once its
+        # take_profit/stop_loss is touched by the live price. A signal
+        # that was never activated,
         # or is activated but not yet closed, contributes to neither
         # count. win_rate is None (never 0) until at least one signal
         # has closed, so an empty "0%" is never shown as if it were a

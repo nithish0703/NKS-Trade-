@@ -14,7 +14,7 @@ from app.config.thresholds import (
     PAIR_DISCOVERY_MINIMUM_OPEN_INTEREST_USDT,
     PAIR_DISCOVERY_MINIMUM_TURNOVER_24H_USDT,
     SCANNER_INTERVAL_SECONDS,
-    TRADE_OUTCOME_MONITOR_INTERVAL_SECONDS,
+    SIGNAL_OUTCOME_MONITOR_INTERVAL_SECONDS,
 )
 from app.utils.chat_ids import parse_chat_ids as _parse_chat_ids
 
@@ -117,18 +117,23 @@ class Settings(BaseSettings):
         default=False, alias="DASHBOARD_WEBSOCKET_ENABLED"
     )
 
-    # Trade outcome monitor: periodically re-checks every ACTIVE
-    # (dashboard "Trade" button) signal's current price against its
-    # take_profit/stop_loss and records a WIN/LOSS outcome once one is
-    # touched. Runs only alongside the dashboard API (see
-    # dashboard_api_enabled above); has no effect on strategy, scoring,
-    # risk, storage, or notification behaviour.
-    trade_outcome_monitor_enabled: bool = Field(
-        default=True, alias="TRADE_OUTCOME_MONITOR_ENABLED"
+    # Signal outcome monitor: the single background poller that
+    # periodically re-checks EVERY CONFIRMED signal's current price
+    # (via one bulk ticker fetch per cycle, never per-symbol) against
+    # its take_profit/stop_loss/timeout and records the outcome. This
+    # is the sole source of the Phase 1 performance report's
+    # full-sample tracking, and also mirrors WIN/LOSS onto
+    # dashboard_status for a signal that happens to be dashboard-ACTIVE
+    # (the "Trade" button workflow) at close time -- there is only ever
+    # this one polling schedule, not a separate ACTIVE-only one. Runs
+    # only alongside the dashboard API (see dashboard_api_enabled
+    # above); has no effect on strategy, scoring, or risk behaviour.
+    signal_outcome_monitor_enabled: bool = Field(
+        default=True, alias="SIGNAL_OUTCOME_MONITOR_ENABLED"
     )
-    trade_outcome_monitor_interval_seconds: int = Field(
-        default=TRADE_OUTCOME_MONITOR_INTERVAL_SECONDS,
-        alias="TRADE_OUTCOME_MONITOR_INTERVAL_SECONDS",
+    signal_outcome_monitor_interval_seconds: int = Field(
+        default=SIGNAL_OUTCOME_MONITOR_INTERVAL_SECONDS,
+        alias="SIGNAL_OUTCOME_MONITOR_INTERVAL_SECONDS",
     )
 
     @property

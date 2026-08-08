@@ -315,6 +315,85 @@ class TestScanForeverMode:
         assert "candles_by_timeframe" not in output
 
 
+class TestSignalOutcomeMonitorWiring:
+    def test_no_monitor_when_persistence_disabled(self):
+        service = MagicMock()
+        service.signal_storage_service = None
+
+        assert main._build_signal_outcome_monitor(service) is None
+
+    def test_no_monitor_when_setting_disabled(self):
+        service = MagicMock()
+        service.signal_storage_service = MagicMock()
+        settings = MagicMock()
+        settings.signal_outcome_monitor_enabled = False
+
+        with patch("app.config.settings.get_settings", return_value=settings):
+            assert main._build_signal_outcome_monitor(service) is None
+
+    def test_monitor_built_with_lease_guard_when_enabled(self):
+        service = MagicMock()
+        signal_storage_service = MagicMock()
+        signal_storage_service.database_manager = MagicMock()
+        signal_storage_service.signal_repository = MagicMock()
+        service.signal_storage_service = signal_storage_service
+        settings = MagicMock()
+        settings.signal_outcome_monitor_enabled = True
+        settings.signal_outcome_monitor_interval_seconds = 60
+        settings.exchange_base_url = "https://fapi.binance.com"
+        settings.request_timeout_seconds = 10
+
+        with patch("app.config.settings.get_settings", return_value=settings), patch(
+            "app.data.binance_market_data_provider.BinanceFuturesMarketDataProvider"
+        ):
+            monitor = main._build_signal_outcome_monitor(service)
+
+        assert monitor is not None
+
+    async def test_monitor_started_and_shut_down_alongside_scanner(self):
+        service = MagicMock()
+        service.signal_storage_service = None
+        service.notification_service = None
+        service.run_forever = AsyncMock()
+        service.request_shutdown = MagicMock()
+        service.get_runtime_status = MagicMock(
+            return_value=ScannerRuntimeStatus(
+                running=False, shutdown_requested=True, cycles_completed=1, last_cycle_id="c"
+            )
+        )
+
+        monitor = MagicMock()
+        monitor.run_forever = AsyncMock()
+        monitor.request_shutdown = MagicMock()
+
+        with patch("main.build_scanner_service", return_value=service), patch(
+            "main._build_signal_outcome_monitor", return_value=monitor
+        ):
+            await main._run_scan_forever(10000.0)
+
+        monitor.request_shutdown.assert_called_once()
+
+    async def test_no_monitor_task_when_none_built(self):
+        # Confirms _run_scan_forever tolerates _build_signal_outcome_monitor
+        # returning None (persistence disabled / monitor disabled) without
+        # attempting to start or shut down anything monitor-related.
+        service = MagicMock()
+        service.signal_storage_service = None
+        service.notification_service = None
+        service.run_forever = AsyncMock()
+        service.request_shutdown = MagicMock()
+        service.get_runtime_status = MagicMock(
+            return_value=ScannerRuntimeStatus(
+                running=False, shutdown_requested=True, cycles_completed=1, last_cycle_id="c"
+            )
+        )
+
+        with patch("main.build_scanner_service", return_value=service), patch(
+            "main._build_signal_outcome_monitor", return_value=None
+        ):
+            await main._run_scan_forever(10000.0)  # must not raise
+
+
 class TestModeParsing:
     def test_default_mode_is_analyze(self):
         mode, remaining = main._parse_mode_and_args(["main.py", "BTC-USDT"])
