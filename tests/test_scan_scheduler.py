@@ -613,3 +613,42 @@ class TestLeaseGuard:
 
         assert pair_scanner.scan_pair.call_count == 1
         assert result.total_pairs == 1
+
+    async def test_lease_denied_logs_a_warning_not_just_info(self, caplog):
+        # An unattended week-long run cannot have a silent no-op cycle:
+        # this must be loud enough to show up at default log levels.
+        lease_guard = MagicMock()
+        lease_guard.try_acquire = AsyncMock(return_value=False)
+        scheduler = _build_scheduler(lease_guard=lease_guard)
+
+        with caplog.at_level("WARNING"):
+            await _run_cycle(scheduler)
+
+        assert any(record.levelname == "WARNING" for record in caplog.records)
+
+
+class TestEmptyPairListWarning:
+    """
+    Covers the second silent-no-op path: a scan cycle that resolves to
+    zero configured pairs for any reason (not just a denied lease --
+    e.g. a misconfigured or not-yet-refreshed dynamic pair source) must
+    log a WARNING, never proceed as if nothing were wrong.
+    """
+
+    async def test_empty_configured_pairs_logs_a_warning(self, caplog):
+        scheduler = _build_scheduler(pairs=())
+
+        with caplog.at_level("WARNING"):
+            result = await _run_cycle(scheduler)
+
+        assert result.total_pairs == 0
+        assert any(record.levelname == "WARNING" for record in caplog.records)
+
+    async def test_nonempty_configured_pairs_does_not_warn(self, caplog):
+        scheduler = _build_scheduler(pairs=("BTC-USDT",))
+
+        with caplog.at_level("WARNING"):
+            result = await _run_cycle(scheduler)
+
+        assert result.total_pairs == 1
+        assert not any(record.levelname == "WARNING" for record in caplog.records)

@@ -137,14 +137,25 @@ class MultiPairScanScheduler:
         cycle_id = _build_cycle_id(self._cycle_sequence, started_at_utc)
 
         if self._lease_guard is not None and not await self._lease_guard.try_acquire(started_at_utc):
-            self._logger.info(
-                "Cycle %s: lease held by another process; skipping candle fetch/scan this cycle.",
+            self._logger.warning(
+                "Cycle %s: SKIPPED -- scan lease held by another process; 0 pairs scanned "
+                "this cycle. This is expected only when another scanner process is genuinely "
+                "running against the same database; if not, an unexpired lease from a "
+                "previous run may be stuck (see app.storage.monitor_lease).",
                 cycle_id,
             )
             return self._build_lease_skipped_result(cycle_id, started_at_utc)
 
         configured_pairs = list(self._configured_pair_provider())
         detection_time_utc = started_at_utc
+
+        if not configured_pairs:
+            self._logger.warning(
+                "Cycle %s: SKIPPED -- configured_pair_provider() returned an empty pair list; "
+                "0 pairs will be scanned this cycle. Check DYNAMIC_PAIR_DISCOVERY_ENABLED and "
+                "the dynamic pair discovery service's last refresh result if this is unexpected.",
+                cycle_id,
+            )
 
         self._logger.info(
             "Cycle %s: scan started for %d pairs at %s.",

@@ -412,3 +412,108 @@ class TestModeParsing:
         mode, remaining = main._parse_mode_and_args(["main.py", "analyze", "ETH-USDT"])
         assert mode == "analyze"
         assert remaining == ["main.py", "ETH-USDT"]
+
+    def test_scan_args_flag_absent_defaults_false(self):
+        balance, force_release = main._parse_scan_args(["main.py"])
+        assert force_release is False
+
+    def test_scan_args_flag_present_parsed_true(self):
+        balance, force_release = main._parse_scan_args(["main.py", "--force-release-lease"])
+        assert force_release is True
+
+    def test_scan_args_flag_does_not_become_the_balance(self):
+        balance, force_release = main._parse_scan_args(["main.py", "--force-release-lease"])
+        assert balance == main._DEFAULT_DEVELOPMENT_BALANCE
+
+    def test_scan_args_flag_parses_regardless_of_position(self):
+        # _parse_args' positional-balance handling for scan/scan-once
+        # (a single-positional-arg mode reusing the two-positional
+        # analyze-mode parser) is pre-existing, unrelated behaviour --
+        # this test only asserts the flag itself parses correctly
+        # whether it appears before or interleaved with other args.
+        _, force_release_leading = main._parse_scan_args(["main.py", "--force-release-lease", "5000"])
+        _, force_release_trailing = main._parse_scan_args(["main.py", "5000", "--force-release-lease"])
+        assert force_release_leading is True
+        assert force_release_trailing is True
+
+
+class TestForceReleaseLease:
+    """
+    Covers the `--force-release-lease` escape hatch: an operator-facing
+    way to clear a stuck lease without asking for help, on top of the
+    stable-holder-id fix that makes restarts reclaim their own lease
+    automatically in the common case.
+    """
+
+    async def test_disabled_persistence_is_a_noop(self, capsys):
+        settings = MagicMock()
+        settings.enable_signal_persistence = False
+
+        with patch("app.config.settings.get_settings", return_value=settings):
+            await main._force_release_scan_leases()
+
+        output = capsys.readouterr().out
+        assert "persistence is disabled" in output.lower()
+
+    async def test_releases_both_lease_names(self, capsys):
+        settings = MagicMock()
+        settings.enable_signal_persistence = True
+        settings.database_url = "sqlite+aiosqlite:///:memory:"
+
+        database_manager = MagicMock()
+        database_manager.initialize = AsyncMock()
+        database_manager.dispose = AsyncMock()
+
+        release_calls = []
+
+        async def _fake_release_lease(db, *, lease_name):
+            release_calls.append(lease_name)
+            return True
+
+        with patch("app.config.settings.get_settings", return_value=settings), patch(
+            "main.DatabaseManager", return_value=database_manager
+        ), patch("app.storage.monitor_lease.release_lease", side_effect=_fake_release_lease):
+            await main._force_release_scan_leases()
+
+        assert release_calls == ["scanner_cycle", "signal_outcome_monitor"]
+        database_manager.dispose.assert_awaited_once()
+
+    async def test_run_scan_forever_calls_release_when_flag_set(self):
+        service = MagicMock()
+        service.signal_storage_service = None
+        service.notification_service = None
+        service.run_forever = AsyncMock()
+        service.request_shutdown = MagicMock()
+        service.get_runtime_status = MagicMock(
+            return_value=ScannerRuntimeStatus(
+                running=False, shutdown_requested=True, cycles_completed=0, last_cycle_id=None
+            )
+        )
+        release_mock = AsyncMock()
+
+        with patch("main.build_scanner_service", return_value=service), patch(
+            "main._force_release_scan_leases", release_mock
+        ):
+            await main._run_scan_forever(10000.0, force_release_lease=True)
+
+        release_mock.assert_awaited_once()
+
+    async def test_run_scan_forever_skips_release_by_default(self):
+        service = MagicMock()
+        service.signal_storage_service = None
+        service.notification_service = None
+        service.run_forever = AsyncMock()
+        service.request_shutdown = MagicMock()
+        service.get_runtime_status = MagicMock(
+            return_value=ScannerRuntimeStatus(
+                running=False, shutdown_requested=True, cycles_completed=0, last_cycle_id=None
+            )
+        )
+        release_mock = AsyncMock()
+
+        with patch("main.build_scanner_service", return_value=service), patch(
+            "main._force_release_scan_leases", release_mock
+        ):
+            await main._run_scan_forever(10000.0)
+
+        release_mock.assert_not_awaited()

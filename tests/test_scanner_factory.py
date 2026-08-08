@@ -71,3 +71,28 @@ class TestScannerFactory:
             service_one._scheduler._pair_scanner._strategy_engine
             is not service_two._scheduler._pair_scanner._strategy_engine
         )
+
+
+class TestScanLeaseWiring:
+    """
+    Covers the `scan-once` self-lockout bug: build_scanner_service()
+    constructs a brand-new MonitorLeaseGuard (brand-new random holder
+    id) on every call, so a one-off caller with no persistent identity
+    across separate invocations must be able to opt out entirely via
+    apply_scan_lease=False -- otherwise a previous invocation's own
+    still-unexpired lease silently locks out every later one.
+    """
+
+    def test_apply_scan_lease_true_by_default_wires_a_lease_guard_when_persistence_enabled(self):
+        from app.config.settings import get_settings
+
+        settings = get_settings()
+        service = build_scanner_service()
+        if settings.enable_signal_persistence:
+            assert service._scheduler._lease_guard is not None
+        else:
+            assert service._scheduler._lease_guard is None
+
+    def test_apply_scan_lease_false_never_wires_a_lease_guard(self):
+        service = build_scanner_service(apply_scan_lease=False)
+        assert service._scheduler._lease_guard is None

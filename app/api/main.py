@@ -122,6 +122,13 @@ async def lifespan(app: FastAPI):
             on_event=_on_scanner_event,
             on_cycle_result=_on_cycle_result,
             on_pair_result=_on_pair_result,
+            # Stable across restarts of this same process/mode (see
+            # MonitorLeaseGuard's holder_id docs) so a crashed or
+            # Ctrl+C'd dashboard API reclaims its own scan lease
+            # immediately instead of waiting out the full lease
+            # duration; must differ from main.py's "scan-cli" so the
+            # two still exclude each other correctly.
+            scan_lease_holder_id="dashboard-api",
         )
         await initialize_scanner_storage(scanner_service)
         app.state.scanner_service = scanner_service
@@ -162,6 +169,7 @@ async def lifespan(app: FastAPI):
                 settings.signal_outcome_monitor_interval_seconds
                 * SIGNAL_OUTCOME_MONITOR_LEASE_DURATION_MULTIPLIER
             ),
+            holder_id="dashboard-api-monitor",
         )
         signal_outcome_monitor = SignalOutcomeMonitor(
             signal_repository=signal_repository,

@@ -46,7 +46,14 @@ def build_strategy_engine(*, market_data_provider: Optional[MarketDataProvider] 
     return build_pipeline_strategy_engine(market_data_provider=market_data_provider)
 
 
-def build_scanner_service(*, on_event=None, on_cycle_result=None, on_pair_result=None) -> ScannerService:
+def build_scanner_service(
+    *,
+    on_event=None,
+    on_cycle_result=None,
+    on_pair_result=None,
+    apply_scan_lease: bool = True,
+    scan_lease_holder_id: str = "scan-cli",
+) -> ScannerService:
     """
     Construct a fully wired ScannerService using centralized Settings
     and thresholds.
@@ -65,6 +72,29 @@ def build_scanner_service(*, on_event=None, on_cycle_result=None, on_pair_result
     batched at cycle-end -- so a dashboard observer can reflect each
     coin's result in real time as it lands, independent of how long
     other pairs in the same cycle take. Never affects strategy behaviour.
+
+    `apply_scan_lease` (default True) wires the DB-backed scan-cycle
+    lease (see thresholds.SCANNER_LEASE_DURATION_MULTIPLIER) into the
+    returned scheduler when persistence is enabled -- appropriate for
+    the two long-running, recurring loops the lease exists to
+    deduplicate (`python main.py scan` and the dashboard API's
+    background scanner). Every `build_scanner_service()` call
+    constructs a lease guard with a brand-new random holder id, so a
+    one-off caller with no persistent identity across invocations (the
+    `scan-once` CLI mode) must pass `apply_scan_lease=False`: otherwise
+    a *previous* `scan-once` invocation's still-unexpired lease
+    (duration = scanner_interval_seconds * SCANNER_LEASE_DURATION_MULTIPLIER,
+    15 minutes at current defaults) silently locks out every
+    `scan-once` run after the first one, each with total_pairs=0.
+
+    `scan_lease_holder_id` (default "scan-cli", matching `python
+    main.py scan`) must be stable across restarts of the same
+    long-running caller so a process killed by Ctrl+C or a crash
+    reclaims its own lease immediately on restart instead of waiting
+    out the full lease duration (see MonitorLeaseGuard's holder_id
+    behaviour) -- but must differ between genuinely different
+    long-running callers (the dashboard API passes "dashboard-api") so
+    the two still exclude each other correctly.
     """
     settings = get_settings()
 
@@ -162,14 +192,20 @@ def build_scanner_service(*, on_event=None, on_cycle_result=None, on_pair_result
         # process -- each building a fully independent ScannerService
         # via this same function -- never both fetch candles and scan
         # the same cycle against the same database (see
-        # thresholds.SCANNER_LEASE_DURATION_MULTIPLIER).
-        scan_lease_guard = MonitorLeaseGuard(
-            database_manager,
-            lease_name="scanner_cycle",
-            lease_duration_seconds=(
-                settings.scanner_interval_seconds * thresholds.SCANNER_LEASE_DURATION_MULTIPLIER
-            ),
-        )
+        # thresholds.SCANNER_LEASE_DURATION_MULTIPLIER). Skipped for a
+        # one-off caller (apply_scan_lease=False, e.g. `scan-once`):
+        # such a caller has no persistent identity across invocations,
+        # so it would otherwise be locked out by its own previous run's
+        # still-unexpired lease.
+        if apply_scan_lease:
+            scan_lease_guard = MonitorLeaseGuard(
+                database_manager,
+                lease_name="scanner_cycle",
+                lease_duration_seconds=(
+                    settings.scanner_interval_seconds * thresholds.SCANNER_LEASE_DURATION_MULTIPLIER
+                ),
+                holder_id=scan_lease_holder_id,
+            )
 
     scheduler = MultiPairScanScheduler(
         pair_scanner=pair_scanner,

@@ -6,6 +6,7 @@ This module provides manual, development-facing CLI modes:
     python main.py analyze BTC-USDT                   # one-symbol pipeline analysis
     python main.py scan-once                          # one full multi-pair scan cycle
     python main.py scan                                # continuous scanner (see SCANNER_INTERVAL_SECONDS)
+    python main.py scan --force-release-lease          # also clear stuck scan/monitor leases before starting
     python main.py signals --symbol BTC-USDT           # list locally stored signals
     python main.py telegram-test                       # send one Telegram test message to every configured chat
     python main.py funnel [--days N]                   # rejection-funnel report (default: last 7 days)
@@ -24,7 +25,17 @@ run tracks WIN/LOSS/TIMEOUT outcomes for every CONFIRMED signal on its
 own -- no dashboard API process is required for outcome tracking to
 work. If the dashboard API is also run against the same database, a
 DB-backed lease (app.storage.monitor_lease) ensures only one of the two
-processes' monitors does the polling work in any given cycle.
+processes' monitors -- and, separately, only one of the two processes'
+scan/candle-fetch loops -- does that work in any given cycle. Both
+leases use a stable per-mode holder_id ("scan-cli"/"scan-cli-monitor"
+here, "dashboard-api"/"dashboard-api-monitor" for the dashboard API),
+so restarting `scan` after Ctrl+C or a crash reclaims its own lease
+immediately rather than waiting out the full lease duration;
+`--force-release-lease` is only needed to hand a lease to a genuinely
+different holder on demand, or to clear one left by an older version
+of this app. `scan-once` never touches the scan-cycle lease at all
+(it has no persistent identity across separate invocations, so it
+would otherwise be locked out by its own previous run).
 `funnel`, `performance`, and `baseline` are read-only analysis modes:
 they never modify strategy behaviour and never write anything except
 (for `baseline`) the snapshot JSON file itself.
@@ -79,6 +90,22 @@ def _parse_args(argv: list[str]) -> tuple[str, float]:
     else:
         balance = _DEFAULT_DEVELOPMENT_BALANCE
     return symbol, balance
+
+
+_FORCE_RELEASE_LEASE_FLAG = "--force-release-lease"
+
+
+def _parse_scan_args(argv: list[str]) -> tuple[float, bool]:
+    """
+    Parse an optional account balance and the `--force-release-lease`
+    flag for the `scan` CLI mode. The flag is stripped out before the
+    positional balance argument is parsed, so its position relative to
+    a balance argument doesn't matter.
+    """
+    force_release_lease = _FORCE_RELEASE_LEASE_FLAG in argv
+    filtered = [arg for arg in argv if arg != _FORCE_RELEASE_LEASE_FLAG]
+    _, account_balance = _parse_args(filtered)
+    return account_balance, force_release_lease
 
 
 def _parse_mode_and_args(argv: list[str]) -> tuple[str, list[str]]:
@@ -137,6 +164,16 @@ async def _run_manual_analysis(symbol: str, account_balance: float) -> None:
 
 def _print_cycle_summary(cycle_result: ScanCycleResult) -> None:
     """Print a concise scan-cycle summary. Never prints candle data or secrets."""
+    if cycle_result.metadata and cycle_result.metadata.get("lease_skipped"):
+        print(
+            "WARNING: cycle SKIPPED -- scan lease held by another process; 0 pairs scanned. "
+            "See app.storage.monitor_lease / logs for detail."
+        )
+    elif cycle_result.total_pairs == 0:
+        print(
+            "WARNING: 0 configured pairs this cycle -- nothing was scanned. Check "
+            "DYNAMIC_PAIR_DISCOVERY_ENABLED and the pair-discovery service's last result."
+        )
     print(f"cycle_id={cycle_result.cycle_id}")
     print(f"total_pairs={cycle_result.total_pairs}")
     print(f"valid={cycle_result.valid_count}")
@@ -161,8 +198,17 @@ def _print_cycle_summary(cycle_result: ScanCycleResult) -> None:
 
 
 async def _run_scan_once(account_balance: float) -> None:
-    """Build the scanner service and run exactly one multi-pair scan cycle."""
-    service = build_scanner_service()
+    """
+    Build the scanner service and run exactly one multi-pair scan cycle.
+
+    Skips the scan-cycle lease (apply_scan_lease=False): this is a
+    one-off manual invocation with no persistent identity across
+    separate runs, so it must never be locked out by a previous
+    `scan-once` run's own still-unexpired lease -- unlike `scan` and
+    the dashboard API, which run as one long-lived process each and
+    genuinely need the lease to avoid duplicating candle fetches.
+    """
+    service = build_scanner_service(apply_scan_lease=False)
     await initialize_scanner_storage(service)
     try:
         cycle_result = await service.run_single_cycle(account_balance)
@@ -205,6 +251,7 @@ def _build_signal_outcome_monitor(service):
             settings.signal_outcome_monitor_interval_seconds
             * SIGNAL_OUTCOME_MONITOR_LEASE_DURATION_MULTIPLIER
         ),
+        holder_id="scan-cli-monitor",
     )
     return SignalOutcomeMonitor(
         signal_repository=signal_storage_service.signal_repository,
@@ -214,8 +261,56 @@ def _build_signal_outcome_monitor(service):
     )
 
 
-async def _run_scan_forever(account_balance: float) -> None:
-    """Start the continuous multi-pair scanner (see SCANNER_INTERVAL_SECONDS, currently 5 minutes) until Ctrl+C."""
+async def _force_release_scan_leases() -> None:
+    """
+    Release the `scanner_cycle` and `signal_outcome_monitor` lease rows,
+    if present, regardless of current holder -- the
+    `--force-release-lease` escape hatch. The leases live in the same
+    SQLite database signal storage uses; a no-op with a printed note
+    when persistence is disabled, since there is then nothing to
+    release.
+    """
+    from app.config.settings import get_settings
+    from app.storage.monitor_lease import release_lease
+
+    settings = get_settings()
+    if not settings.enable_signal_persistence:
+        print("force_release_lease: signal persistence is disabled; no lease to release.")
+        return
+
+    database_manager = DatabaseManager(settings.database_url)
+    await database_manager.initialize()
+    try:
+        scan_released = await release_lease(database_manager, lease_name="scanner_cycle")
+        monitor_released = await release_lease(
+            database_manager, lease_name=_SIGNAL_OUTCOME_MONITOR_LEASE_NAME
+        )
+        print(
+            f"force_release_lease: scanner_cycle_released={scan_released} "
+            f"signal_outcome_monitor_released={monitor_released}"
+        )
+    finally:
+        await database_manager.dispose()
+
+
+async def _run_scan_forever(account_balance: float, *, force_release_lease: bool = False) -> None:
+    """
+    Start the continuous multi-pair scanner (see SCANNER_INTERVAL_SECONDS,
+    currently 5 minutes) until Ctrl+C.
+
+    Both the scan-cycle lease and the signal-outcome-monitor lease now
+    use a stable holder_id ("scan-cli" / "scan-cli-monitor"), so a
+    restart of this same command after Ctrl+C or a crash reclaims its
+    own lease immediately rather than waiting out the full lease
+    duration -- `force_release_lease` (from `--force-release-lease`) is
+    only needed to manually hand the lease to a *different* holder
+    (e.g. if the dashboard API should take over) or to clear a lease
+    left by a version of this app that predates the stable holder_id
+    fix.
+    """
+    if force_release_lease:
+        await _force_release_scan_leases()
+
     service = build_scanner_service()
     await initialize_scanner_storage(service)
     loop = asyncio.get_running_loop()
@@ -473,8 +568,8 @@ def main() -> None:
         _, account_balance = _parse_args(remaining_argv)
         asyncio.run(_run_scan_once(account_balance))
     elif mode == "scan":
-        _, account_balance = _parse_args(remaining_argv)
-        asyncio.run(_run_scan_forever(account_balance))
+        account_balance, force_release_lease = _parse_scan_args(remaining_argv)
+        asyncio.run(_run_scan_forever(account_balance, force_release_lease=force_release_lease))
     elif mode == "signals":
         symbol, limit = _parse_signals_args(remaining_argv)
         asyncio.run(_run_signals(symbol, limit))
