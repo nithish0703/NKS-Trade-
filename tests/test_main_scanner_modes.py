@@ -259,6 +259,51 @@ class TestScanForeverMode:
             await main._run_scan_forever(10000.0)
         service.run_forever.assert_called_once_with(10000.0)
 
+    async def test_on_cycle_result_wired_and_prints_each_cycle(self, capsys):
+        """
+        The bug this fix closes: run_forever()'s recurring cycles were
+        never observable because build_scanner_service() was never
+        given an on_cycle_result callback in the CLI scan path (only
+        scan-once printed its result, directly in its own handler).
+        """
+        service = MagicMock()
+        service.signal_storage_service = None
+        service.notification_service = None
+        service.run_forever = AsyncMock()
+        service.request_shutdown = MagicMock()
+        service.get_runtime_status = MagicMock(
+            return_value=ScannerRuntimeStatus(
+                running=False, shutdown_requested=True, cycles_completed=1, last_cycle_id="cycle-1"
+            )
+        )
+        captured_kwargs = {}
+
+        def _capture_build_scanner_service(*args, **kwargs):
+            captured_kwargs.update(kwargs)
+            return service
+
+        with patch("main.build_scanner_service", side_effect=_capture_build_scanner_service):
+            await main._run_scan_forever(10000.0)
+
+        assert "on_cycle_result" in captured_kwargs
+        on_cycle_result = captured_kwargs["on_cycle_result"]
+
+        # Invoke it directly, as ScannerService would for each completed
+        # cycle, and confirm it prints the same summary scan-once prints.
+        await on_cycle_result(
+            _cycle_result(
+                [
+                    _pair_result(symbol="BTC-USDT", status=PairScanStatus.VALID),
+                    _pair_result(symbol="ETH-USDT", status=PairScanStatus.REJECTED),
+                ]
+            )
+        )
+        output = capsys.readouterr().out
+        assert "cycle_id=cycle-1" in output
+        assert "total_pairs=2" in output
+        assert "valid=1" in output
+        assert "rejected=1" in output
+
     async def test_ctrl_c_requests_graceful_shutdown(self):
         service = MagicMock()
         service.signal_storage_service = None

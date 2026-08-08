@@ -182,6 +182,75 @@ class TestBulkTickerFetch:
         await monitor.check_open_signals()
 
 
+class TestActivityLogging:
+    """
+    Covers the fix for a monitor that's silently alive vs. silently
+    dead being indistinguishable in an unattended run's logs: every
+    cycle must log the open-signal count and, when it fetches, the
+    bulk ticker result -- not just failures and closes.
+    """
+
+    async def test_logs_open_signal_count_even_when_zero(self, caplog):
+        repository = MagicMock()
+        repository.list_not_passively_closed = AsyncMock(return_value=[])
+        market_data_provider = MagicMock()
+        market_data_provider.fetch_all_ticker_prices = AsyncMock(return_value={})
+
+        monitor = SignalOutcomeMonitor(
+            signal_repository=repository, market_data_provider=market_data_provider, interval_seconds=60, clock=_fixed_clock
+        )
+
+        with caplog.at_level("INFO"):
+            await monitor.check_open_signals()
+
+        assert any("0 open signal(s)" in r.message for r in caplog.records)
+
+    async def test_logs_bulk_fetch_result_count(self, caplog):
+        # Prices sit between stop_loss (95.0) and take_profit (110.0)
+        # for every BUY signal, so nothing closes -- this test is only
+        # about the logged counts, not outcome resolution.
+        signals = [_signal(trade_id=f"SMC-{i}", coin=f"COIN{i}-USDT") for i in range(3)]
+        repository = MagicMock()
+        repository.list_not_passively_closed = AsyncMock(return_value=signals)
+        market_data_provider = MagicMock()
+        market_data_provider.fetch_all_ticker_prices = AsyncMock(
+            return_value={"COIN0-USDT": 101.0, "COIN1-USDT": 102.0}
+        )
+
+        monitor = SignalOutcomeMonitor(
+            signal_repository=repository, market_data_provider=market_data_provider, interval_seconds=60, clock=_fixed_clock
+        )
+
+        with caplog.at_level("INFO"):
+            await monitor.check_open_signals()
+
+        assert any("3 open signal(s)" in r.message for r in caplog.records)
+        assert any("2 price(s)" in r.message for r in caplog.records)
+
+    async def test_lease_denied_logs_at_info_not_debug(self, caplog):
+        repository = MagicMock()
+        repository.list_not_passively_closed = AsyncMock(return_value=[])
+        market_data_provider = MagicMock()
+        lease_guard = MagicMock()
+        lease_guard.try_acquire = AsyncMock(return_value=False)
+
+        monitor = SignalOutcomeMonitor(
+            signal_repository=repository,
+            market_data_provider=market_data_provider,
+            interval_seconds=60,
+            clock=_fixed_clock,
+            lease_guard=lease_guard,
+        )
+
+        with caplog.at_level("INFO"):
+            await monitor.check_open_signals()
+
+        assert any(
+            "lease held by another process" in r.message and r.levelname == "INFO"
+            for r in caplog.records
+        )
+
+
 class TestCheckOpenSignals:
     async def test_closes_signal_whose_take_profit_was_touched(self):
         signal = _signal(trade_id="SMC-WIN", direction=Direction.BUY)

@@ -5,7 +5,7 @@ Schedules recurring, non-overlapping multi-pair scan cycles.
 import asyncio
 import hashlib
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable, Mapping, Optional, Protocol, Sequence
 
 from app.models.candle import Candle
@@ -378,6 +378,12 @@ class MultiPairScanScheduler:
                 # instead of drifting after restarts or slow cycles.
                 remaining_seconds = _seconds_until_next_interval_boundary(
                     self._wall_clock(), self._scanner_interval_seconds
+                )
+                next_cycle_at_utc = self._wall_clock() + timedelta(seconds=remaining_seconds)
+                self._logger.info(
+                    "Sleeping %.0fs until next cycle boundary at %s.",
+                    remaining_seconds,
+                    next_cycle_at_utc.isoformat(),
                 )
 
                 try:

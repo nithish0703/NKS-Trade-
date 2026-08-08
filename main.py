@@ -61,6 +61,7 @@ from app.scanner.scan_results import PairScanStatus, ScanCycleResult
 from app.storage.database import DatabaseManager
 from app.storage.monitor_lease import MonitorLeaseGuard
 from app.storage.signal_repository import SignalRepository
+from app.utils.logger import configure_logging
 
 _SIGNAL_OUTCOME_MONITOR_LEASE_NAME = "signal_outcome_monitor"
 
@@ -311,7 +312,15 @@ async def _run_scan_forever(account_balance: float, *, force_release_lease: bool
     if force_release_lease:
         await _force_release_scan_leases()
 
-    service = build_scanner_service()
+    # Without this, `run_forever()` completes cycles silently: unlike
+    # `scan-once`, which prints its single ScanCycleResult directly in
+    # the CLI handler, `run_forever()`'s recurring cycles are only ever
+    # observable through this callback -- there is no other code path
+    # that prints a summary for them.
+    async def _print_each_cycle(cycle_result: ScanCycleResult) -> None:
+        _print_cycle_summary(cycle_result)
+
+    service = build_scanner_service(on_cycle_result=_print_each_cycle)
     await initialize_scanner_storage(service)
     loop = asyncio.get_running_loop()
 
@@ -559,6 +568,17 @@ async def _run_baseline(name: Optional[str], window_days: int) -> None:
 
 def main() -> None:
     """Manual CLI entry point supporting analyze, scan-once, scan, signals, telegram-test, funnel, performance, and baseline modes."""
+    # Without this, every module's `logging.getLogger(__name__)` calls
+    # (scan-cycle start/sleep logs, retry warnings, pair-discovery
+    # refreshes, SignalOutcomeMonitor activity, etc.) go nowhere: the
+    # root logger has no handler by default, so even WARNING-level
+    # calls only surface via Python's bare "handler of last resort" and
+    # INFO-level calls are dropped entirely. app/api/main.py already
+    # does this for the dashboard API; the CLI needs the same for an
+    # unattended `scan` run to be observable at all between print()'d
+    # cycle summaries.
+    configure_logging()
+
     mode, remaining_argv = _parse_mode_and_args(sys.argv)
 
     if mode == "analyze":

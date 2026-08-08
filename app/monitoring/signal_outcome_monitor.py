@@ -186,13 +186,21 @@ class SignalOutcomeMonitor:
         now = self._clock()
 
         if self._lease_guard is not None and not await self._lease_guard.try_acquire(now):
-            logger.debug(
+            # INFO, not debug: an unattended run must be able to tell
+            # "another process legitimately holds this lease" apart
+            # from "this monitor died silently" without changing the
+            # log level just to check.
+            logger.info(
                 "Signal outcome monitor: lease held by another process this cycle; skipping."
             )
             return
 
         open_signals = await self._signal_repository.list_not_passively_closed(
             limit=_NOT_CLOSED_SIGNALS_CHECK_LIMIT
+        )
+        logger.info(
+            "Signal outcome monitor: lease acquired; %d open signal(s) to check this cycle.",
+            len(open_signals),
         )
         if not open_signals:
             self._consecutive_missing_price_cycles.clear()
@@ -210,6 +218,10 @@ class SignalOutcomeMonitor:
         except Exception as exc:  # noqa: BLE001 - a bad fetch must not crash the monitor
             logger.warning("Signal outcome monitor: bulk ticker-price fetch failed: %s", exc)
             return
+
+        logger.info(
+            "Signal outcome monitor: bulk ticker fetch returned %d price(s).", len(prices)
+        )
 
         for signal in open_signals:
             await self._check_one_signal(signal, prices, now)

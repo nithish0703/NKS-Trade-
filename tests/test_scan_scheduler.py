@@ -374,6 +374,46 @@ class TestRunForever:
 
         assert wait_for_calls[0] == pytest.approx(8.0)
 
+    async def test_logs_sleep_duration_and_next_cycle_time(self, caplog):
+        # An unattended run must be able to explain silence between
+        # cycles: this confirms the "sleeping until next cycle" log
+        # actually fires with the same duration run_forever waits on.
+        clock = _FakeClock()
+        wall_clock = lambda: datetime(2026, 1, 1, 10, 0, 7, tzinfo=timezone.utc)
+
+        pair_scanner = _build_pair_scanner()
+        scheduler = _build_scheduler(
+            pair_scanner=pair_scanner, pairs=("BTC-USDT",), interval_seconds=15,
+            clock=clock, wall_clock=wall_clock,
+        )
+
+        async def _get_state():
+            state = MagicMock()
+            state.active_trade_count = 0
+            state.active_positions = []
+            state.active_position_candles = {}
+            return state
+
+        import app.scanner.scan_scheduler as scheduler_module
+
+        original = scheduler_module.asyncio.wait_for
+
+        async def _shutdown_after_first_sleep(coro, timeout):
+            scheduler.request_shutdown()
+            return await original(coro, timeout=0.001)
+
+        scheduler_module.asyncio.wait_for = _shutdown_after_first_sleep
+        try:
+            with caplog.at_level("INFO"):
+                await scheduler.run_forever(account_balance=10000.0, active_state_provider=_get_state)
+        finally:
+            scheduler_module.asyncio.wait_for = original
+
+        sleep_messages = [r.message for r in caplog.records if "Sleeping" in r.message]
+        assert len(sleep_messages) == 1
+        assert "8s" in sleep_messages[0]
+        assert "2026-01-01T10:00:15" in sleep_messages[0]
+
     async def test_exact_boundary_sleeps_a_full_interval_not_zero(self):
         # Wall clock lands exactly on a boundary (10:00:00): the next
         # candle-close boundary is a full interval away, not 0.
