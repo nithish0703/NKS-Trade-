@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import desc, select
+from sqlalchemy import desc, or_, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from app.models.signal import Direction, Signal, SignalStatus
@@ -92,6 +92,13 @@ def _as_utc(value: datetime) -> datetime:
     return value
 
 
+def _as_utc_or_none(value: Optional[datetime]) -> Optional[datetime]:
+    """Same as _as_utc, but tolerates a NULL column (a nullable timestamp column really can be NULL)."""
+    if value is None:
+        return None
+    return _as_utc(value)
+
+
 class SignalWithStatus(BaseModel):
     """
     A stored Signal paired with its dashboard-only lifecycle status.
@@ -114,6 +121,22 @@ class ClosedTradeRecord(BaseModel):
     A passively closed signal, with the analytics-only fields the Phase
     1 performance report slices by. `signal` is the exact, unmodified
     Signal as persisted.
+
+    Every field below except `signal` and `passive_outcome` mirrors a
+    NULLable DB column and MUST stay Optional here even though every
+    *current* code path always writes them together in one commit --
+    `passive_outcome` alone is guaranteed non-NULL (list_passively_closed
+    filters on it), but `outcome_source` did not exist before this
+    session's migration, so any row closed by an older build of
+    close_passive has `outcome_source IS NULL`. The migration is only
+    as safe as every reader downstream of it: a NULL here must parse
+    into a real Optional value, never raise, and never be silently
+    miscounted into a bucket it doesn't belong to (see
+    app.analytics.performance_report, which slices a None
+    outcome_source into its own "UNKNOWN" category and excludes any
+    record missing passive_exit_price/passive_closed_at_utc from
+    expectancy math entirely rather than crashing or fabricating a
+    value).
     """
 
     model_config = ConfigDict(frozen=True)
@@ -124,8 +147,8 @@ class ClosedTradeRecord(BaseModel):
     stop_loss_source: Optional[str]
     passive_outcome: str
     passive_exit_price: Optional[float]
-    passive_closed_at_utc: datetime
-    outcome_source: str
+    passive_closed_at_utc: Optional[datetime]
+    outcome_source: Optional[str]
 
 
 class SignalOutcomeResult(BaseModel):
@@ -498,11 +521,24 @@ class SignalRepository:
         the dashboard-only ACTIVE/CLOSED_WIN/CLOSED_LOSS workflow.
         UNRESOLVED records have `passive_exit_price=None`; the caller
         must exclude them from R-multiple/expectancy math rather than
-        treat a missing price as a fabricated value.
+        treat a missing price as a fabricated value. A row closed before
+        the `outcome_source` column existed has `outcome_source=None`
+        (a pre-existing-data case, not a fabricated bucket); the caller
+        must surface that distinctly rather than mis-slice it into
+        MANUAL_ACTIVATION or PASSIVE_TRACKING.
         """
         query = select(SignalRecord).where(SignalRecord.passive_outcome.is_not(None))
         if since is not None:
-            query = query.where(SignalRecord.passive_closed_at_utc >= since)
+            # NULL-safe: a NULL passive_closed_at_utc (never a real write
+            # path today, but the column is nullable) must still surface
+            # here rather than silently fail the `>= since` SQL
+            # comparison (NULL compares as unknown, so a plain `>=`
+            # would drop the row from every windowed report with no
+            # trace at all) -- the caller decides whether to exclude it
+            # from stats, but it must never simply vanish.
+            query = query.where(
+                or_(SignalRecord.passive_closed_at_utc.is_(None), SignalRecord.passive_closed_at_utc >= since)
+            )
 
         async with self._database_manager.session_scope() as session:
             try:
@@ -518,7 +554,7 @@ class SignalRepository:
                     stop_loss_source=record.stop_loss_source,
                     passive_outcome=record.passive_outcome,
                     passive_exit_price=record.passive_exit_price,
-                    passive_closed_at_utc=_as_utc(record.passive_closed_at_utc),
+                    passive_closed_at_utc=_as_utc_or_none(record.passive_closed_at_utc),
                     outcome_source=record.outcome_source,
                 )
                 for record in records

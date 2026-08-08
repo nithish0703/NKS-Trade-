@@ -70,8 +70,32 @@ class TradeR(BaseModel):
     closed_at_utc: datetime
 
 
+def has_complete_outcome_data(record: ClosedTradeRecord) -> bool:
+    """
+    True only for a record with everything needed to compute a real R
+    (never UNRESOLVED, and never missing passive_exit_price/
+    passive_closed_at_utc). A pre-existing row is never guaranteed to
+    have every column populated -- e.g. exit_price/closed_at_utc are
+    NULLable columns -- so this must be checked before to_trade_r(),
+    never assumed. generate_performance_report() excludes every record
+    that fails this check from R/win-rate/expectancy math entirely,
+    counted separately as `unresolved_count` rather than raising or
+    fabricating a value.
+    """
+    return (
+        record.passive_outcome != PASSIVE_OUTCOME_UNRESOLVED
+        and record.passive_exit_price is not None
+        and record.passive_closed_at_utc is not None
+    )
+
+
 def to_trade_r(record: ClosedTradeRecord) -> TradeR:
-    """Convert a persisted ClosedTradeRecord into its R-multiple representation."""
+    """
+    Convert a persisted ClosedTradeRecord into its R-multiple
+    representation. Caller must have already confirmed
+    has_complete_outcome_data(record) -- this never fabricates a
+    missing exit_price/closed_at_utc.
+    """
     r_multiple = compute_r_multiple(
         record.signal.entry_price, record.signal.stop_loss, record.passive_exit_price
     )
@@ -199,11 +223,19 @@ class PerformanceReport(BaseModel):
     # pure background tracking (PASSIVE_TRACKING).
     manual_activation_count: int
     passive_tracking_count: int
-    # Signals force-closed as UNRESOLVED (no price ever observed) --
-    # excluded entirely from `overall`/every slice above so a missing
-    # price is never counted as a fabricated 0R trade, but still
-    # reported here so the report can never quietly make them disappear.
+    # Records excluded entirely from `overall`/every slice above (never
+    # counted as a fabricated 0R trade): force-closed as UNRESOLVED (no
+    # price ever observed), or missing exit_price/closed_at_utc outright
+    # -- both mean "no real R can be computed for this row", reported
+    # here so the report can never quietly make them disappear.
     unresolved_count: int
+    # Among the trades that DO count toward `overall`/every slice above,
+    # how many have outcome_source=NULL -- rows closed by a build of
+    # close_passive that predates the outcome_source column. Not the
+    # same as PASSIVE_TRACKING; already broken out as its own "UNKNOWN"
+    # key in by_outcome_source, mirrored here so it always shows in the
+    # header even when by_outcome_source is buried further down.
+    unknown_outcome_source_count: int
 
 
 async def generate_performance_report(
@@ -221,17 +253,20 @@ async def generate_performance_report(
     window_start = window_end - timedelta(days=window_days)
 
     closed_records = await signal_repository.list_passively_closed(since=window_start)
-    # UNRESOLVED means no price was ever observed -- excluded from every
-    # R-multiple/win-rate/expectancy computation below, never treated as
-    # a fabricated 0R trade.
-    unresolved_records = [r for r in closed_records if r.passive_outcome == PASSIVE_OUTCOME_UNRESOLVED]
-    resolved_records = [r for r in closed_records if r.passive_outcome != PASSIVE_OUTCOME_UNRESOLVED]
+    # Excluded from every R-multiple/win-rate/expectancy computation
+    # below, never treated as a fabricated 0R trade: UNRESOLVED (no
+    # price ever observed) and any record missing exit_price/
+    # closed_at_utc outright (a pre-existing row is never guaranteed to
+    # have every nullable column populated).
+    resolved_records = [r for r in closed_records if has_complete_outcome_data(r)]
+    unresolved_records = [r for r in closed_records if not has_complete_outcome_data(r)]
     trades = [to_trade_r(record) for record in resolved_records]
 
     still_open = await signal_repository.list_not_passively_closed()
 
     manual_activation_count = sum(1 for t in trades if t.outcome_source == OUTCOME_SOURCE_MANUAL_ACTIVATION)
     passive_tracking_count = sum(1 for t in trades if t.outcome_source == OUTCOME_SOURCE_PASSIVE_TRACKING)
+    unknown_outcome_source_count = sum(1 for t in trades if t.outcome_source is None)
 
     return PerformanceReport(
         window_start_utc=window_start,
@@ -246,6 +281,7 @@ async def generate_performance_report(
         manual_activation_count=manual_activation_count,
         passive_tracking_count=passive_tracking_count,
         unresolved_count=len(unresolved_records),
+        unknown_outcome_source_count=unknown_outcome_source_count,
     )
 
 
@@ -270,8 +306,10 @@ def format_performance_report(report: PerformanceReport) -> str:
     lines: list[str] = [
         f"Performance: {report.window_start_utc.isoformat()} -> {report.window_end_utc.isoformat()}",
         f"outcome source: {report.manual_activation_count} MANUAL_ACTIVATION, "
-        f"{report.passive_tracking_count} PASSIVE_TRACKING",
-        f"unresolved (no price ever observed, excluded from expectancy): {report.unresolved_count}",
+        f"{report.passive_tracking_count} PASSIVE_TRACKING, "
+        f"{report.unknown_outcome_source_count} UNKNOWN (legacy, pre-dates outcome_source)",
+        f"unresolved (no price ever observed or incomplete record, excluded from expectancy): "
+        f"{report.unresolved_count}",
         "",
     ]
 
