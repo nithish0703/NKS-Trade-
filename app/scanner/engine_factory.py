@@ -5,10 +5,16 @@ Order Flow -> Signal) as the sole strategy engine.
 """
 
 import asyncio
+from typing import Optional
 
+from app.config import thresholds
 from app.config.pairs import get_configured_pairs, set_pair_source
 from app.config.settings import get_settings
-from app.data.binance_market_data_provider import BinanceFuturesMarketDataProvider
+from app.data.binance_market_data_provider import (
+    BinanceFuturesMarketDataProvider,
+    create_shared_rate_limiter,
+)
+from app.data.provider_base import MarketDataProvider
 from app.scanner.active_state import EmptyActiveTradingStateProvider
 from app.scanner.candidate_buffer import ValidSignalCandidateBuffer
 from app.scanner.duplicate_guard import DuplicateSignalGuard
@@ -26,16 +32,18 @@ from app.strategy_pipeline.factory import build_pipeline_strategy_engine
 # (via app.scanner's package __init__) re-enters this module.
 
 
-def build_strategy_engine() -> PipelineStrategyEngine:
+def build_strategy_engine(*, market_data_provider: Optional[MarketDataProvider] = None) -> PipelineStrategyEngine:
     """
     Construct a fully wired PipelineStrategyEngine using production
     dependency instances, centralized Settings and thresholds.
 
     Does not make any API call, start scanning, or create global
     mutable singleton state; each call returns an independent engine
-    instance with its own market-data provider.
+    instance with its own market-data provider, unless `market_data_provider`
+    is supplied (see build_scanner_service, which injects one sharing its
+    rate limiter with the dynamic-pair-discovery provider).
     """
-    return build_pipeline_strategy_engine()
+    return build_pipeline_strategy_engine(market_data_provider=market_data_provider)
 
 
 def build_scanner_service(*, on_event=None, on_cycle_result=None, on_pair_result=None) -> ScannerService:
@@ -60,7 +68,22 @@ def build_scanner_service(*, on_event=None, on_cycle_result=None, on_pair_result
     """
     settings = get_settings()
 
-    strategy_engine = build_strategy_engine()
+    # One rate limiter shared by every BinanceFuturesMarketDataProvider
+    # this function constructs (scan provider and, when enabled, the
+    # dynamic-pair-discovery provider): Binance enforces request weight
+    # and 418/429 bans per IP, not per provider object, so without
+    # sharing, a ban signalled to one provider (e.g. discovery's Open
+    # Interest fetches) would never slow down the other's candle
+    # fetches against the same already-banned IP.
+    shared_rate_limiter = create_shared_rate_limiter()
+
+    strategy_engine = build_strategy_engine(
+        market_data_provider=BinanceFuturesMarketDataProvider(
+            base_url=settings.exchange_base_url,
+            request_timeout_seconds=settings.request_timeout_seconds,
+            rate_limiter=shared_rate_limiter,
+        )
+    )
     semaphore = asyncio.Semaphore(settings.max_concurrent_scans)
     duplicate_guard = DuplicateSignalGuard(
         retention_seconds=settings.duplicate_signal_retention_seconds,
@@ -79,6 +102,7 @@ def build_scanner_service(*, on_event=None, on_cycle_result=None, on_pair_result
         discovery_market_data_provider = BinanceFuturesMarketDataProvider(
             base_url=settings.exchange_base_url,
             request_timeout_seconds=settings.request_timeout_seconds,
+            rate_limiter=shared_rate_limiter,
         )
 
         async def _on_pair_list_refreshed(updated: bool, current_pairs: list) -> None:
@@ -109,22 +133,15 @@ def build_scanner_service(*, on_event=None, on_cycle_result=None, on_pair_result
     else:
         set_pair_source(None)
 
-    scheduler = MultiPairScanScheduler(
-        pair_scanner=pair_scanner,
-        configured_pair_provider=configured_pair_provider,
-        scanner_interval_seconds=settings.scanner_interval_seconds,
-        maximum_concurrent_scans=settings.max_concurrent_scans,
-        retry_count_provider=lambda: strategy_engine._market_data_provider.total_retry_count,
-    )
-    candidate_buffer = ValidSignalCandidateBuffer(
-        maximum_size=settings.candidate_buffer_maximum_size
-    )
-    active_state_provider = EmptyActiveTradingStateProvider()
-
+    # Built before the scheduler (rather than after, as in an earlier
+    # version of this function) so a DB-backed scan lease can be wired
+    # into MultiPairScanScheduler below whenever persistence is enabled.
     signal_storage_service = None
+    scan_lease_guard = None
     if settings.enable_signal_persistence:
         from app.storage.analytics_repository import AnalyticsRepository
         from app.storage.database import DatabaseManager
+        from app.storage.monitor_lease import MonitorLeaseGuard
         from app.storage.signal_repository import SignalRepository
         from app.storage.signal_service import SignalStorageService
 
@@ -141,6 +158,31 @@ def build_scanner_service(*, on_event=None, on_cycle_result=None, on_pair_result
             # only marks a setup as seen in it after a successful save.
             duplicate_guard=duplicate_guard,
         )
+        # So `python main.py scan` and the dashboard API's uvicorn
+        # process -- each building a fully independent ScannerService
+        # via this same function -- never both fetch candles and scan
+        # the same cycle against the same database (see
+        # thresholds.SCANNER_LEASE_DURATION_MULTIPLIER).
+        scan_lease_guard = MonitorLeaseGuard(
+            database_manager,
+            lease_name="scanner_cycle",
+            lease_duration_seconds=(
+                settings.scanner_interval_seconds * thresholds.SCANNER_LEASE_DURATION_MULTIPLIER
+            ),
+        )
+
+    scheduler = MultiPairScanScheduler(
+        pair_scanner=pair_scanner,
+        configured_pair_provider=configured_pair_provider,
+        scanner_interval_seconds=settings.scanner_interval_seconds,
+        maximum_concurrent_scans=settings.max_concurrent_scans,
+        retry_count_provider=lambda: strategy_engine._market_data_provider.total_retry_count,
+        lease_guard=scan_lease_guard,
+    )
+    candidate_buffer = ValidSignalCandidateBuffer(
+        maximum_size=settings.candidate_buffer_maximum_size
+    )
+    active_state_provider = EmptyActiveTradingStateProvider()
 
     notification_service = None
     if settings.telegram_enabled:

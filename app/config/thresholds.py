@@ -4,10 +4,6 @@ Configuration of numerical thresholds used by validators and scoring.
 
 from typing import Final
 
-# Trend strength (ADX)
-ADX_TRENDING_MIN: Final[float] = 25.0
-ADX_REJECTION_MAX: Final[float] = 20.0
-
 # Candle quality
 DISPLACEMENT_CANDLE_MIN_BODY_RATIO: Final[float] = 0.60
 
@@ -65,6 +61,40 @@ MAX_CONSECUTIVE_MISSING_PRICE_CYCLES: Final[int] = 10
 # between renewals.
 SIGNAL_OUTCOME_MONITOR_LEASE_DURATION_MULTIPLIER: Final[int] = 3
 
+# Same lease mechanism (see app.storage.monitor_lease.MonitorLeaseGuard),
+# applied to the scan/candle-fetch loop itself rather than just the
+# SignalOutcomeMonitor: `python main.py scan` and the dashboard API's
+# uvicorn process each build a fully independent ScannerService (see
+# app.scanner.engine_factory.build_scanner_service), so running both
+# against the same database previously meant every candle fetch was
+# duplicated between the two processes with no coordination at all.
+SCANNER_LEASE_DURATION_MULTIPLIER: Final[int] = 3
+
+# Binance Futures IP rate-limit safety (Phase 2 hardening after a live
+# 418 IP ban during unattended `python main.py scan` operation).
+# REQUEST_WEIGHT is capped at 2400/min per IP across all /fapi/v1
+# endpoints combined; the app has no weight accounting of its own today
+# beyond a fixed concurrency+spacing gate, which throttles request
+# *rate* but not actual Binance-reported weight usage. SOFT_THROTTLE_RATIO
+# triggers proactive slowdown once X-MBX-USED-WEIGHT-1M crosses this
+# fraction of the hard cap, before Binance itself has to enforce it via
+# 429/418.
+BINANCE_WEIGHT_LIMIT_PER_MINUTE: Final[int] = 2400
+BINANCE_WEIGHT_SOFT_THROTTLE_RATIO: Final[float] = 0.75
+# Extra delay inserted before each request while used weight is at or
+# above the soft-throttle threshold, on top of the existing
+# MIN_REQUEST_INTERVAL_SECONDS gate -- deliberately coarse (not a
+# precise token-bucket refill) since X-MBX-USED-WEIGHT-1M is only
+# refreshed once per response, not continuously.
+BINANCE_WEIGHT_SOFT_THROTTLE_EXTRA_DELAY_SECONDS: Final[float] = 1.0
+
+# Fallback global cooldown when a 418/429 response carries no
+# Retry-After header at all. A real IP ban (418) typically lasts
+# minutes, not the few seconds of the ordinary per-request retry
+# backoff schedule, so this is deliberately much longer than
+# RETRY_BACKOFF_SCHEDULE_SECONDS in app.data.binance_market_data_provider.
+GLOBAL_RATE_LIMIT_COOLDOWN_FALLBACK_SECONDS: Final[float] = 60.0
+
 # Dynamic Liquidity + Open Interest coin-discovery configuration.
 # The refresh interval defaults to 15 minutes. Binance Futures' public
 # 24hr ticker endpoint returns turnover for every USDT-M perpetual in a
@@ -75,16 +105,6 @@ SIGNAL_OUTCOME_MONITOR_LEASE_DURATION_MULTIPLIER: Final[int] = 3
 PAIR_DISCOVERY_INTERVAL_SECONDS: Final[int] = 900
 PAIR_DISCOVERY_MINIMUM_OPEN_INTEREST_USDT: Final[float] = 5_000_000.0
 PAIR_DISCOVERY_MINIMUM_TURNOVER_24H_USDT: Final[float] = 10_000_000.0
-
-# Warm-up fetch for newly discovered pairs (see app.scanner.pair_discovery).
-# A brand-new symbol's first full candle-history fetch has no cached
-# fallback and no safety margin, so it gets a more patient retry
-# schedule than the routine per-cycle fetch used once a symbol is
-# already in rotation -- this only delays a new symbol's first
-# appearance on a transient failure; it never changes retry behaviour
-# for symbols already being scanned.
-PAIR_WARMUP_MAX_REQUEST_ATTEMPTS: Final[int] = 5
-PAIR_WARMUP_RETRY_BACKOFF_SCHEDULE_SECONDS: Final[tuple[float, ...]] = (2.0, 4.0, 8.0, 15.0)
 
 # Indicator calculation configuration
 ATR_PERIOD: Final[int] = 14
@@ -111,34 +131,13 @@ LIQUIDITY_MAXIMUM_RECLAIM_CANDLES: Final[int] = 2
 BULLISH_DISPLACEMENT_CLOSE_LOCATION_MIN: Final[float] = 0.75
 BEARISH_DISPLACEMENT_CLOSE_LOCATION_MAX: Final[float] = 0.25
 
-# Zone lifecycle detection configuration
-ZONE_TOUCH_TOLERANCE_RATIO: Final[float] = 0.0001
-FULL_ZONE_MITIGATION_REQUIRED: Final[bool] = False
-
 # Premium/Discount dealing-range configuration
 DEALING_RANGE_EQUILIBRIUM_TOLERANCE_RATIO: Final[float] = 0.001
-DEALING_RANGE_MIDDLE_TOLERANCE_RATIO: Final[float] = 0.05
+DEALING_RANGE_MIDDLE_TOLERANCE_RATIO: Final[float] = 0.05  # reserved: used by Phase 3/5
 
-# Retest confirmation configuration
-RETEST_MINIMUM_REJECTION_BODY_RATIO: Final[float] = 0.50
-RETEST_BULLISH_CLOSE_LOCATION_MINIMUM: Final[float] = 0.65
-RETEST_BEARISH_CLOSE_LOCATION_MAXIMUM: Final[float] = 0.35
-RETEST_MINIMUM_REJECTION_WICK_RATIO: Final[float] = 0.15
-RETEST_MAXIMUM_CONFIRMATION_CANDLES: Final[int] = 3
-
-# Market regime / volatility / candle-quality validation configuration
-MARKET_REGIME_MINIMUM_ATR_EXPANSION_RATIO: Final[float] = 1.0
-VOLATILITY_MINIMUM_ATR_VALUE: Final[float] = 0.00000001
-VOLATILITY_MINIMUM_ATR_EXPANSION_RATIO: Final[float] = 1.0
-VOLATILITY_COMPRESSION_LOOKBACK: Final[int] = 10
-VOLATILITY_MINIMUM_CANDLE_RANGE_RATIO: Final[float] = 0.50
-FAKE_BREAKOUT_MAXIMUM_REVERSAL_CANDLES: Final[int] = 3
-FAKE_BREAKOUT_RETURN_INSIDE_TOLERANCE_RATIO: Final[float] = 0.0001
-DOJI_MAXIMUM_BODY_RATIO: Final[float] = 0.10
-SPINNING_TOP_MAXIMUM_BODY_RATIO: Final[float] = 0.30
-CANDLE_MAXIMUM_OPPOSITE_WICK_RATIO: Final[float] = 0.35
-CANDLE_QUALITY_BULLISH_CLOSE_LOCATION_MINIMUM: Final[float] = 0.75
-CANDLE_QUALITY_BEARISH_CLOSE_LOCATION_MAXIMUM: Final[float] = 0.25
+# Market regime / volatility validation configuration
+MARKET_REGIME_MINIMUM_ATR_EXPANSION_RATIO: Final[float] = 1.0  # reserved: used by Phase 3/5
+VOLATILITY_COMPRESSION_LOOKBACK: Final[int] = 10  # reserved: used by Phase 3/5
 
 # Risk-management calculation configuration
 STOP_LOSS_STRUCTURAL_BUFFER_RATIO: Final[float] = 0.0005
@@ -206,6 +205,30 @@ VOLUME_PROFILE_LVN_THRESHOLD_RATIO: Final[float] = 0.15
 # How close current price must be to a node/POC/VAH/VAL to count as
 # "at" it, expressed as a fraction of current price.
 VOLUME_PROFILE_PROXIMITY_RATIO: Final[float] = 0.002
+
+# Stage 6 (Risk Management) entry-price anchoring. The historical bug
+# was using the latest closed candle's close as the entry price even
+# though Stage 4 (IFVG) already selected a specific entry zone -- if
+# the zone's retest happened several candles ago, the latest close can
+# sit far away from where the trade would actually be entered, which
+# silently corrupts stop distance, risk:reward, and position sizing.
+# ZONE_MIDPOINT anchors to the selected zone's center; ZONE_EDGE anchors
+# to the boundary a retracement into the zone touches first (the lower
+# edge for a BUY, the upper edge for a SELL); LAST_CLOSE preserves the
+# old (buggy) behaviour as an explicit, named opt-out rather than
+# silently removing the option. Phase 4's backtest will determine which
+# anchor produces better realized R:R; kept configurable rather than
+# hardcoded for that reason.
+ENTRY_PRICE_ANCHOR: Final[str] = "ZONE_MIDPOINT"  # ZONE_MIDPOINT | ZONE_EDGE | LAST_CLOSE
+
+# Freshness gate paired with ENTRY_PRICE_ANCHOR: if the latest closed
+# candle's close has already moved more than this many ATRs away from
+# the anchored entry price, the setup is stale -- price has left the
+# zone the trade idea was actually built around, so entering there no
+# longer reflects the entry-location analysis that passed Stage 4.
+# Rejected explicitly (naming the ATR distance) rather than silently
+# entered at a price the strategy never actually validated.
+ENTRY_ZONE_MAX_DISTANCE_ATR: Final[float] = 0.5
 
 # Stage 4 (IFVG) validity windows, in candles after a confirmed BOS's
 # break_candle_index. N1 bounds how long the tighter IFVG flip+retest

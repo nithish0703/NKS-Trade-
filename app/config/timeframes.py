@@ -13,10 +13,15 @@ ENTRY_TIMEFRAME: Final[str] = "15m"
 # Timeframes used for BTC market-alignment analysis
 BTC_ALIGNMENT_TIMEFRAMES: Final[tuple[str, ...]] = (HTF_PRIMARY, HTF_SECONDARY)
 
-# Minimum number of historical candles required per timeframe
+# Minimum number of historical candles required per timeframe. HTF_PRIMARY
+# ("4h") is intentionally absent: the strategy pipeline (see
+# app/strategy_pipeline/engine.py's _REQUIRED_TIMEFRAMES) does not read it
+# today, so fetching 300 candles of it per symbol per scan cycle was pure
+# wasted request weight. Kept out until Phase 5 reintroduces 4h for
+# BTC-only regime alignment; HTF_PRIMARY and its EXCHANGE_TIMEFRAME_MAP
+# entry below are kept defined for that reason.
 REQUIRED_CANDLE_LIMITS: Final[MappingProxyType[str, int]] = MappingProxyType(
     {
-        HTF_PRIMARY: 300,
         HTF_SECONDARY: 300,
         ENTRY_TIMEFRAME: 500,
     }

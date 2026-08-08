@@ -215,7 +215,7 @@ def _build_signal_outcome_monitor(service):
 
 
 async def _run_scan_forever(account_balance: float) -> None:
-    """Start the continuous 15-second multi-pair scanner until Ctrl+C."""
+    """Start the continuous multi-pair scanner (see SCANNER_INTERVAL_SECONDS, currently 5 minutes) until Ctrl+C."""
     service = build_scanner_service()
     await initialize_scanner_storage(service)
     loop = asyncio.get_running_loop()

@@ -316,3 +316,102 @@ class TestRetryBehavior:
         with pytest.raises(MarketDataRequestError):
             await provider.fetch_candles("BTC-USDT", "15m", 10)
         assert call_count == 1
+
+
+class TestSharedRateLimiterWeightAndBans:
+    """
+    Covers the 2F rate-limit hardening: proactively tracking Binance's
+    own X-MBX-USED-WEIGHT-1M header, and a global cooldown gate that
+    applies to every request through a shared rate limiter -- not just
+    the one that received a 418/429 -- once Binance actually signals a
+    ban/rate-limit via a Retry-After header.
+    """
+
+    async def test_used_weight_header_recorded_after_a_request(self):
+        def handler(request):
+            return httpx.Response(200, json=[], headers={"X-MBX-USED-WEIGHT-1M": "1900"})
+
+        provider = _make_provider(handler)
+        await provider.fetch_candles("BTC-USDT", "15m", 10)
+        assert provider._rate_limiter._used_weight_1m == 1900
+
+    async def test_missing_weight_header_does_not_crash_or_overwrite(self):
+        def handler(request):
+            return httpx.Response(200, json=[])
+
+        provider = _make_provider(handler)
+        await provider.fetch_candles("BTC-USDT", "15m", 10)
+        assert provider._rate_limiter._used_weight_1m == 0
+
+    async def test_418_with_retry_after_bans_globally_for_a_different_endpoint(self):
+        """
+        A 418 on the klines endpoint (with a real Retry-After) must
+        block a *subsequent, unrelated* request through the same shared
+        rate limiter -- e.g. a ticker-price fetch -- for the full
+        duration, not just further klines requests for the same symbol.
+        """
+        def kline_handler(request):
+            return httpx.Response(418, headers={"Retry-After": "42"}, text="ip banned")
+
+        # max_request_attempts=1: the klines call itself never retries
+        # (it returns/raises on the one and only attempt), so the ban it
+        # records is still pending -- not yet "waited out" by its own
+        # retry loop -- when the next, unrelated call comes in.
+        provider = _make_provider(kline_handler, max_request_attempts=1)
+
+        sleep_calls: list[float] = []
+        real_sleep = asyncio.sleep
+
+        async def _fake_sleep(seconds: float) -> None:
+            sleep_calls.append(seconds)
+            await real_sleep(0)
+
+        with patch("asyncio.sleep", _fake_sleep):
+            with pytest.raises(MarketDataResponseError):
+                await provider.fetch_candles("BTC-USDT", "15m", 10)
+            assert provider._rate_limiter._banned_until_monotonic is not None
+
+            await provider.fetch_ticker_price("ETH-USDT")
+
+        assert any(seconds > 40.0 for seconds in sleep_calls)
+
+    async def test_notify_rate_limited_only_extends_never_shrinks(self):
+        from app.data.binance_market_data_provider import _AsyncRequestRateLimiter
+
+        limiter = _AsyncRequestRateLimiter(max_concurrent_requests=8, min_interval_seconds=0.0)
+        limiter.notify_rate_limited(100.0)
+        first_deadline = limiter._banned_until_monotonic
+        limiter.notify_rate_limited(1.0)
+        assert limiter._banned_until_monotonic == first_deadline
+
+    async def test_fallback_ban_only_applied_on_last_attempt_without_retry_after(self):
+        """
+        A bare 429 with no Retry-After header must not trigger the
+        (long, conservative) fallback global ban on a non-final retry
+        attempt -- only once the retry loop is about to give up
+        entirely. Otherwise a single transient, unlabeled 429 would
+        stall every other in-flight request for a full minute even
+        though the very next local retry succeeds moments later.
+        """
+        call_count = 0
+
+        def handler(request):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return httpx.Response(429, text="rate limited")  # no Retry-After
+            return httpx.Response(200, json=[])
+
+        provider = _make_provider(handler, max_request_attempts=3)
+        await provider.fetch_candles("BTC-USDT", "15m", 10)
+        assert call_count == 2
+        assert provider._rate_limiter._banned_until_monotonic is None
+
+    async def test_fallback_ban_applied_when_retries_exhausted_without_retry_after(self):
+        def handler(request):
+            return httpx.Response(429, text="rate limited")  # no Retry-After, every attempt
+
+        provider = _make_provider(handler, max_request_attempts=2)
+        with pytest.raises(MarketDataResponseError):
+            await provider.fetch_candles("BTC-USDT", "15m", 10)
+        assert provider._rate_limiter._banned_until_monotonic is not None

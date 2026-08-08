@@ -17,6 +17,12 @@ from typing import Optional
 import httpx
 
 from app.config.pairs import validate_pair_symbol, validate_pair_symbol_format
+from app.config.thresholds import (
+    BINANCE_WEIGHT_LIMIT_PER_MINUTE,
+    BINANCE_WEIGHT_SOFT_THROTTLE_EXTRA_DELAY_SECONDS,
+    BINANCE_WEIGHT_SOFT_THROTTLE_RATIO,
+    GLOBAL_RATE_LIMIT_COOLDOWN_FALLBACK_SECONDS,
+)
 from app.config.timeframes import (
     REQUIRED_CANDLE_LIMITS,
     get_exchange_timeframe,
@@ -198,18 +204,33 @@ def _resolve_retry_after_seconds(response: httpx.Response) -> Optional[float]:
 class _AsyncRequestRateLimiter:
     """
     Shared async gate for all outbound Binance Futures market-data
-    requests.
+    requests -- one instance is meant to be shared across every
+    BinanceFuturesMarketDataProvider in a process (scan provider and
+    dynamic-pair-discovery provider alike, see
+    app.scanner.engine_factory.build_scanner_service), not constructed
+    fresh per provider, since Binance's actual limits (request weight,
+    IP bans) are enforced per IP/process, not per provider instance.
 
-    Combines two independent controls:
+    Combines four independent controls:
       - a concurrency semaphore, bounding how many requests may be
         in flight at once, independent of pair-scan concurrency;
       - a minimum-interval gate, ensuring consecutive requests (even
         sequential ones) are spaced at least `min_interval_seconds`
         apart, to smooth request bursts that would otherwise trigger
-        Binance's rate limiting.
-
-    A single instance is shared by one BinanceFuturesMarketDataProvider
-    across all symbols and timeframes in a scan cycle.
+        Binance's rate limiting;
+      - proactive weight throttling: every response carries Binance's
+        own `X-MBX-USED-WEIGHT-1M` header reporting the *actual*
+        current 1-minute weight usage for this IP; once that crosses
+        BINANCE_WEIGHT_SOFT_THROTTLE_RATIO of the documented 2400/min
+        cap, an extra fixed delay is inserted before further requests,
+        rather than waiting for Binance to enforce the cap itself via
+        429/418;
+      - a global cooldown gate: on an actual 418 (IP auto-ban) or 429
+        (rate limited) response, every request through this shared
+        instance -- regardless of which symbol or endpoint -- waits
+        out the full cooldown before proceeding, instead of only the
+        one request that hit the ban retrying on its own schedule
+        while unrelated requests keep firing into an already-banned IP.
     """
 
     def __init__(self, *, max_concurrent_requests: int, min_interval_seconds: float) -> None:
@@ -217,15 +238,21 @@ class _AsyncRequestRateLimiter:
         self._min_interval_seconds = min_interval_seconds
         self._lock = asyncio.Lock()
         self._last_request_monotonic: Optional[float] = None
+        self._used_weight_1m: int = 0
+        self._banned_until_monotonic: Optional[float] = None
 
     async def __aenter__(self) -> "_AsyncRequestRateLimiter":
+        await self._wait_out_global_ban()
         await self._semaphore.acquire()
         async with self._lock:
             loop = asyncio.get_event_loop()
             now = loop.time()
+            min_interval = self._min_interval_seconds
+            if self._used_weight_1m >= BINANCE_WEIGHT_LIMIT_PER_MINUTE * BINANCE_WEIGHT_SOFT_THROTTLE_RATIO:
+                min_interval += BINANCE_WEIGHT_SOFT_THROTTLE_EXTRA_DELAY_SECONDS
             if self._last_request_monotonic is not None:
                 elapsed = now - self._last_request_monotonic
-                wait_seconds = self._min_interval_seconds - elapsed
+                wait_seconds = min_interval - elapsed
                 if wait_seconds > 0:
                     await asyncio.sleep(wait_seconds)
                     now = loop.time()
@@ -234,6 +261,64 @@ class _AsyncRequestRateLimiter:
 
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
         self._semaphore.release()
+
+    async def _wait_out_global_ban(self) -> None:
+        """
+        A single-shot wait, not a re-checking loop: clears the deadline
+        up front and sleeps once for whatever remains. Two requests
+        racing in here at the same instant can both read the deadline
+        before either clears it and both sleep -- an accepted, narrow
+        race (same trade-off as app.storage.monitor_lease.MonitorLeaseGuard),
+        never worse than one redundant wait, and far better than a
+        tight re-check loop that would spin indefinitely against a
+        faked/patched clock in tests without ever observing real time
+        advance.
+        """
+        if self._banned_until_monotonic is None:
+            return
+        loop = asyncio.get_event_loop()
+        remaining = self._banned_until_monotonic - loop.time()
+        self._banned_until_monotonic = None
+        if remaining > 0:
+            await asyncio.sleep(remaining)
+
+    def record_used_weight(self, used_weight_1m: int) -> None:
+        """Record Binance's self-reported current 1-minute weight usage from a response header."""
+        self._used_weight_1m = used_weight_1m
+
+    def notify_rate_limited(self, cooldown_seconds: float) -> None:
+        """
+        Extend the global ban so every request through this shared
+        instance waits at least `cooldown_seconds` before proceeding.
+        Only ever extends an existing ban, never shortens one already
+        in effect from a prior 418/429.
+        """
+        loop = asyncio.get_event_loop()
+        candidate = loop.time() + max(0.0, cooldown_seconds)
+        if self._banned_until_monotonic is None or candidate > self._banned_until_monotonic:
+            self._banned_until_monotonic = candidate
+
+
+def create_shared_rate_limiter(
+    *,
+    max_concurrent_requests: int = MAX_CONCURRENT_REQUESTS,
+    min_interval_seconds: float = MIN_REQUEST_INTERVAL_SECONDS,
+) -> _AsyncRequestRateLimiter:
+    """
+    Build one `_AsyncRequestRateLimiter` intended to be shared across
+    every `BinanceFuturesMarketDataProvider` constructed in a process
+    (see `BinanceFuturesMarketDataProvider`'s `rate_limiter` parameter
+    and `app.scanner.engine_factory.build_scanner_service`, which wires
+    this into both the scan provider and the dynamic-pair-discovery
+    provider). A plain constructor call, not a module-level singleton:
+    each call returns an independent instance, so tests and multiple
+    independent scanner services never leak rate-limit state between
+    each other.
+    """
+    return _AsyncRequestRateLimiter(
+        max_concurrent_requests=max_concurrent_requests,
+        min_interval_seconds=min_interval_seconds,
+    )
 
 
 def _to_decimal(value: object, field_name: str) -> float:
@@ -417,6 +502,16 @@ class BinanceFuturesMarketDataProvider(MarketDataProvider):
     Supports dependency injection of an `httpx.AsyncClient` for testing.
     When no client is injected, an internal client is created and owned
     by this provider (and closed on context-manager exit).
+
+    Also supports dependency injection of a `rate_limiter` (see
+    `create_shared_rate_limiter`): callers that construct more than one
+    provider in the same process (e.g. a scan provider and a dynamic
+    pair-discovery provider) should build one shared
+    `_AsyncRequestRateLimiter` and pass it to every provider instance,
+    so weight tracking and 418/429 global cooldown are coordinated
+    across all of them -- Binance enforces its limits per IP, not per
+    provider object. When omitted, each provider builds its own
+    (non-shared) limiter, preserving prior behaviour for direct/test use.
     """
 
     def __init__(
@@ -431,6 +526,7 @@ class BinanceFuturesMarketDataProvider(MarketDataProvider):
         inter_timeframe_delay_seconds: float = INTER_TIMEFRAME_DELAY_SECONDS,
         max_concurrent_open_interest_requests: int = MAX_CONCURRENT_OPEN_INTEREST_REQUESTS,
         validate_symbol_against_allow_list: bool = True,
+        rate_limiter: Optional[_AsyncRequestRateLimiter] = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._request_timeout_seconds = request_timeout_seconds
@@ -450,7 +546,7 @@ class BinanceFuturesMarketDataProvider(MarketDataProvider):
         self._validate_symbol = (
             validate_pair_symbol if validate_symbol_against_allow_list else validate_pair_symbol_format
         )
-        self._rate_limiter = _AsyncRequestRateLimiter(
+        self._rate_limiter = rate_limiter or _AsyncRequestRateLimiter(
             max_concurrent_requests=max_concurrent_requests,
             min_interval_seconds=min_request_interval_seconds,
         )
@@ -480,6 +576,39 @@ class BinanceFuturesMarketDataProvider(MarketDataProvider):
         concept on an HTTP-200 response.
         """
         return response.status_code in _RETRYABLE_HTTP_STATUS_CODES
+
+    def _track_response(self, response: httpx.Response, *, apply_fallback_ban: bool = False) -> None:
+        """
+        Feed every response (success or failure, from any endpoint) back
+        into the shared rate limiter: record Binance's self-reported
+        current weight usage, and on an actual 418/429, extend the
+        shared global cooldown so every other request through this
+        limiter -- any symbol, any endpoint -- waits it out too.
+
+        Uses the real `Retry-After` value whenever Binance supplies one
+        (as it did throughout the incident this fix responds to:
+        observed wait_seconds of 405-1246 on live 418s), never
+        substituting a guess for a real signal. `apply_fallback_ban`
+        opts in to a conservative fallback cooldown when no
+        `Retry-After` is present -- reserved for the retry loop's last
+        attempt (see `_request_with_retry`), never applied on an
+        earlier attempt that is about to retry within a few seconds
+        anyway, and never applied by the best-effort ticker/Open
+        Interest endpoints below, which have no retry loop of their own.
+        """
+        used_weight_header = response.headers.get("X-MBX-USED-WEIGHT-1M")
+        if used_weight_header is not None:
+            try:
+                self._rate_limiter.record_used_weight(int(used_weight_header))
+            except ValueError:
+                pass
+
+        if response.status_code in (418, 429):
+            retry_after = _resolve_retry_after_seconds(response)
+            if retry_after is not None:
+                self._rate_limiter.notify_rate_limited(retry_after)
+            elif apply_fallback_ban:
+                self._rate_limiter.notify_rate_limited(GLOBAL_RATE_LIMIT_COOLDOWN_FALLBACK_SECONDS)
 
     async def _request_with_retry(
         self,
@@ -541,6 +670,8 @@ class BinanceFuturesMarketDataProvider(MarketDataProvider):
                 self._total_retry_count += 1
                 await asyncio.sleep(wait_seconds)
                 continue
+
+            self._track_response(response, apply_fallback_ban=is_last_attempt)
 
             if not self._is_retryable_response(response):
                 return response, attempt
@@ -722,9 +853,11 @@ class BinanceFuturesMarketDataProvider(MarketDataProvider):
     async def fetch_symbol_market_data(self, symbol: str) -> dict[str, list[Candle]]:
         """
         Fetch candles for the standard set of required timeframes
-        (15m, 1h, 4h) for a single symbol.
+        (currently 15m and 1h -- see REQUIRED_CANDLE_LIMITS in
+        app/config/timeframes.py, the single source of truth for which
+        timeframes this fetches) for a single symbol.
         """
-        return await self.fetch_multiple_timeframes(symbol, ["15m", "1h", "4h"])
+        return await self.fetch_multiple_timeframes(symbol, list(REQUIRED_CANDLE_LIMITS.keys()))
 
     async def fetch_ticker_price(self, symbol: str) -> Optional[float]:
         """
@@ -744,11 +877,14 @@ class BinanceFuturesMarketDataProvider(MarketDataProvider):
         binance_symbol = _to_binance_symbol(validated_symbol)
 
         try:
-            response = await self._client.get(
-                TICKER_PRICE_ENDPOINT, params={"symbol": binance_symbol}
-            )
+            async with self._rate_limiter:
+                response = await self._client.get(
+                    TICKER_PRICE_ENDPOINT, params={"symbol": binance_symbol}
+                )
         except httpx.HTTPError:
             return None
+
+        self._track_response(response)
 
         if response.status_code != 200:
             return None
@@ -789,9 +925,12 @@ class BinanceFuturesMarketDataProvider(MarketDataProvider):
         skipped individually rather than failing the whole batch.
         """
         try:
-            response = await self._client.get(TICKER_24HR_ENDPOINT)
+            async with self._rate_limiter:
+                response = await self._client.get(TICKER_24HR_ENDPOINT)
         except httpx.HTTPError:
             return []
+
+        self._track_response(response)
 
         if response.status_code != 200:
             return []
@@ -840,9 +979,12 @@ class BinanceFuturesMarketDataProvider(MarketDataProvider):
         than failing the whole batch.
         """
         try:
-            response = await self._client.get(TICKER_PRICE_ENDPOINT)
+            async with self._rate_limiter:
+                response = await self._client.get(TICKER_PRICE_ENDPOINT)
         except httpx.HTTPError:
             return {}
+
+        self._track_response(response)
 
         if response.status_code != 200:
             return {}
@@ -910,11 +1052,14 @@ class BinanceFuturesMarketDataProvider(MarketDataProvider):
         """
         binance_symbol = _to_binance_symbol(validated_symbol)
         try:
-            response = await self._client.get(
-                OPEN_INTEREST_ENDPOINT, params={"symbol": binance_symbol}
-            )
+            async with self._rate_limiter:
+                response = await self._client.get(
+                    OPEN_INTEREST_ENDPOINT, params={"symbol": binance_symbol}
+                )
         except httpx.HTTPError:
             return None
+
+        self._track_response(response)
 
         if response.status_code != 200:
             return None

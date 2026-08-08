@@ -100,6 +100,7 @@ def _build_scheduler(
     clock=None,
     wall_clock=None,
     retry_count_provider=None,
+    lease_guard=None,
 ):
     kwargs = dict(
         pair_scanner=pair_scanner or _build_pair_scanner(),
@@ -112,6 +113,8 @@ def _build_scheduler(
         kwargs["wall_clock"] = wall_clock
     if retry_count_provider is not None:
         kwargs["retry_count_provider"] = retry_count_provider
+    if lease_guard is not None:
+        kwargs["lease_guard"] = lease_guard
     return MultiPairScanScheduler(**kwargs)
 
 
@@ -558,3 +561,55 @@ class TestRequestShutdown:
         assert scheduler.get_runtime_status().shutdown_requested is False
         scheduler.request_shutdown()
         assert scheduler.get_runtime_status().shutdown_requested is True
+
+
+class TestLeaseGuard:
+    """
+    Covers the 2F fix: when `python main.py scan` and the dashboard
+    API's uvicorn process both build an independent ScannerService
+    against the same database, at most one of them should actually
+    fetch candles and scan a given cycle. `run_cycle` checks an
+    injected lease guard (structurally typed as `LeaseGuard`, see
+    scan_scheduler.py) before touching the pair scanner at all.
+    """
+
+    async def test_lease_denied_skips_pair_scanning_entirely(self):
+        pair_scanner = _build_pair_scanner()
+        lease_guard = MagicMock()
+        lease_guard.try_acquire = AsyncMock(return_value=False)
+        scheduler = _build_scheduler(pair_scanner=pair_scanner, lease_guard=lease_guard)
+
+        result = await _run_cycle(scheduler)
+
+        lease_guard.try_acquire.assert_awaited_once()
+        pair_scanner.scan_pair.assert_not_called()
+        assert result.total_pairs == 0
+        assert result.attempted_pairs == []
+        assert result.pair_results == []
+        assert result.metadata == {"lease_skipped": True}
+
+    async def test_lease_granted_scans_normally(self):
+        pair_scanner = _build_pair_scanner()
+        lease_guard = MagicMock()
+        lease_guard.try_acquire = AsyncMock(return_value=True)
+        scheduler = _build_scheduler(
+            pair_scanner=pair_scanner, pairs=("BTC-USDT", "ETH-USDT"), lease_guard=lease_guard
+        )
+
+        result = await _run_cycle(scheduler)
+
+        lease_guard.try_acquire.assert_awaited_once()
+        assert pair_scanner.scan_pair.call_count == 2
+        assert result.total_pairs == 2
+        assert result.metadata is None
+
+    async def test_no_lease_guard_scans_normally(self):
+        # Default (lease_guard=None) preserves pre-lease behaviour for
+        # any caller that doesn't wire one in.
+        pair_scanner = _build_pair_scanner()
+        scheduler = _build_scheduler(pair_scanner=pair_scanner, pairs=("BTC-USDT",))
+
+        result = await _run_cycle(scheduler)
+
+        assert pair_scanner.scan_pair.call_count == 1
+        assert result.total_pairs == 1

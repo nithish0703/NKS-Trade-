@@ -3,9 +3,12 @@ Constructs a fully wired PipelineStrategyEngine using centralized
 application settings and thresholds.
 """
 
+from typing import Optional
+
 from app.config import thresholds
 from app.config.settings import get_settings
 from app.data.binance_market_data_provider import BinanceFuturesMarketDataProvider
+from app.data.provider_base import MarketDataProvider
 from app.indicators.calculator import IndicatorCalculator
 from app.liquidity.calculator import LiquidityCalculator
 from app.liquidity.equal_high_low import EqualHighLowDetector
@@ -31,18 +34,25 @@ from app.zones.fair_value_gap import FairValueGapDetector
 from app.strategy_pipeline.engine import PipelineStrategyEngine
 
 
-def build_pipeline_strategy_engine() -> PipelineStrategyEngine:
+def build_pipeline_strategy_engine(
+    *, market_data_provider: Optional[MarketDataProvider] = None
+) -> PipelineStrategyEngine:
     """
     Construct a fully wired PipelineStrategyEngine using production
     dependency instances, centralized Settings and thresholds.
 
     Does not make any API call, start scanning, or create global
     mutable singleton state; each call returns an independent engine
-    instance with its own market-data provider.
+    instance with its own market-data provider, unless `market_data_provider`
+    is supplied -- used by app.scanner.engine_factory.build_scanner_service
+    to inject a provider sharing its rate limiter (weight tracking, 418/429
+    global cooldown) with the dynamic-pair-discovery provider built
+    alongside it, since Binance enforces its limits per IP, not per
+    provider instance.
     """
     settings = get_settings()
 
-    market_data_provider = BinanceFuturesMarketDataProvider(
+    market_data_provider = market_data_provider or BinanceFuturesMarketDataProvider(
         base_url=settings.exchange_base_url,
         request_timeout_seconds=settings.request_timeout_seconds,
     )

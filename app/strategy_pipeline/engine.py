@@ -28,7 +28,8 @@ from datetime import datetime, timezone
 from typing import Mapping, Optional, Sequence
 
 from app.config.pairs import validate_pair_symbol
-from app.config.timeframes import ENTRY_TIMEFRAME, HTF_PRIMARY, HTF_SECONDARY
+from app.config.thresholds import ENTRY_PRICE_ANCHOR, ENTRY_ZONE_MAX_DISTANCE_ATR
+from app.config.timeframes import ENTRY_TIMEFRAME, HTF_SECONDARY
 from app.data.market_data_errors import MarketDataError
 from app.data.provider_base import MarketDataProvider
 from app.indicators.calculator import IndicatorCalculator
@@ -39,6 +40,7 @@ from app.market_structure.calculator import MarketStructureCalculator
 from app.market_structure.displacement import DisplacementDetector, StructureShiftCalculationError
 from app.models.candle import Candle
 from app.models.market_context import MarketContext
+from app.models.trade_zone import TradeZone
 from app.models.validation_result import ValidationResult
 from app.risk.calculator import RiskManagementCalculator
 from app.zones.fair_value_gap import FairValueGapDetector
@@ -59,7 +61,12 @@ from app.strategy_pipeline.order_flow import OrderFlowResult, evaluate_order_flo
 from app.strategy_pipeline.premium_discount import evaluate_premium_discount_zone
 from app.strategy_pipeline.scoring import calculate_pipeline_decision
 
-_REQUIRED_TIMEFRAMES = (ENTRY_TIMEFRAME, HTF_SECONDARY, HTF_PRIMARY)
+# 4h (HTF_PRIMARY) is intentionally excluded: no stage in this pipeline
+# reads it, so fetching it was 300 wasted candles (weight 2 on Binance
+# Futures) per symbol per scan cycle for nothing. Phase 5 reintroduces
+# it for BTC-only regime alignment (see HTF_PRIMARY/EXCHANGE_TIMEFRAME_MAP
+# in app/config/timeframes.py, both kept for that reason).
+_REQUIRED_TIMEFRAMES = (ENTRY_TIMEFRAME, HTF_SECONDARY)
 
 # (stage_order, layer_name). All stages except ORDER_FLOW are
 # hard-mandatory: failure at any of those rejects the pipeline
@@ -83,6 +90,25 @@ _MANDATORY_STAGES = frozenset(name for _, name in _STAGE_DEFINITIONS if name != 
 
 def _now_ms() -> float:
     return time.perf_counter() * 1000.0
+
+
+def _resolve_entry_price(zone: TradeZone, expected_direction: str, last_close: float) -> float:
+    """
+    Resolve the entry price per ENTRY_PRICE_ANCHOR rather than always
+    using the latest closed candle's close, which can sit far from the
+    zone the pipeline actually selected. ZONE_MIDPOINT anchors to the
+    zone's center; ZONE_EDGE uses the boundary a retracement into the
+    zone touches first (the lower edge for a BUY, the upper edge for a
+    SELL); LAST_CLOSE preserves the pre-fix behaviour as an explicit,
+    named opt-out.
+    """
+    if ENTRY_PRICE_ANCHOR == "ZONE_MIDPOINT":
+        return (zone.lower_price + zone.upper_price) / 2.0
+    if ENTRY_PRICE_ANCHOR == "ZONE_EDGE":
+        return zone.lower_price if expected_direction == "BUY" else zone.upper_price
+    if ENTRY_PRICE_ANCHOR == "LAST_CLOSE":
+        return last_close
+    raise ValueError(f"Unsupported ENTRY_PRICE_ANCHOR: {ENTRY_PRICE_ANCHOR!r}")
 
 
 class PipelineStrategyEngine:
@@ -333,11 +359,16 @@ class PipelineStrategyEngine:
         # new stage, reusing the existing swing range already on
         # entry_structure (see app/strategy_pipeline/premium_discount.py).
         # Only evaluated once IFVG has already selected a valid entry
-        # zone, using that zone's own price as the entry price under
-        # test.
+        # zone, using that zone's own anchored price (see
+        # _resolve_entry_price / ENTRY_PRICE_ANCHOR) as the entry price
+        # under test -- not the latest closed candle's close, which may
+        # sit far from the selected zone.
         if ifvg_validation.passed and ifvg_result.selected_zone is not None:
+            anchored_entry_price = _resolve_entry_price(
+                ifvg_result.selected_zone, expected_direction, entry_candles[-1].close
+            )
             premium_discount_result = evaluate_premium_discount_zone(
-                entry_structure, entry_candles[-1].close, expected_direction
+                entry_structure, anchored_entry_price, expected_direction
             )
             if not premium_discount_result.passed:
                 ifvg_validation = ValidationResult(
@@ -399,7 +430,28 @@ class PipelineStrategyEngine:
                 order_flow_result=order_flow_result,
             )
 
-        entry_price = entry_candles[-1].close
+        last_close = entry_candles[-1].close
+        entry_price = _resolve_entry_price(entry_zone, expected_direction, last_close)
+
+        distance_atr = abs(last_close - entry_price) / atr
+        if distance_atr > ENTRY_ZONE_MAX_DISTANCE_ATR:
+            stale_validation = ValidationResult.failure(
+                layer_name="RISK_MANAGEMENT",
+                reason=(
+                    f"price has already left the entry zone ({distance_atr:.1f} ATR away); "
+                    "the setup is stale."
+                ),
+            )
+            stages.append(self._stage(6, "RISK_MANAGEMENT", stale_validation, start, mandatory=True))
+            return self._build_rejected_result(
+                context,
+                expected_direction,
+                stages,
+                "RISK_MANAGEMENT",
+                stale_validation,
+                order_flow_result=order_flow_result,
+            )
+
         risk_plan = self._risk_management_calculator.calculate(
             direction=expected_direction,
             entry_price=entry_price,

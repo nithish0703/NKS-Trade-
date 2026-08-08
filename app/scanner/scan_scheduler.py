@@ -6,7 +6,7 @@ import asyncio
 import hashlib
 import logging
 from datetime import datetime, timezone
-from typing import Any, Awaitable, Callable, Mapping, Optional, Sequence
+from typing import Any, Awaitable, Callable, Mapping, Optional, Protocol, Sequence
 
 from app.models.candle import Candle
 from app.scanner.pair_scanner import PairScanner
@@ -19,6 +19,19 @@ from app.scanner.scan_results import (
 
 ClockProvider = Callable[[], float]
 WallClockProvider = Callable[[], datetime]
+
+
+class LeaseGuard(Protocol):
+    """
+    Structural type for a DB-backed mutual-exclusion lease (see
+    app.storage.monitor_lease.MonitorLeaseGuard), used only as a type
+    hint here -- this module never imports app.storage directly, to
+    avoid the circular import app.storage's package __init__ would
+    otherwise create (see app.scanner.engine_factory's own comment on
+    the same issue).
+    """
+
+    async def try_acquire(self, now: datetime) -> bool: ...
 
 
 def _default_clock() -> float:
@@ -75,6 +88,7 @@ class MultiPairScanScheduler:
         clock: ClockProvider = _default_clock,
         wall_clock: WallClockProvider = _default_wall_clock,
         logger: Optional[logging.Logger] = None,
+        lease_guard: Optional[LeaseGuard] = None,
     ) -> None:
         self._pair_scanner = pair_scanner
         self._configured_pair_provider = configured_pair_provider
@@ -89,6 +103,17 @@ class MultiPairScanScheduler:
         self._clock = clock
         self._wall_clock = wall_clock
         self._logger = logger or logging.getLogger(__name__)
+        # DB-backed lease (see app.storage.monitor_lease.MonitorLeaseGuard,
+        # wired in by app.scanner.engine_factory.build_scanner_service)
+        # so at most one process's scanner actually fetches candles and
+        # scans a given cycle when `python main.py scan` and the
+        # dashboard API's uvicorn process both point at the same
+        # database -- otherwise every candle fetch is fully duplicated
+        # between the two, roughly doubling Binance request weight for
+        # no benefit. None (the default) never gates a cycle, matching
+        # pre-lease behaviour for any caller that doesn't wire one in
+        # (e.g. direct unit tests).
+        self._lease_guard = lease_guard
 
         self._shutdown_event = asyncio.Event()
         self._running = False
@@ -110,6 +135,13 @@ class MultiPairScanScheduler:
 
         self._cycle_sequence += 1
         cycle_id = _build_cycle_id(self._cycle_sequence, started_at_utc)
+
+        if self._lease_guard is not None and not await self._lease_guard.try_acquire(started_at_utc):
+            self._logger.info(
+                "Cycle %s: lease held by another process; skipping candle fetch/scan this cycle.",
+                cycle_id,
+            )
+            return self._build_lease_skipped_result(cycle_id, started_at_utc)
 
         configured_pairs = list(self._configured_pair_provider())
         detection_time_utc = started_at_utc
@@ -198,6 +230,39 @@ class MultiPairScanScheduler:
             error_count=len(error_results),
             skipped_count=len(skipped_results),
             rejection_breakdown=rejection_breakdown,
+        )
+
+    @staticmethod
+    def _build_lease_skipped_result(cycle_id: str, started_at_utc: datetime) -> ScanCycleResult:
+        """
+        An empty cycle result for when another process currently holds
+        the scan lease: no pairs are attempted (no candle fetch, no
+        strategy evaluation), distinguished via `metadata` so a caller
+        can tell "this process didn't do the work this cycle" apart
+        from "this process scanned and found nothing."
+        """
+        completed_at_utc = datetime.now(timezone.utc)
+        return ScanCycleResult(
+            cycle_id=cycle_id,
+            started_at_utc=started_at_utc,
+            completed_at_utc=completed_at_utc,
+            duration_ms=0.0,
+            configured_pairs=[],
+            attempted_pairs=[],
+            valid_results=[],
+            rejected_results=[],
+            duplicate_results=[],
+            error_results=[],
+            skipped_results=[],
+            pair_results=[],
+            total_pairs=0,
+            valid_count=0,
+            rejected_count=0,
+            duplicate_count=0,
+            error_count=0,
+            skipped_count=0,
+            rejection_breakdown={},
+            metadata={"lease_skipped": True},
         )
 
     @staticmethod
